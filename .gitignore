@@ -1,0 +1,15 @@
+# Corpus output. This repository ships the builder, not the built corpus.
+epub/
+markdown/
+rates/
+external/
+sources.json
+INDEX.md
+LICENCE-NOTICE.md
+
+# Run artefacts
+*.log
+_*.json
+_*.html
+__pycache__/
+*.pyc
