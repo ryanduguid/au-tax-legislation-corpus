@@ -58,6 +58,15 @@ python rates.py         # -> rates/rates.jsonl, rates/RATES.md
 python check_current.py # read-only staleness check against the Register
 ```
 
+To produce a corpus you can pass on to someone else:
+
+```bash
+python pii_scan.py      # -> pii_flagged.json, the titles that name people
+python pii_scan2.py     # second pass at a lower threshold, plus contact details
+python dist.py          # -> $ATO_KB_ROOT/dist/, the redistributable subset
+python dist_verify.py   # 12 checks against the built subset, exits non-zero on any failure
+```
+
 The intermediate JSON files from the 4 August run are committed, so any single
 stage re-runs without repeating the earlier ones.
 
@@ -113,17 +122,37 @@ false` in the front matter and on every row.
 
 ## What this deliberately does not ship
 
-The corpus itself, for three reasons:
+The corpus itself. It is about a gigabyte and this code rebuilds it in an
+afternoon, so shipping it would trade a lot of storage for very little. Two
+parts of it should not be redistributed at all, and `dist.py` exists to separate
+them out:
 
 1. **The EPUBs embed the Commonwealth Coat of Arms**, which is excluded from the
-   Register's CC BY 4.0 grant. Redistributing them redistributes it.
-2. **Eleven titles name people.** The Tax Practitioners Board registers its
-   terminations as notifiable instruments, so the corpus carries roughly 3,750
-   named agents with registration numbers and the provision they breached. That
-   is public on the Register; publishing it as a searchable dataset is a
-   different act.
-3. It is about a gigabyte, and it is reproducible from this code in an
-   afternoon.
+   Register's CC BY 4.0 grant, along with any third-party material the Register
+   has not cleared. Stripping the image would also destroy the only thing that
+   makes shipping EPUBs worthwhile, which is that they are byte-identical to
+   what the Register served. The markdown and JSONL carry no image data at all —
+   `extract.py` never emits any — so they need nothing removed.
+2. **Twelve titles name private individuals.** The Tax Practitioners Board
+   registers terminations and suspensions of tax and BAS agents as notifiable
+   instruments: tables of named people with registration numbers and the
+   provision breached, about 5,400 name mentions across 169 rows. Public on the
+   Register as PDFs you read one at a time; shipping them as dataset rows makes
+   them name-searchable at scale, which is a different act.
+
+`pii_scan.py` finds the second category without being told where to look. It
+tests every row in all 946 titles for personal names appearing alongside agent
+registration numbers, because a bare name test flags the whole corpus —
+legislation names Ministers, Commissioners and litigants constantly, and the
+registration number is what separates a disciplinary register from a statute.
+`pii_scan2.py` re-runs at a lower threshold and sweeps for emails, phone numbers
+and tax file numbers; it found nothing outside those twelve, and the only
+contact details anywhere are five organisational addresses.
+
+`dist.py` then writes `dist/`: 934 titles, 21,596 rows, 5,722,156 words, 106 MB,
+with a `REMOVED.md` listing every exclusion and its Register link so the
+omission is visible and reversible. `dist_verify.py` checks the result against
+its own claims — twelve assertions, non-zero exit on any failure.
 
 ## Licence
 
