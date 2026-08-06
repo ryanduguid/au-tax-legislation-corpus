@@ -21,8 +21,10 @@ omission is visible and reversible from the primary source.
 """
 import collections, json, os, re, shutil
 
-ROOT = os.environ.get("ATO_KB_ROOT", r"C:\ato-kb")
-DIST = os.path.join(ROOT, "dist")
+from corpus_paths import child, corpus_root, register_id, reject_symlinks
+
+ROOT = corpus_root(__file__)
+DIST = child(ROOT, "dist")
 HERE = os.path.dirname(os.path.abspath(__file__))
 
 
@@ -96,8 +98,8 @@ def render_rates_markdown(records):
 def main():
     with open(os.path.join(HERE, "pii_flagged.json"), encoding="utf-8") as f:
         flagged = json.load(f)
-    drop = {f["register_id"]: f for f in flagged}
-    with open(os.path.join(ROOT, "sources.json"), encoding="utf-8") as f:
+    drop = {register_id(f["register_id"]): f for f in flagged}
+    with open(child(ROOT, "sources.json"), encoding="utf-8") as f:
         src = json.load(f)
 
     # Build only the titles declared by sources.json.  The prior glob copied any
@@ -105,31 +107,34 @@ def main():
     # It also preserved EPUB paths that do not exist in the redistributable tree.
     titles = []
     for title in src["titles"]:
-        if title["register_id"] in drop:
+        rid = register_id(title["register_id"])
+        if rid in drop:
             continue
         title = dict(title)
+        title["register_id"] = rid
         title["epub"] = None
         title["epub_included"] = False
         titles.append(title)
 
     if os.path.exists(DIST):
         shutil.rmtree(DIST)
-    os.makedirs(os.path.join(DIST, "markdown"))
-    os.makedirs(os.path.join(DIST, "rates"))
+    os.makedirs(child(DIST, "markdown"))
+    os.makedirs(child(DIST, "rates"))
 
     kept_rows = kept_words = section_rows = 0
     kind_counts = collections.Counter()
     stats = collections.Counter((t.get("collection") or "unknown") for t in titles)
     rows_by_coll, words_by_coll = collections.Counter(), collections.Counter()
     for title in titles:
-        rid = title["register_id"]
-        d = os.path.join(ROOT, "markdown", rid)
+        rid = register_id(title["register_id"])
+        d = child(ROOT, "markdown", rid)
         if not os.path.isdir(d):
             raise RuntimeError("listed title %s has no markdown directory" % rid)
-        sections = os.path.join(d, "sections.jsonl")
+        sections = child(d, "sections.jsonl")
         if not os.path.isfile(sections):
             raise RuntimeError("listed title %s has no sections.jsonl" % rid)
-        shutil.copytree(d, os.path.join(DIST, "markdown", rid))
+        reject_symlinks(d)
+        shutil.copytree(d, child(DIST, "markdown", rid))
         with open(sections, encoding="utf-8") as f:
             for l in f:
                 if not l.strip():
@@ -149,7 +154,7 @@ def main():
     # The JSONL and its human-readable companion are both generated from this
     # filtered record set.  Copying the source RATES.md would republish full
     # corpus counts and, if a removed title carried an entry, its content.
-    rin = os.path.join(ROOT, "rates", "rates.jsonl")
+    rin = child(ROOT, "rates", "rates.jsonl")
     rate_records, rdropped = [], 0
     with open(rin, encoding="utf-8") as f:
         for l in f:
@@ -160,10 +165,10 @@ def main():
                 rdropped += 1
                 continue
             rate_records.append(record)
-    with open(os.path.join(DIST, "rates", "rates.jsonl"), "w", encoding="utf-8") as f:
+    with open(child(DIST, "rates", "rates.jsonl"), "w", encoding="utf-8") as f:
         for record in rate_records:
             f.write(json.dumps(record, ensure_ascii=False) + "\n")
-    with open(os.path.join(DIST, "rates", "RATES.md"), "w", encoding="utf-8") as f:
+    with open(child(DIST, "rates", "RATES.md"), "w", encoding="utf-8") as f:
         f.write(render_rates_markdown(rate_records))
 
     # sources.json, minus the dropped titles, with every nested count rebuilt
@@ -210,11 +215,11 @@ def main():
     out["excluded_titles"] = [
         {"register_id": r, "name": drop[r]["name"],
          "reason": "names private individuals; see REMOVED.md"} for r in sorted(drop)]
-    with open(os.path.join(DIST, "sources.json"), "w", encoding="utf-8") as f:
+    with open(child(DIST, "sources.json"), "w", encoding="utf-8") as f:
         json.dump(out, f, indent=1, ensure_ascii=False)
 
-    shutil.copy(os.path.join(ROOT, "LICENCE-NOTICE.md"),
-                os.path.join(DIST, "LICENCE-NOTICE.md"))
+    shutil.copy(child(ROOT, "LICENCE-NOTICE.md"),
+                child(DIST, "LICENCE-NOTICE.md"))
 
     # INDEX.md and README.md are generated against the full corpus, so copying
     # them ships a contents page linking to removed titles and a headline count
@@ -222,8 +227,9 @@ def main():
     label = [("Act", "Acts"), ("LegislativeInstrument", "Legislative instruments"),
              ("NotifiableInstrument", "Notifiable instruments")]
 
-    with open(os.path.join(ROOT, "INDEX.md"), encoding="utf-8") as f:
-        idx = f.read().split("\n")
+    with open(child(ROOT, "INDEX.md"), encoding="utf-8") as f:
+        index_text = f.read()
+    idx = index_text.split("\n")
     keep_lines, dropped_lines = [], 0
     for ln in idx:
         if any(r in ln for r in drop):
@@ -252,17 +258,17 @@ def main():
                      txt, count=1, flags=re.M)
         txt = re.sub(r"^## %s \(\d+\)$" % re.escape(lab),
                      "## %s (%d)" % (lab, stats[key]), txt, count=1, flags=re.M)
-    with open(os.path.join(DIST, "INDEX.md"), "w", encoding="utf-8") as f:
+    with open(child(DIST, "INDEX.md"), "w", encoding="utf-8") as f:
         f.write(txt)
 
-    with open(os.path.join(ROOT, "README.md"), encoding="utf-8") as f:
+    with open(child(ROOT, "README.md"), encoding="utf-8") as f:
         rd = f.read()
     # The README's headline wraps across three lines, so a single-line replace
     # misses it and leaves the file claiming 946 titles. Match the numbers
     # themselves, whitespace-tolerant.
     rd = re.sub(r"%s in-force principal titles" % len(src["titles"]),
                 "%d in-force principal titles" % len(titles), rd)
-    rd = re.sub(r"\d+ Acts and \d+ legislative and notifiable",
+    rd = re.sub(r"(?<!\d)\d+ Acts and \d+ legislative and notifiable",
                  "%d Acts and %d legislative and notifiable"
                  % (stats["Act"], len(titles) - stats["Act"]), rd)
     rd = re.sub(r"instruments\.\s+[\d,]+ retrieval rows, [\d,]+ words\.",
@@ -272,7 +278,7 @@ def main():
           "name private individuals are not included. See REMOVED.md for what was "
           "dropped and why, and run the pipeline yourself for the full corpus.\n\n"
           % len(drop) + rd)
-    with open(os.path.join(DIST, "README.md"), "w", encoding="utf-8") as f:
+    with open(child(DIST, "README.md"), "w", encoding="utf-8") as f:
         f.write(rd)
     print("INDEX.md: dropped %d lines referencing removed titles" % dropped_lines)
 
@@ -325,7 +331,7 @@ def main():
         "the agencies' own sites), "
         "which are left in place." % (f"{len(src['titles']):,}", len(drop)),
     ]
-    with open(os.path.join(DIST, "REMOVED.md"), "w", encoding="utf-8") as f:
+    with open(child(DIST, "REMOVED.md"), "w", encoding="utf-8") as f:
         f.write("\n".join(lines) + "\n")
 
     size = sum(os.path.getsize(os.path.join(r, f))

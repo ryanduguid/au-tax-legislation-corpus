@@ -4,6 +4,12 @@ Run from inside this `build/` directory. Each script resolves its working
 directory to its own folder, so the intermediate JSON files beside it are both
 the inputs and the outputs of the pipeline.
 
+For a direct source checkout, run the same commands from the checkout root;
+derived corpus files are then written below `./corpus/`. The builder does not
+accept an environment-selected output root. To build at a different location,
+copy the builder scripts into that location's `build/` directory as shown
+below; the parent of `build/` is the deterministic corpus root.
+
 ```bash
 cd C:\ato-kb\build
 python discover.py      # -> titles_all.json, titles_principal.json

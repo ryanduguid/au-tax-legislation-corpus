@@ -14,9 +14,11 @@ current.
 import json, os, time
 
 import download as dl
+from corpus_paths import child, corpus_root, register_id
 
 SCRATCH = os.path.dirname(os.path.abspath(__file__))
-EPUB_DIR = os.path.join(os.environ.get("ATO_KB_ROOT", r"C:\ato-kb"), "epub")
+ROOT = corpus_root(__file__)
+EPUB_DIR = child(ROOT, "epub")
 
 
 def main():
@@ -28,10 +30,10 @@ def main():
 
     patches = []
     for i, a in enumerate(todo, 1):
-        rid = a["id"]
+        rid = register_id(a["id"])
         v = probe[rid]["latest_doc"]
         d = v["start"][:10]
-        dst = os.path.join(EPUB_DIR, "%s.epub" % rid)
+        dst = child(EPUB_DIR, "%s.epub" % rid)
         url = "https://www.legislation.gov.au/%s/%s/%s/text/original/epub" % (rid, d, d)
 
         ok, code, ctype, sz, meta = dl.fetch(url, dst)
@@ -45,7 +47,7 @@ def main():
             rec["isAuthorised"] = meta.get("isAuthorised")
         if ok:
             rec.update(epub=os.path.basename(dst), bytes=sz, status="ok_superseded_version")
-            with open(dst + ".meta.json", "w", encoding="utf-8") as f:
+            with open(child(EPUB_DIR, "%s.epub.meta.json" % rid), "w", encoding="utf-8") as f:
                 json.dump({"versionStart": d,
                            "compilationNumber": rec["compilationNumber"],
                            "compilationRegisterId": rec["compilationRegisterId"],

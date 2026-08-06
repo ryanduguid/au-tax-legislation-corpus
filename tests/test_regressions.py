@@ -7,22 +7,26 @@ import contextlib
 import importlib.util
 import io
 import json
-import os
 from pathlib import Path
 import shutil
+import sys
 import tempfile
 import unittest
-from unittest import mock
 
 
 REPO = Path(__file__).resolve().parents[1]
 
 
 def load_module(name, path):
-    spec = importlib.util.spec_from_file_location(name, path)
-    module = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(module)
-    return module
+    module_dir = str(Path(path).parent)
+    sys.path.insert(0, module_dir)
+    try:
+        spec = importlib.util.spec_from_file_location(name, path)
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        return module
+    finally:
+        sys.path.remove(module_dir)
 
 
 class FailureHandlingTests(unittest.TestCase):
@@ -45,7 +49,7 @@ class FailureHandlingTests(unittest.TestCase):
 
     def test_versions_does_not_write_a_partial_resolution_manifest(self):
         versions = load_module("versions_regression", REPO / "versions.py")
-        title = {"id": "C0000000001", "name": "Example Tax Act", "isPrincipal": True}
+        title = {"id": "C2004A00001", "name": "Example Tax Act", "isPrincipal": True}
         with tempfile.TemporaryDirectory() as tmp:
             scratch = Path(tmp)
             (scratch / "titles_all.json").write_text(json.dumps([title]), encoding="utf-8")
@@ -61,7 +65,7 @@ class FailureHandlingTests(unittest.TestCase):
 
     def test_versions_writes_a_manifest_only_after_a_complete_resolution(self):
         versions = load_module("versions_success_regression", REPO / "versions.py")
-        title = {"id": "C0000000001", "name": "Example Tax Act", "isPrincipal": True}
+        title = {"id": "C2004A00001", "name": "Example Tax Act", "isPrincipal": True}
         with tempfile.TemporaryDirectory() as tmp:
             scratch = Path(tmp)
             (scratch / "titles_all.json").write_text(json.dumps([title]), encoding="utf-8")
@@ -72,7 +76,7 @@ class FailureHandlingTests(unittest.TestCase):
                 if "C2004A05138" in url:
                     return {"value": [{"titleId": "C2004A05138", "start": "2026-01-01"}]}
                 return {"value": [{
-                    "titleId": "C0000000001", "start": "2026-02-03T00:00:00Z",
+                    "titleId": "C2004A00001", "start": "2026-02-03T00:00:00Z",
                     "compilationNumber": "7", "registerId": "F2026C00001",
                 }]}
 
@@ -91,31 +95,55 @@ class FailureHandlingTests(unittest.TestCase):
             build.mkdir()
             source = build / "extract.py"
             shutil.copy2(REPO / "extract.py", source)
+            shutil.copy2(REPO / "corpus_paths.py", build / "corpus_paths.py")
             extract = load_module("extract_regression", source)
 
-            root = tmp_path / "corpus"
-            epub = root / "epub" / "C0000000001.epub"
+            root = tmp_path
+            epub = root / "epub" / "C2004A00001.epub"
             epub.parent.mkdir(parents=True)
             epub.write_bytes(b"not-an-epub")
             manifest = [{
-                "id": "C0000000001", "name": "Example Tax Act",
+                "id": "C2004A00001", "name": "Example Tax Act",
                 "epub": epub.name, "versionStart": "2026-01-01",
-                "compilationNumber": "1", "sourceUrl": "https://example.test/C0000000001",
+                "compilationNumber": "1", "sourceUrl": "https://example.test/C2004A00001",
             }]
             (build / "manifest_raw.json").write_text(json.dumps(manifest), encoding="utf-8")
             extract.epub_blocks = lambda _path: (_ for _ in ()).throw(ValueError("bad EPUB"))
 
-            with mock.patch.dict(os.environ, {"ATO_KB_ROOT": str(root)}, clear=False):
-                with contextlib.redirect_stdout(io.StringIO()):
-                    with self.assertRaisesRegex(RuntimeError, "refusing to write manifest_md"):
-                        extract.main("2026-08-07")
+            with contextlib.redirect_stdout(io.StringIO()):
+                with self.assertRaisesRegex(RuntimeError, "refusing to write manifest_md"):
+                    extract.main("2026-08-07")
 
             self.assertFalse((build / "manifest_md.json").exists())
 
+    def test_extract_rejects_manifest_epub_path_mismatch_before_reading(self):
+        """A valid Register ID must not make a manifest filename trustworthy."""
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            build = tmp_path / "build"
+            build.mkdir()
+            source = build / "extract.py"
+            shutil.copy2(REPO / "extract.py", source)
+            shutil.copy2(REPO / "corpus_paths.py", build / "corpus_paths.py")
+            extract = load_module("extract_path_regression", source)
+            manifest = [{
+                "id": "F2020L01498", "name": "Example Instrument",
+                "epub": "../../unrelated.epub", "versionStart": "2026-01-01",
+                "compilationNumber": "1", "sourceUrl": "https://example.test/F2020L01498",
+            }]
+            (build / "manifest_raw.json").write_text(json.dumps(manifest), encoding="utf-8")
+
+            with contextlib.redirect_stdout(io.StringIO()):
+                with self.assertRaisesRegex(RuntimeError, "refusing to write manifest_md"):
+                    extract.main("2026-08-07")
+
+            self.assertFalse((build / "manifest_md.json").exists())
+            self.assertFalse((tmp_path / "markdown" / "F2020L01498").exists())
+
 
 class DistributionTests(unittest.TestCase):
-    PUBLIC_ID = "C0000000001"
-    PRIVATE_ID = "C0000000002"
+    PUBLIC_ID = "C2004A00001"
+    PRIVATE_ID = "C2004A00002"
     PUBLIC_NAME = "Public Tax Act"
     PRIVATE_NAME = "Private Disciplinary Register"
 
@@ -170,9 +198,9 @@ class DistributionTests(unittest.TestCase):
             "# Index\n\n2 titles (1 Acts, 1 instruments), 2 retrieval rows, 10 words.\n\n"
             "| Collection | Titles | Rows | Words |\n|---|---|---|---|\n"
             "| Acts | 1 | 1 | 5 |\n| Notifiable instruments | 1 | 1 | 5 |\n\n"
-            "## Acts (1)\n| [Public Tax Act](markdown/C0000000001) | C0000000001 |\n\n"
+            "## Acts (1)\n| [Public Tax Act](markdown/C2004A00001) | C2004A00001 |\n\n"
             "## Notifiable instruments (1)\n"
-            "| [Private Disciplinary Register](markdown/C0000000002) | C0000000002 |\n",
+            "| [Private Disciplinary Register](markdown/C2004A00002) | C2004A00002 |\n",
             encoding="utf-8")
         (root / "README.md").write_text(
             "2 in-force principal titles covering tax.\n\n"
@@ -216,6 +244,10 @@ class DistributionTests(unittest.TestCase):
             self.assertIsNone(sources["titles"][0]["epub"])
             self.assertFalse(sources["titles"][0]["epub_included"])
 
+            index_md = (output / "INDEX.md").read_text(encoding="utf-8")
+            self.assertIn(self.PUBLIC_NAME, index_md)
+            self.assertNotIn(self.PRIVATE_NAME, index_md)
+
             rates_md = (output / "rates" / "RATES.md").read_text(encoding="utf-8")
             self.assertIn("1 entries across 1 titles.", rates_md)
             self.assertIn(self.PUBLIC_NAME, rates_md)
@@ -247,6 +279,84 @@ class DistributionTests(unittest.TestCase):
                 with self.assertRaises(SystemExit) as result:
                     verify.main()
             self.assertEqual(result.exception.code, 1)
+
+    def test_distribution_rejects_nested_symlinks_before_copying(self):
+        dist = load_module("dist_symlink_regression", REPO / "dist.py")
+        with tempfile.TemporaryDirectory() as tmp:
+            root, build = self._write_fixture(Path(tmp))
+            source = root / "markdown" / self.PUBLIC_ID
+            outside = Path(tmp) / "outside.txt"
+            outside.write_text("must not be copied", encoding="utf-8")
+            link = source / "unexpected-link"
+            try:
+                link.symlink_to(outside)
+            except OSError:
+                self.skipTest("symbolic links are unavailable on this platform")
+            dist.ROOT = str(root)
+            dist.HERE = str(build)
+            dist.DIST = str(root / "dist")
+            with self.assertRaisesRegex(ValueError, "symbolic link"):
+                dist.main()
+
+
+class PathBoundaryTests(unittest.TestCase):
+    def test_register_id_and_contained_child_reject_traversal(self):
+        paths = load_module("corpus_paths_regression", REPO / "corpus_paths.py")
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp) / "corpus"
+            root.mkdir()
+            self.assertEqual(paths.register_id("F2020L01498"), "F2020L01498")
+            self.assertEqual(paths.register_id("C2004A05138"), "C2004A05138")
+            with self.assertRaises(ValueError):
+                paths.register_id("../../outside")
+            with self.assertRaises(ValueError):
+                paths.child(root, "..", "outside")
+            with self.assertRaises(ValueError):
+                paths.child(root, ".")
+
+    def test_root_layout_supports_checkout_and_deployed_build(self):
+        paths = load_module("corpus_paths_layout", REPO / "corpus_paths.py")
+        with tempfile.TemporaryDirectory() as tmp:
+            base = Path(tmp)
+            checkout_script = base / "checkout" / "extract.py"
+            checkout_script.parent.mkdir()
+            checkout_script.write_text("# placeholder\n", encoding="utf-8")
+            self.assertEqual(Path(paths.corpus_root(checkout_script)), checkout_script.parent / "corpus")
+
+            deployed_script = base / "corpus-root" / "build" / "extract.py"
+            deployed_script.parent.mkdir(parents=True)
+            deployed_script.write_text("# placeholder\n", encoding="utf-8")
+            self.assertEqual(Path(paths.corpus_root(deployed_script)), deployed_script.parent.parent)
+
+    def test_check_current_uses_checkout_output_or_deployed_root(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            base = Path(tmp)
+            checkout = base / "checkout"
+            checkout.mkdir()
+            shutil.copy2(REPO / "check_current.py", checkout / "check_current.py")
+            shutil.copy2(REPO / "corpus_paths.py", checkout / "corpus_paths.py")
+            checkout_module = load_module("check_current_checkout", checkout / "check_current.py")
+            self.assertEqual(Path(checkout_module.ROOT), checkout / "corpus")
+
+            deployed = base / "deployed"
+            deployed.mkdir()
+            (deployed / "sources.json").write_text("{}", encoding="utf-8")
+            shutil.copy2(REPO / "check_current.py", deployed / "check_current.py")
+            shutil.copy2(REPO / "corpus_paths.py", deployed / "corpus_paths.py")
+            deployed_module = load_module("check_current_deployed", deployed / "check_current.py")
+            self.assertEqual(Path(deployed_module.ROOT), deployed)
+
+
+class RateParsingTests(unittest.TestCase):
+    def test_sentence_boundaries_and_percentage_pattern_remain_precise(self):
+        rates = load_module("rates_regression", REPO / "rates.py")
+        text = "The first rule applies.  Next sentence carries 10%.\n\nThird sentence is here."
+        self.assertEqual(list(rates.sentences(text)), [
+            "The first rule applies.",
+            "Next sentence carries 10%.",
+            "Third sentence is here.",
+        ])
+        self.assertEqual(rates.PCT.findall("10% and 12.5 %"), ["10%", "12.5 %"])
 
 
 if __name__ == "__main__":

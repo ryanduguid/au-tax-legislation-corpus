@@ -13,7 +13,9 @@ number, so the phone pattern requires the conventional grouping.
 """
 import collections, glob, json, os, re
 
-ROOT = os.environ.get("ATO_KB_ROOT", r"C:\ato-kb")
+from corpus_paths import child, corpus_root, register_id
+
+ROOT = corpus_root(__file__)
 KNOWN = set(json.load(open(os.path.join(os.path.dirname(os.path.abspath(__file__)),
                                         "pii_flagged.json"), encoding="utf-8")
                      ) and [f["register_id"] for f in json.load(
@@ -39,8 +41,10 @@ TFN = re.compile(r"\btax file number\s*:?\s*\d", re.I)
 def main():
     weak, contacts = [], collections.Counter()
     ex = collections.defaultdict(list)
-    for p in sorted(glob.glob(os.path.join(ROOT, "markdown", "*", "sections.jsonl"))):
-        rid = os.path.basename(os.path.dirname(p))
+    markdown_root = child(ROOT, "markdown")
+    for candidate in sorted(glob.glob(os.path.join(markdown_root, "*", "sections.jsonl"))):
+        rid = register_id(os.path.basename(os.path.dirname(candidate)))
+        p = child(markdown_root, rid, "sections.jsonl")
         for l in open(p, encoding="utf-8"):
             if not l.strip():
                 continue

@@ -45,16 +45,22 @@ travel independently of the file they came from.
 
 ## Running it
 
+The builder deliberately does **not** read `ATO_KB_ROOT` or `ATO_DIST`.
+Environment-selected output roots made it possible for a poisoned process
+environment to redirect downloads, deletes, or distribution output. In a source
+checkout, generated corpus files live in the deterministic `./corpus/`
+directory. To build at another location, place the scripts in that location's
+`build/` directory; they then use the parent directory as the corpus root.
+
 ```bash
-export ATO_KB_ROOT=/path/to/corpus     # defaults to C:\ato-kb
 python discover.py      # -> titles_all.json, titles_principal.json
 python versions.py      # -> acts_resolved.json
-python download.py      # -> $ATO_KB_ROOT/epub/*.epub, manifest_raw.json
+python download.py      # -> ./corpus/epub/*.epub, manifest_raw.json
 python probe13.py       # only if download reports no_epub
 python retry13.py       # -> retry13_patch.json, then patch manifest_raw.json
-python extract.py       # -> $ATO_KB_ROOT/markdown/**, manifest_md.json
-python finalize.py      # -> sources.json, INDEX.md, README.md, LICENCE-NOTICE.md
-python rates.py         # -> rates/rates.jsonl, rates/RATES.md
+python extract.py       # -> ./corpus/markdown/**, manifest_md.json
+python finalize.py      # -> ./corpus/sources.json, INDEX.md, README.md, LICENCE-NOTICE.md
+python rates.py         # -> ./corpus/rates/rates.jsonl, RATES.md
 python check_current.py # read-only staleness check against the Register
 ```
 
@@ -63,7 +69,7 @@ To produce a corpus you can pass on to someone else:
 ```bash
 python pii_scan.py      # -> pii_flagged.json, the titles that name people
 python pii_scan2.py     # second pass at a lower threshold, plus contact details
-python dist.py          # -> $ATO_KB_ROOT/dist/, the redistributable subset
+python dist.py          # -> ./corpus/dist/, the redistributable subset
 python dist_verify.py   # 12 checks against the built subset, exits non-zero on any failure
 ```
 
