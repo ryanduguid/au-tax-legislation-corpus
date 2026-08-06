@@ -1,6 +1,7 @@
 # This workflow is ready for the repository to move from CodeQL default setup
 # to advanced setup. Default setup blocks result uploads from repository-owned
-# workflows, so make that switch only after this change has been merged.
+# workflows. Before merging this workflow under a clean-check policy, switch
+# to advanced setup and revalidate this exact pull-request head.
 name: CodeQL
 
 on:
