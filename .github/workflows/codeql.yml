@@ -39,10 +39,24 @@ jobs:
           persist-credentials: false
 
       - name: Initialize CodeQL
+        if: matrix.language != 'python'
         uses: github/codeql-action/init@9e3211c9a3b9311dfe05da2ed48eea3386f042dd # v4.37.6
         with:
           build-mode: none
           languages: ${{ matrix.language }}
+
+      # This non-mergeable probe keeps the default queries and adds GitHub's
+      # security-extended suite only for Python. That suite contains default
+      # queries plus additional lower-precision coverage.
+      - name: Initialize CodeQL with extended Python queries
+        if: matrix.language == 'python'
+        uses: github/codeql-action/init@9e3211c9a3b9311dfe05da2ed48eea3386f042dd # v4.37.6
+        with:
+          build-mode: none
+          languages: ${{ matrix.language }}
+          config: |
+            queries:
+              - uses: security-extended
 
       - name: Perform CodeQL analysis
         uses: github/codeql-action/analyze@9e3211c9a3b9311dfe05da2ed48eea3386f042dd # v4.37.6
