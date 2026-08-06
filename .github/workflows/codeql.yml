@@ -39,10 +39,23 @@ jobs:
           persist-credentials: false
 
       - name: Initialize CodeQL
+        if: matrix.language != 'python'
         uses: github/codeql-action/init@9e3211c9a3b9311dfe05da2ed48eea3386f042dd # v4.37.6
         with:
           build-mode: none
           languages: ${{ matrix.language }}
+
+      # The advanced setup default threat model uses remote sources. Keep the
+      # Actions analysis unchanged and test documented local-source modelling
+      # for Python, which matches the historical default-setup finding class.
+      - name: Initialize CodeQL with local Python sources
+        if: matrix.language == 'python'
+        uses: github/codeql-action/init@9e3211c9a3b9311dfe05da2ed48eea3386f042dd # v4.37.6
+        with:
+          build-mode: none
+          languages: ${{ matrix.language }}
+          config: |
+            threat-models: local
 
       - name: Perform CodeQL analysis
         uses: github/codeql-action/analyze@9e3211c9a3b9311dfe05da2ed48eea3386f042dd # v4.37.6
