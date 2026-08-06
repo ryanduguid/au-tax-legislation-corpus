@@ -45,10 +45,15 @@ def page_titles(keyword, collection="Act"):
         url = "%s/titles?$top=100&$skip=%d&$orderby=id&$filter=%s&$select=%s" % (
             API, skip, urllib.parse.quote(f), sel)
         d = curl_json(url)
-        if not d:
-            print("  FAILED page skip=%d for %r" % (skip, keyword))
-            break
-        v = d.get("value", [])
+        # A partial title list is worse than no title list: downstream stages
+        # treat titles_all.json as authoritative and would build a plausible,
+        # silently incomplete corpus.  Do not turn a failed page into a clean
+        # end-of-results signal.
+        if not isinstance(d, dict) or not isinstance(d.get("value"), list):
+            raise RuntimeError("title discovery failed at skip=%d for %r; "
+                               "refusing to write an incomplete title list"
+                               % (skip, keyword))
+        v = d["value"]
         rows += v
         if len({r["id"] for r in rows}) != len(rows):
             raise SystemExit("duplicate ids while paging %r: unordered paging" % keyword)

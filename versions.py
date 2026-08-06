@@ -74,6 +74,14 @@ def main():
     for t in failed[:10]:
         print("   FAILED %s %s" % (t["id"], t["name"][:70]))
 
+    # The next stage treats acts_resolved.json as a complete work list.  A
+    # network/API miss must therefore fail the stage instead of publishing a
+    # valid-looking partial manifest and letting the corpus quietly shrink.
+    if failed:
+        raise RuntimeError("version resolution incomplete for %d title(s); "
+                           "refusing to write acts_resolved.json"
+                           % len(failed))
+
     with open(os.path.join(SCRATCH, "acts_resolved.json"), "w", encoding="utf-8") as f:
         json.dump(resolved, f, indent=1)
 
