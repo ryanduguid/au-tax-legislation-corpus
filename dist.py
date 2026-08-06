@@ -19,79 +19,211 @@ would preserve nothing and risk missing a name.
 Everything dropped is listed in REMOVED.md with its Register link, so the
 omission is visible and reversible from the primary source.
 """
-import collections, glob, json, os, re, shutil
+import collections, json, os, re, shutil
 
 ROOT = os.environ.get("ATO_KB_ROOT", r"C:\ato-kb")
 DIST = os.path.join(ROOT, "dist")
 HERE = os.path.dirname(os.path.abspath(__file__))
 
 
+def render_rates_markdown(records):
+    """Render the readable rate index from the records being distributed.
+
+    `rates.jsonl` is deliberately filtered below.  Its human-readable companion
+    must be derived from exactly the same records; copying the full-corpus
+    RATES.md would retain stale totals and could retain content from a title
+    removed for privacy.
+    """
+    by_topic = collections.Counter(r.get("topic") or "other" for r in records)
+    by_kind = collections.Counter(r.get("kind") or "unknown" for r in records)
+    by_coll = collections.Counter(r.get("collection") or "unknown" for r in records)
+
+    md = ["# Rates, thresholds and indexation", "",
+          "> **Redistributable subset.** Entries for titles excluded from this "
+          "distribution are not included.", "",
+          "Derived from the Acts and instruments in this distribution. Every entry "
+          "cites its title, compilation and section. Check the provision before "
+          "relying on a number: this is a finding aid, not advice, and not the "
+          "authorised text.", "",
+          "%s entries across %s titles." % (
+              f"{len(records):,}",
+              f"{len({r.get('register_id') for r in records if r.get('register_id')}):,}"),
+          "",
+          "| Kind | Count |", "|---|---|"]
+    for kind, n in by_kind.most_common():
+        md.append("| %s | %s |" % (kind, f"{n:,}"))
+    md += ["", "| Collection | Count |", "|---|---|"]
+    for coll, n in by_coll.most_common():
+        md.append("| %s | %s |" % (coll, f"{n:,}"))
+    md += ["", "| Topic | Count |", "|---|---|"]
+    for topic, n in by_topic.most_common():
+        md.append("| %s | %s |" % (topic, f"{n:,}"))
+
+    for topic, _ in by_topic.most_common():
+        md += ["", "## " + topic, ""]
+        topic_records = [r for r in records if (r.get("topic") or "other") == topic]
+        tables = [r for r in topic_records if r.get("kind") == "table"]
+        if tables:
+            md += ["### Rate tables", ""]
+            for r in tables[:40]:
+                md.append("**%s**%s %s — %s" % (
+                    r.get("act", ""),
+                    " _(instrument)_" if (r.get("collection") or "Act") != "Act" else "",
+                    ("s " + str(r["section"])) if r.get("section") else "",
+                    r.get("heading") or ""))
+                md += ["", r.get("content") or "", ""]
+            if len(tables) > 40:
+                md += ["_%d further tables in rates.jsonl._" % (len(tables) - 40), ""]
+
+        others = [r for r in topic_records if r.get("kind") != "table"]
+        if others:
+            md += ["### Provisions carrying a number", "",
+                   "| Title | Made by | Section | Kind | Amounts | Provision |",
+                   "|---|---|---|---|---|---|"]
+            for r in others[:120]:
+                amounts = ", ".join(r.get("amounts", []))[:40]
+                md.append("| %s | %s | %s | %s | %s | %s |" % (
+                    (r.get("act") or "").replace("|", "\\|")[:48],
+                    "Act" if (r.get("collection") or "Act") == "Act" else "instrument",
+                    r.get("section") or "-", r.get("kind") or "unknown", amounts,
+                    (r.get("content") or "").replace("|", "\\|").replace("\n", " ")[:150]))
+            if len(others) > 120:
+                md += ["", "_%d further provisions in rates.jsonl._" % (len(others) - 120)]
+
+    return "\n".join(md) + "\n"
+
+
 def main():
-    flagged = json.load(open(os.path.join(HERE, "pii_flagged.json"), encoding="utf-8"))
+    with open(os.path.join(HERE, "pii_flagged.json"), encoding="utf-8") as f:
+        flagged = json.load(f)
     drop = {f["register_id"]: f for f in flagged}
-    src = json.load(open(os.path.join(ROOT, "sources.json"), encoding="utf-8"))
+    with open(os.path.join(ROOT, "sources.json"), encoding="utf-8") as f:
+        src = json.load(f)
+
+    # Build only the titles declared by sources.json.  The prior glob copied any
+    # stray directory under markdown/, then relied on verification to notice it.
+    # It also preserved EPUB paths that do not exist in the redistributable tree.
+    titles = []
+    for title in src["titles"]:
+        if title["register_id"] in drop:
+            continue
+        title = dict(title)
+        title["epub"] = None
+        title["epub_included"] = False
+        titles.append(title)
 
     if os.path.exists(DIST):
         shutil.rmtree(DIST)
     os.makedirs(os.path.join(DIST, "markdown"))
     os.makedirs(os.path.join(DIST, "rates"))
 
-    kept_rows = kept_titles = kept_words = 0
-    for d in sorted(glob.glob(os.path.join(ROOT, "markdown", "*"))):
-        rid = os.path.basename(d)
-        if rid in drop:
-            continue
+    kept_rows = kept_words = section_rows = 0
+    kind_counts = collections.Counter()
+    stats = collections.Counter((t.get("collection") or "unknown") for t in titles)
+    rows_by_coll, words_by_coll = collections.Counter(), collections.Counter()
+    for title in titles:
+        rid = title["register_id"]
+        d = os.path.join(ROOT, "markdown", rid)
+        if not os.path.isdir(d):
+            raise RuntimeError("listed title %s has no markdown directory" % rid)
+        sections = os.path.join(d, "sections.jsonl")
+        if not os.path.isfile(sections):
+            raise RuntimeError("listed title %s has no sections.jsonl" % rid)
         shutil.copytree(d, os.path.join(DIST, "markdown", rid))
-        kept_titles += 1
-        for l in open(os.path.join(d, "sections.jsonl"), encoding="utf-8"):
-            if l.strip():
+        with open(sections, encoding="utf-8") as f:
+            for l in f:
+                if not l.strip():
+                    continue
+                row = json.loads(l)
+                text = row.get("text") or ""
+                coll = row.get("collection") or title.get("collection") or "unknown"
                 kept_rows += 1
-                kept_words += len((json.loads(l).get("text") or "").split())
+                kept_words += len(text.split())
+                rows_by_coll[coll] += 1
+                words_by_coll[coll] += len(text.split())
+                kind = row.get("kind") or ("section" if row.get("section") else "unnumbered")
+                kind_counts[kind] += 1
+                if row.get("section"):
+                    section_rows += 1
 
-    # rates.jsonl derives from the same rows, so it inherits the exclusion.
+    # The JSONL and its human-readable companion are both generated from this
+    # filtered record set.  Copying the source RATES.md would republish full
+    # corpus counts and, if a removed title carried an entry, its content.
     rin = os.path.join(ROOT, "rates", "rates.jsonl")
-    rkept = rdropped = 0
-    with open(os.path.join(DIST, "rates", "rates.jsonl"), "w", encoding="utf-8") as f:
-        for l in open(rin, encoding="utf-8"):
+    rate_records, rdropped = [], 0
+    with open(rin, encoding="utf-8") as f:
+        for l in f:
             if not l.strip():
                 continue
-            if json.loads(l)["register_id"] in drop:
+            record = json.loads(l)
+            if record["register_id"] in drop:
                 rdropped += 1
                 continue
-            f.write(l)
-            rkept += 1
-    shutil.copy(os.path.join(ROOT, "rates", "RATES.md"),
-                os.path.join(DIST, "rates", "RATES.md"))
+            rate_records.append(record)
+    with open(os.path.join(DIST, "rates", "rates.jsonl"), "w", encoding="utf-8") as f:
+        for record in rate_records:
+            f.write(json.dumps(record, ensure_ascii=False) + "\n")
+    with open(os.path.join(DIST, "rates", "RATES.md"), "w", encoding="utf-8") as f:
+        f.write(render_rates_markdown(rate_records))
 
-    # sources.json, minus the dropped titles, with the count corrected.
-    titles = [t for t in src["titles"] if t["register_id"] not in drop]
-    out = dict(src, titles=titles)
-    for k in ("titles_total", "acts", "instruments"):
-        out.pop(k, None)
+    # sources.json, minus the dropped titles, with every nested count rebuilt
+    # from the files actually shipped.  The old code popped nonexistent
+    # top-level keys and left sources["counts"] describing the full corpus.
+    unavailable = [a for a in src.get("titles_without_epub", [])
+                   if a.get("register_id") not in drop]
+    counts = {
+        "titles": len(titles),
+        "acts": stats["Act"],
+        "instruments": len(titles) - stats["Act"],
+        "by_collection": {
+            coll: {"titles": stats[coll], "rows": rows_by_coll[coll],
+                   "words": words_by_coll[coll]}
+            for coll in sorted(stats)
+        },
+        "titles_without_epub": len(unavailable),
+        "jsonl_rows": kept_rows,
+        "words_body_only": kept_words,
+        "epub_bytes": 0,
+        "rows_with_section_id": section_rows,
+        "rows_container": kind_counts["container"],
+        "rows_unnumbered": kind_counts["unnumbered"],
+        "rows_introductory": kind_counts["introductory"],
+        "titles_no_keyword_in_current_name": len(
+            [t for t in titles if not t.get("keywords_in_name")]),
+        "titles_whole_act_chunk": len(
+            [t for t in titles if t.get("granularity") == "whole_act"]),
+        "titles_table_block_chunk": len(
+            [t for t in titles if t.get("granularity") == "table_block"]),
+        "titles_with_endnotes": len([t for t in titles if t.get("endnotes")]),
+        "titles_not_current_version": len(
+            [t for t in titles if t.get("version_is_current") is False]),
+    }
+    out = dict(src)
+    out["titles"] = titles
+    out["counts"] = counts
     out["titles_count"] = len(titles)
+    out["titles_without_epub"] = unavailable
+    out["titles_not_current_version"] = [
+        t for t in src.get("titles_not_current_version", [])
+        if t.get("register_id") not in drop
+    ]
     out["excluded_titles"] = [
         {"register_id": r, "name": drop[r]["name"],
          "reason": "names private individuals; see REMOVED.md"} for r in sorted(drop)]
-    json.dump(out, open(os.path.join(DIST, "sources.json"), "w", encoding="utf-8"),
-              indent=1, ensure_ascii=False)
+    with open(os.path.join(DIST, "sources.json"), "w", encoding="utf-8") as f:
+        json.dump(out, f, indent=1, ensure_ascii=False)
 
     shutil.copy(os.path.join(ROOT, "LICENCE-NOTICE.md"),
                 os.path.join(DIST, "LICENCE-NOTICE.md"))
 
     # INDEX.md and README.md are generated against the full corpus, so copying
-    # them ships a contents page linking to 12 titles that are not here and a
-    # headline count that overstates what you have. Rewrite both against dist.
-    stats = collections.Counter()
-    rows_by_coll, words_by_coll = collections.Counter(), collections.Counter()
-    for t in titles:
-        c = t.get("collection") or "unknown"
-        stats[c] += 1
-        rows_by_coll[c] += t.get("jsonl_rows", 0)
-        words_by_coll[c] += t.get("words", 0)
+    # them ships a contents page linking to removed titles and a headline count
+    # that overstates what you have. Rewrite both against dist.
     label = [("Act", "Acts"), ("LegislativeInstrument", "Legislative instruments"),
              ("NotifiableInstrument", "Notifiable instruments")]
 
-    idx = open(os.path.join(ROOT, "INDEX.md"), encoding="utf-8").read().split("\n")
+    with open(os.path.join(ROOT, "INDEX.md"), encoding="utf-8") as f:
+        idx = f.read().split("\n")
     keep_lines, dropped_lines = [], 0
     for ln in idx:
         if any(r in ln for r in drop):
@@ -120,25 +252,28 @@ def main():
                      txt, count=1, flags=re.M)
         txt = re.sub(r"^## %s \(\d+\)$" % re.escape(lab),
                      "## %s (%d)" % (lab, stats[key]), txt, count=1, flags=re.M)
-    open(os.path.join(DIST, "INDEX.md"), "w", encoding="utf-8").write(txt)
+    with open(os.path.join(DIST, "INDEX.md"), "w", encoding="utf-8") as f:
+        f.write(txt)
 
-    rd = open(os.path.join(ROOT, "README.md"), encoding="utf-8").read()
+    with open(os.path.join(ROOT, "README.md"), encoding="utf-8") as f:
+        rd = f.read()
     # The README's headline wraps across three lines, so a single-line replace
     # misses it and leaves the file claiming 946 titles. Match the numbers
     # themselves, whitespace-tolerant.
     rd = re.sub(r"%s in-force principal titles" % len(src["titles"]),
                 "%d in-force principal titles" % len(titles), rd)
-    rd = re.sub(r"175 Acts and \d+ legislative and notifiable",
-                "%d Acts and %d legislative and notifiable"
-                % (stats["Act"], len(titles) - stats["Act"]), rd)
+    rd = re.sub(r"\d+ Acts and \d+ legislative and notifiable",
+                 "%d Acts and %d legislative and notifiable"
+                 % (stats["Act"], len(titles) - stats["Act"]), rd)
     rd = re.sub(r"instruments\.\s+[\d,]+ retrieval rows, [\d,]+ words\.",
                 "instruments. %s retrieval rows, %s words."
                 % (f"{kept_rows:,}", f"{kept_words:,}"), rd)
-    rd = ("> **This is the redistributable subset.** The EPUBs and 12 titles that "
+    rd = ("> **This is the redistributable subset.** The EPUBs and %d titles that "
           "name private individuals are not included. See REMOVED.md for what was "
           "dropped and why, and run the pipeline yourself for the full corpus.\n\n"
-          + rd)
-    open(os.path.join(DIST, "README.md"), "w", encoding="utf-8").write(rd)
+          % len(drop) + rd)
+    with open(os.path.join(DIST, "README.md"), "w", encoding="utf-8") as f:
+        f.write(rd)
     print("INDEX.md: dropped %d lines referencing removed titles" % dropped_lines)
 
     lines = [
@@ -160,7 +295,7 @@ def main():
         "`[Commonwealth Coat of Arms omitted, not licensed under CC BY]` for the "
         "Coat of Arms, `[image not described in source: ...]` for everything else.",
         "",
-        "## 12 titles naming private individuals",
+        "## %d titles naming private individuals" % len(drop),
         "",
         "The Tax Practitioners Board registers terminations and suspensions of tax "
         "and BAS agents as notifiable instruments. Each is a table of named people "
@@ -183,21 +318,21 @@ def main():
         "",
         "Detection did not rely on the titles being recognisable. Every row in all "
         "%s titles was tested for personal names appearing alongside agent "
-        "registration numbers; these 12 were what came back, and a second pass at a "
+        "registration numbers; these %d were what came back, and a second pass at a "
         "lower threshold found nothing outside them. The only contact details "
         "anywhere in the corpus are five organisational addresses "
         "(two agency inboxes and three switchboard numbers, all published on "
         "the agencies' own sites), "
-        "which are left in place." % f"{len(src['titles']):,}",
+        "which are left in place." % (f"{len(src['titles']):,}", len(drop)),
     ]
-    open(os.path.join(DIST, "REMOVED.md"), "w", encoding="utf-8").write(
-        "\n".join(lines) + "\n")
+    with open(os.path.join(DIST, "REMOVED.md"), "w", encoding="utf-8") as f:
+        f.write("\n".join(lines) + "\n")
 
     size = sum(os.path.getsize(os.path.join(r, f))
                for r, _, fs in os.walk(DIST) for f in fs)
     print("titles %d (dropped %d) | rows %s | words %s | rates %d (dropped %d) | %.1f MB"
-          % (kept_titles, len(drop), f"{kept_rows:,}", f"{kept_words:,}",
-             rkept, rdropped, size / 1e6))
+          % (len(titles), len(drop), f"{kept_rows:,}", f"{kept_words:,}",
+             len(rate_records), rdropped, size / 1e6))
 
 
 if __name__ == "__main__":
