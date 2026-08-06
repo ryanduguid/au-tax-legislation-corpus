@@ -604,6 +604,7 @@ def main(retrieved):
     md_root = os.path.join(root, "markdown")
     os.makedirs(md_root, exist_ok=True)
     out_manifest = []
+    failures = []
 
     for i, a in enumerate([m for m in manifest if m.get("epub")], 1):
         src = os.path.join(root, "epub", a["epub"])
@@ -631,6 +632,7 @@ def main(retrieved):
         except Exception as e:
             print("  FAIL %s %s" % (a["id"], e), flush=True)
             out_manifest.append(dict(a, markdown=None, sections=0, error=str(e)))
+            failures.append((a["id"], str(e)))
             continue
 
         d = os.path.join(md_root, a["id"])
@@ -702,6 +704,18 @@ def main(retrieved):
                                  endnotes=bool(endnotes)))
         print("%3d %-12s sections=%-5d words=%-9d %s" % (
             i, a["id"], len(emitted), words, a["name"][:52]), flush=True)
+
+    # Consumers use manifest_md.json as the signal that the markdown tree is
+    # complete.  Never publish a manifest that makes a partial parse look like
+    # a successful corpus build.  Earlier title directories may remain for
+    # inspection, but the stage exits non-zero and leaves the prior manifest
+    # untouched.
+    if failures:
+        ids = ", ".join(aid for aid, _ in failures[:10])
+        more = "" if len(failures) <= 10 else " (and %d more)" % (len(failures) - 10)
+        raise RuntimeError("extraction incomplete for %d title(s): %s%s; "
+                           "refusing to write manifest_md.json"
+                           % (len(failures), ids, more))
 
     with open(os.path.join(scratch, "manifest_md.json"), "w", encoding="utf-8") as f:
         json.dump(out_manifest, f, indent=1)

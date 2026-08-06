@@ -28,8 +28,14 @@ def check(label, ok, detail=""):
 
 
 def main():
-    src = json.load(open(os.path.join(DIST, "sources.json"), encoding="utf-8"))
+    # Keep this verifier reusable from a regression test process as well as the
+    # command line; a previous failing call must not poison a later call.
+    fails.clear()
+
+    with open(os.path.join(DIST, "sources.json"), encoding="utf-8") as f:
+        src = json.load(f)
     titles = src["titles"]
+    by_id = {t["register_id"]: t for t in titles}
     listed = {t["register_id"] for t in titles}
     present = {os.path.basename(d) for d in glob.glob(os.path.join(DIST, "markdown", "*"))}
     removed = {e["register_id"] for e in src.get("excluded_titles", [])}
@@ -40,25 +46,65 @@ def main():
           "extra %d" % len(present - listed))
     check("no removed title present", not (removed & present))
 
-    rows = bad = 0
+    rows = bad = section_rows = rid_mismatch = 0
     hot = collections.Counter()
+    kind_counts = collections.Counter()
+    rows_by_coll, words_by_coll = collections.Counter(), collections.Counter()
     for p in glob.glob(os.path.join(DIST, "markdown", "*", "sections.jsonl")):
         rid = os.path.basename(os.path.dirname(p))
-        for l in open(p, encoding="utf-8"):
-            if not l.strip():
-                continue
-            rows += 1
-            try:
-                r = json.loads(l)
-            except Exception:
-                bad += 1
-                continue
-            t = r.get("text") or ""
-            names = {m.group(0) for m in NAME.finditer(t) if not STATUTORY.search(m.group(0))}
-            if len(names) >= 3 and len(set(REGNO.findall(t))) >= 3:
-                hot[rid] += 1
+        with open(p, encoding="utf-8") as f:
+            for l in f:
+                if not l.strip():
+                    continue
+                rows += 1
+                try:
+                    r = json.loads(l)
+                except Exception:
+                    bad += 1
+                    continue
+                if r.get("register_id") != rid:
+                    rid_mismatch += 1
+                t = r.get("text") or ""
+                coll = r.get("collection") or by_id.get(rid, {}).get("collection") or "unknown"
+                rows_by_coll[coll] += 1
+                words_by_coll[coll] += len(t.split())
+                kind = r.get("kind") or ("section" if r.get("section") else "unnumbered")
+                kind_counts[kind] += 1
+                if r.get("section"):
+                    section_rows += 1
+                names = {m.group(0) for m in NAME.finditer(t) if not STATUTORY.search(m.group(0))}
+                if len(names) >= 3 and len(set(REGNO.findall(t))) >= 3:
+                    hot[rid] += 1
     check("every JSONL row parses", bad == 0, "%s rows, %d malformed" % (f"{rows:,}", bad))
+    check("each JSONL row matches its title directory", rid_mismatch == 0,
+          "%d mismatched register ids" % rid_mismatch)
     check("no row names private individuals", not hot, str(dict(hot))[:60])
+
+    counts = src.get("counts") or {}
+    expected_by_coll = {
+        coll: {"titles": sum(1 for t in titles if (t.get("collection") or "unknown") == coll),
+               "rows": rows_by_coll[coll], "words": words_by_coll[coll]}
+        for coll in sorted({t.get("collection") or "unknown" for t in titles})
+    }
+    check("sources count: titles", counts.get("titles") == len(titles),
+          "%r vs %d" % (counts.get("titles"), len(titles)))
+    check("sources count: rows", counts.get("jsonl_rows") == rows,
+          "%r vs %d" % (counts.get("jsonl_rows"), rows))
+    check("sources count: words", counts.get("words_body_only") == sum(words_by_coll.values()),
+          "%r vs %d" % (counts.get("words_body_only"), sum(words_by_coll.values())))
+    check("sources count: section rows", counts.get("rows_with_section_id") == section_rows,
+          "%r vs %d" % (counts.get("rows_with_section_id"), section_rows))
+    check("sources count: tracked row kinds",
+          counts.get("rows_container") == kind_counts["container"]
+          and counts.get("rows_unnumbered") == kind_counts["unnumbered"]
+          and counts.get("rows_introductory") == kind_counts["introductory"],
+          str(dict(kind_counts)))
+    check("sources collection counts", counts.get("by_collection") == expected_by_coll,
+          str(counts.get("by_collection"))[:80])
+    check("sources declares no distributed EPUB bytes", counts.get("epub_bytes") == 0,
+          str(counts.get("epub_bytes")))
+    check("title metadata does not point to excluded EPUBs",
+          all(t.get("epub") is None and t.get("epub_included") is False for t in titles))
 
     exts = collections.Counter(os.path.splitext(f)[1].lower()
                                for r, _, fs in os.walk(DIST) for f in fs)
@@ -66,21 +112,39 @@ def main():
                                     (".png", ".jpg", ".jpeg", ".gif", ".svg", ".epub")),
           str(dict(exts)))
 
-    idx = open(os.path.join(DIST, "INDEX.md"), encoding="utf-8").read()
+    with open(os.path.join(DIST, "INDEX.md"), encoding="utf-8") as f:
+        idx = f.read()
     check("INDEX links no removed title", not any(r in idx for r in removed))
     check("INDEX headline matches actual rows", f"{rows:,}" in idx)
-    rd = open(os.path.join(DIST, "README.md"), encoding="utf-8").read()
+    with open(os.path.join(DIST, "README.md"), encoding="utf-8") as f:
+        rd = f.read()
     check("README states the real title count", "%d in-force principal" % len(titles) in rd)
-    check("REMOVED.md lists every exclusion",
-          all(r in open(os.path.join(DIST, "REMOVED.md"), encoding="utf-8").read()
-              for r in removed))
+    with open(os.path.join(DIST, "REMOVED.md"), encoding="utf-8") as f:
+        removed_md = f.read()
+    check("REMOVED.md lists every exclusion", all(r in removed_md for r in removed))
 
-    rt = [json.loads(l) for l in open(os.path.join(DIST, "rates", "rates.jsonl"),
-                                      encoding="utf-8") if l.strip()]
+    rt, rates_bad = [], 0
+    with open(os.path.join(DIST, "rates", "rates.jsonl"), encoding="utf-8") as f:
+        for l in f:
+            if not l.strip():
+                continue
+            try:
+                rt.append(json.loads(l))
+            except Exception:
+                rates_bad += 1
+    check("every rates JSONL row parses", rates_bad == 0, "%d malformed" % rates_bad)
     check("no rates entry cites a removed title",
-          not [r for r in rt if r["register_id"] in removed])
+           not [r for r in rt if r["register_id"] in removed])
     check("every rates entry cites a present title",
-          not [r for r in rt if r["register_id"] not in present])
+           not [r for r in rt if r["register_id"] not in present])
+    with open(os.path.join(DIST, "rates", "RATES.md"), encoding="utf-8") as f:
+        rates_md = f.read()
+    rate_headline = "%s entries across %s titles." % (
+        f"{len(rt):,}", f"{len({r.get('register_id') for r in rt if r.get('register_id')}):,}")
+    check("RATES headline matches filtered JSONL", rate_headline in rates_md)
+    check("RATES contains no removed-title name",
+          not any(e.get("name") and e["name"] in rates_md
+                  for e in src.get("excluded_titles", [])))
 
     size = sum(os.path.getsize(os.path.join(r, f))
                for r, _, fs in os.walk(DIST) for f in fs)
