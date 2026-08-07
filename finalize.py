@@ -2,10 +2,10 @@
 staleness checker."""
 import json, os, re, shutil, datetime
 
+from corpus_paths import child, corpus_root, register_id
+
 SCRATCH = os.path.dirname(os.path.abspath(__file__))
-# Corpus root. Override with ATO_KB_ROOT to run this somewhere other than the
-# machine it was written on.
-ROOT = os.environ.get("ATO_KB_ROOT", r"C:\ato-kb")
+ROOT = corpus_root(__file__)
 
 KEYWORDS = ["Tax", "Excise", "Superannuation", "Customs Tariff", "Medicare Levy"]
 # The Register's contains(name,...) matches more than the current display name:
@@ -51,7 +51,7 @@ def main(retrieved):
     # overstated the structural ones.
     tot_kind = {}
     for a in ok:
-        p = os.path.join(ROOT, "markdown", a["id"], "sections.jsonl")
+        p = child(ROOT, "markdown", register_id(a["id"]), "sections.jsonl")
         n = sec = 0
         for ln in open(p, encoding="utf-8"):
             if not ln.strip():
@@ -173,7 +173,7 @@ def main(retrieved):
             for a in missing
         ],
     }
-    with open(os.path.join(ROOT, "sources.json"), "w", encoding="utf-8") as f:
+    with open(child(ROOT, "sources.json"), "w", encoding="utf-8") as f:
         json.dump(sources, f, indent=1, ensure_ascii=False)
 
     COLL_LABEL = [("Act", "Acts"),
@@ -222,10 +222,10 @@ def main(retrieved):
             idx.append("| %s | %s | %s | %s | %s |" % (
                 a["name"], a.get("collection") or "-", a["id"],
                 a.get("httpCode"), a.get("contentType")))
-    with open(os.path.join(ROOT, "INDEX.md"), "w", encoding="utf-8") as f:
+    with open(child(ROOT, "INDEX.md"), "w", encoding="utf-8") as f:
         f.write("\n".join(idx) + "\n")
 
-    with open(os.path.join(ROOT, "LICENCE-NOTICE.md"), "w", encoding="utf-8") as f:
+    with open(child(ROOT, "LICENCE-NOTICE.md"), "w", encoding="utf-8") as f:
         f.write("""# Licence notice
 
 Commonwealth legislation from the Federal Register of Legislation, licensed
@@ -393,7 +393,7 @@ matches nothing.
 Table cells wrap content in `<p>`, so cell text must accumulate in a buffer that
 survives a nested paragraph.
 """
-    with open(os.path.join(ROOT, "README.md"), "w", encoding="utf-8") as f:
+    with open(child(ROOT, "README.md"), "w", encoding="utf-8") as f:
         f.write(readme.format(
             retrieved=retrieved, n=len(ok), n_act=n_act, n_inst=n_inst,
             rows=f"{tot_rows:,}",
@@ -410,13 +410,14 @@ survives a nested paragraph.
         if os.path.abspath(src_p) != os.path.abspath(dst_p):
             shutil.copy(src_p, dst_p)
 
-    os.makedirs(os.path.join(ROOT, "build"), exist_ok=True)
-    copy_if_different(os.path.join(SCRATCH, "check_current.py"),
-                      os.path.join(ROOT, "check_current.py"))
+    build_dir = child(ROOT, "build")
+    os.makedirs(build_dir, exist_ok=True)
+    for name in ("check_current.py", "corpus_paths.py"):
+        copy_if_different(os.path.join(SCRATCH, name), child(ROOT, name))
     for name in ("discover.py", "versions.py", "download.py", "extract.py",
-                 "finalize.py", "check_current.py"):
+                 "finalize.py", "check_current.py", "corpus_paths.py"):
         copy_if_different(os.path.join(SCRATCH, name),
-                          os.path.join(ROOT, "build", name))
+                          child(build_dir, name))
 
     print("titles=%d (acts=%d instruments=%d) rows=%d words=%d epub=%.1f MB "
           "missing=%d whole_act=%d"
