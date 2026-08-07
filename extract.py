@@ -21,6 +21,8 @@ buffer that survives a nested paragraph.
 import datetime, html, json, os, re, sys, zipfile
 from html.parser import HTMLParser
 
+from corpus_paths import child, corpus_root, register_id
+
 SKIP_CLASS = re.compile(r'^(TOC\d|TofSects|Contents|Header|Footer)', re.I)
 # Endnotes apparatus. The trigger must be narrow: CompiledActNo and UpdateDate
 # also appear in the FRONT matter, so keying on them flips the whole Act into
@@ -600,14 +602,23 @@ def main(retrieved):
     with open(os.path.join(scratch, "manifest_raw.json"), encoding="utf-8") as f:
         manifest = json.load(f)
 
-    root = os.environ.get("ATO_KB_ROOT", r"C:\ato-kb")
-    md_root = os.path.join(root, "markdown")
+    root = corpus_root(__file__)
+    md_root = child(root, "markdown")
     os.makedirs(md_root, exist_ok=True)
     out_manifest = []
     failures = []
 
     for i, a in enumerate([m for m in manifest if m.get("epub")], 1):
-        src = os.path.join(root, "epub", a["epub"])
+        try:
+            rid = register_id(a["id"])
+            expected_epub = "%s.epub" % rid
+            if a.get("epub") != expected_epub:
+                raise ValueError("unexpected EPUB filename")
+            src = child(root, "epub", expected_epub)
+        except (KeyError, ValueError) as e:
+            failures.append((str(a.get("id", "?")), str(e)))
+            continue
+        a = dict(a, id=rid)
         # Most EPUBs were fetched on an earlier day and served from cache, so
         # the build date would misstate when this Act was actually obtained.
         fetched = datetime.date.fromtimestamp(os.path.getmtime(src)).isoformat()
@@ -635,9 +646,9 @@ def main(retrieved):
             failures.append((a["id"], str(e)))
             continue
 
-        d = os.path.join(md_root, a["id"])
+        d = child(md_root, a["id"])
         os.makedirs(d, exist_ok=True)
-        with open(os.path.join(d, a["id"] + ".md"), "w", encoding="utf-8") as f:
+        with open(child(d, a["id"] + ".md"), "w", encoding="utf-8") as f:
             f.write(md)
         if endnotes:
             # endnotes.md travels independently of the Act file, so it needs
@@ -657,7 +668,7 @@ def main(retrieved):
                 "authorised: false",
                 "attribution: %s" % json.dumps(attr),
                 "---", ""])
-            with open(os.path.join(d, "endnotes.md"), "w", encoding="utf-8") as f:
+            with open(child(d, "endnotes.md"), "w", encoding="utf-8") as f:
                 f.write(en_fm + "# Endnotes: %s\n\n%s\n" % (a["name"], endnotes))
 
         body = md.split("\n---\n", 1)[-1] if md.startswith("---") else md
@@ -674,7 +685,7 @@ def main(retrieved):
 
         # Schedules restart numbering at 1, so a bare section id is not unique
         # within an Act. row_id is; `section` stays the human-facing label.
-        with open(os.path.join(d, "sections.jsonl"), "w", encoding="utf-8") as f:
+        with open(child(d, "sections.jsonl"), "w", encoding="utf-8") as f:
             for ordinal, s in enumerate(emitted, 1):
                 f.write(json.dumps({
                     "register_id": a["id"], "act": a["name"],

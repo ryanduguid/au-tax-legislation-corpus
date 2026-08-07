@@ -13,7 +13,9 @@ a statute.
 """
 import collections, glob, json, os, re
 
-ROOT = os.environ.get("ATO_KB_ROOT", r"C:\ato-kb")
+from corpus_paths import child, corpus_root, register_id
+
+ROOT = corpus_root(__file__)
 
 # "Smith, John" or "John Smith" — two or three capitalised words, no statutory
 # vocabulary in them.
@@ -39,12 +41,14 @@ def person_names(text):
 
 
 def main():
-    src = json.load(open(os.path.join(ROOT, "sources.json"), encoding="utf-8"))
+    src = json.load(open(child(ROOT, "sources.json"), encoding="utf-8"))
     byid = {t["register_id"]: t for t in src["titles"]}
     flagged = []
 
-    for p in sorted(glob.glob(os.path.join(ROOT, "markdown", "*", "sections.jsonl"))):
-        rid = os.path.basename(os.path.dirname(p))
+    markdown_root = child(ROOT, "markdown")
+    for candidate in sorted(glob.glob(os.path.join(markdown_root, "*", "sections.jsonl"))):
+        rid = register_id(os.path.basename(os.path.dirname(candidate)))
+        p = child(markdown_root, rid, "sections.jsonl")
         rows = [json.loads(l) for l in open(p, encoding="utf-8") if l.strip()]
         hot = []
         for i, r in enumerate(rows):

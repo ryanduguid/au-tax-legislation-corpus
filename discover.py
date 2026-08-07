@@ -2,9 +2,6 @@
 import json, time, urllib.parse, subprocess, sys, os
 
 API = "https://api.prod.legislation.gov.au/v1"
-# Corpus root. Override with ATO_KB_ROOT to run this somewhere other than the
-# machine it was written on.
-OUT = os.environ.get("ATO_KB_ROOT", r"C:\ato-kb")
 SCRATCH = os.path.dirname(os.path.abspath(__file__))
 
 KEYWORDS = ["Tax", "Excise", "Superannuation", "Customs Tariff", "Medicare Levy"]
