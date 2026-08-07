@@ -13,15 +13,20 @@ lookup failed. Reporting both as one number hid a repeal behind a network error.
 """
 import json, os, subprocess, sys, time, urllib.parse
 
+from corpus_paths import child, corpus_root
+
 API = "https://api.prod.legislation.gov.au/v1"
-ROOT = os.path.dirname(os.path.abspath(__file__))
+SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
+# Finalize publishes this script at the completed corpus root. In a source
+# checkout, output lives under the deterministic ``corpus/`` directory instead.
+ROOT = SCRIPT_DIR if os.path.isfile(os.path.join(SCRIPT_DIR, "sources.json")) else corpus_root(__file__)
 DELAY = 1.5
 
 
 def curl_json(url, tries=3):
     """curl does not truncate -o on transport failure, so a stale file from the
     previous request would be re-read and silently reported as a fresh answer."""
-    dst = os.path.join(ROOT, "_check_tmp.json")
+    dst = child(ROOT, "_check_tmp.json")
     for _ in range(tries):
         if os.path.exists(dst):
             os.remove(dst)
@@ -40,7 +45,7 @@ def curl_json(url, tries=3):
 
 
 def main():
-    with open(os.path.join(ROOT, "sources.json"), encoding="utf-8") as f:
+    with open(child(ROOT, "sources.json"), encoding="utf-8") as f:
         src = json.load(f)
 
     # sources.json before instruments were added called this key "acts".
@@ -126,8 +131,9 @@ def main():
         print("\nLOOKUP FAILED:")
         for a in errors:
             print("  %-12s %s" % (a["register_id"], a["name"][:60]))
-    if os.path.exists(os.path.join(ROOT, "_check_tmp.json")):
-        os.remove(os.path.join(ROOT, "_check_tmp.json"))
+    tmp = child(ROOT, "_check_tmp.json")
+    if os.path.exists(tmp):
+        os.remove(tmp)
 
 
 if __name__ == "__main__":

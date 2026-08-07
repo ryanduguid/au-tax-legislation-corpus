@@ -11,13 +11,12 @@ Large raw transfers also drop mid-stream, so those get a resumed retry.
 """
 import base64, json, os, subprocess, time, zipfile
 
-SCRATCH = os.path.dirname(os.path.abspath(__file__))
-# Corpus root. Override with ATO_KB_ROOT to run this somewhere other than the
-# machine it was written on.
-EPUB_DIR = os.path.join(os.environ.get("ATO_KB_ROOT", r"C:\ato-kb"), "epub")
-CRAWL_DELAY = 10
+from corpus_paths import child, corpus_root, register_id
 
-os.makedirs(EPUB_DIR, exist_ok=True)
+SCRATCH = os.path.dirname(os.path.abspath(__file__))
+ROOT = corpus_root(__file__)
+EPUB_DIR = child(ROOT, "epub")
+CRAWL_DELAY = 10
 
 
 def valid_zip(path):
@@ -88,6 +87,7 @@ def fetch(url, dst, tries=3):
 
 
 def main():
+    os.makedirs(EPUB_DIR, exist_ok=True)
     with open(os.path.join(SCRATCH, "acts_resolved.json"), encoding="utf-8") as f:
         acts = json.load(f)
 
@@ -95,14 +95,14 @@ def main():
     manifest, ok_n, fail_n, total_bytes = [], 0, 0, 0
 
     for i, a in enumerate(acts, 1):
-        rid, d = a["id"], a["versionStart"]
-        dst = os.path.join(EPUB_DIR, "%s.epub" % rid)
+        rid, d = register_id(a["id"]), a["versionStart"]
+        dst = child(EPUB_DIR, "%s.epub" % rid)
         url = "https://www.legislation.gov.au/%s/%s/%s/text/original/epub" % (rid, d, d)
 
         # A cached file is only valid for the version it was fetched under.
         # Without this check a re-run stamps the newly resolved compilation
         # number onto stale bytes.
-        side = dst + ".meta.json"
+        side = child(EPUB_DIR, "%s.epub.meta.json" % rid)
         if os.path.exists(dst) and valid_zip(dst) and os.path.exists(side):
             try:
                 with open(side, encoding="utf-8") as f:

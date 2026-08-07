@@ -7,7 +7,9 @@ title that was removed.
 """
 import collections, glob, json, os, re, sys
 
-DIST = os.environ.get("ATO_DIST", r"C:\ato-kb\dist")
+from corpus_paths import child, corpus_root, register_id
+
+DIST = child(corpus_root(__file__), "dist")
 NAME = re.compile(r"\b[A-Z][a-z]{1,15},?\s+[A-Z][a-z]{1,15}(?:\s+[A-Z][a-z]{1,15})?\b")
 REGNO = re.compile(r"\b\d{8}\b")
 STATUTORY = re.compile(
@@ -32,13 +34,14 @@ def main():
     # command line; a previous failing call must not poison a later call.
     fails.clear()
 
-    with open(os.path.join(DIST, "sources.json"), encoding="utf-8") as f:
+    with open(child(DIST, "sources.json"), encoding="utf-8") as f:
         src = json.load(f)
     titles = src["titles"]
-    by_id = {t["register_id"]: t for t in titles}
-    listed = {t["register_id"] for t in titles}
-    present = {os.path.basename(d) for d in glob.glob(os.path.join(DIST, "markdown", "*"))}
-    removed = {e["register_id"] for e in src.get("excluded_titles", [])}
+    by_id = {register_id(t["register_id"]): t for t in titles}
+    listed = set(by_id)
+    markdown_root = child(DIST, "markdown")
+    present = {register_id(os.path.basename(d)) for d in glob.glob(os.path.join(markdown_root, "*"))}
+    removed = {register_id(e["register_id"]) for e in src.get("excluded_titles", [])}
 
     check("every listed title has a directory", listed <= present,
           "missing %d" % len(listed - present))
@@ -50,8 +53,9 @@ def main():
     hot = collections.Counter()
     kind_counts = collections.Counter()
     rows_by_coll, words_by_coll = collections.Counter(), collections.Counter()
-    for p in glob.glob(os.path.join(DIST, "markdown", "*", "sections.jsonl")):
-        rid = os.path.basename(os.path.dirname(p))
+    for candidate in glob.glob(os.path.join(markdown_root, "*", "sections.jsonl")):
+        rid = register_id(os.path.basename(os.path.dirname(candidate)))
+        p = child(markdown_root, rid, "sections.jsonl")
         with open(p, encoding="utf-8") as f:
             for l in f:
                 if not l.strip():
@@ -112,19 +116,19 @@ def main():
                                     (".png", ".jpg", ".jpeg", ".gif", ".svg", ".epub")),
           str(dict(exts)))
 
-    with open(os.path.join(DIST, "INDEX.md"), encoding="utf-8") as f:
+    with open(child(DIST, "INDEX.md"), encoding="utf-8") as f:
         idx = f.read()
     check("INDEX links no removed title", not any(r in idx for r in removed))
     check("INDEX headline matches actual rows", f"{rows:,}" in idx)
-    with open(os.path.join(DIST, "README.md"), encoding="utf-8") as f:
+    with open(child(DIST, "README.md"), encoding="utf-8") as f:
         rd = f.read()
     check("README states the real title count", "%d in-force principal" % len(titles) in rd)
-    with open(os.path.join(DIST, "REMOVED.md"), encoding="utf-8") as f:
+    with open(child(DIST, "REMOVED.md"), encoding="utf-8") as f:
         removed_md = f.read()
     check("REMOVED.md lists every exclusion", all(r in removed_md for r in removed))
 
     rt, rates_bad = [], 0
-    with open(os.path.join(DIST, "rates", "rates.jsonl"), encoding="utf-8") as f:
+    with open(child(DIST, "rates", "rates.jsonl"), encoding="utf-8") as f:
         for l in f:
             if not l.strip():
                 continue
@@ -137,7 +141,7 @@ def main():
            not [r for r in rt if r["register_id"] in removed])
     check("every rates entry cites a present title",
            not [r for r in rt if r["register_id"] not in present])
-    with open(os.path.join(DIST, "rates", "RATES.md"), encoding="utf-8") as f:
+    with open(child(DIST, "rates", "RATES.md"), encoding="utf-8") as f:
         rates_md = f.read()
     rate_headline = "%s entries across %s titles." % (
         f"{len(rt):,}", f"{len({r.get('register_id') for r in rt if r.get('register_id')}):,}")

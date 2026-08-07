@@ -10,13 +10,11 @@ reading the law.
 """
 import json, os, re, glob, collections
 
-# Corpus root. Override with ATO_KB_ROOT to run this somewhere other than the
-# machine it was written on.
-ROOT = os.environ.get("ATO_KB_ROOT", r"C:\ato-kb")
-OUT = os.path.join(ROOT, "rates")
+from corpus_paths import child, corpus_root, register_id
 
-MONEY = re.compile(r'\$\s?[\d,]+(?:\.\d+)?')
-PCT = re.compile(r'\d+(?:\.\d+)?\s?%')
+ROOT = corpus_root(__file__)
+OUT = child(ROOT, "rates")
+
 # Bare multipliers: FBT gross-up 2.0802 / 1.8868, statutory fractions.
 FACTOR = re.compile(r'(?<![\d.])\d\.\d{2,4}(?![\d])')
 # "the rate is 30%", "at the rate of 47%", "is 0.5 of the amount"
@@ -30,12 +28,119 @@ INDEX_PHRASE = re.compile(r'(index(ed|ation)|CPI|consumer price index|AWOTE|'
 # continuity-of-ownership test, the 100%-subsidiary rule and the 75% trust
 # voting interest test all carry a "%" and would otherwise swamp the rate
 # bucket, where someone is looking for what a tax is charged at.
-TEST_PHRASE = re.compile(r'(\d+% (stake|subsidiary|interest)|more than a? ?\d+% stake|'
-                         r'(voting|dividend|capital|ownership|control|equity) '
-                         r'(interest|right|stake|power)s?|'
-                         r'continuity of ownership|beneficial(ly)? (own|entitled)|'
-                         r'wholly[‑-]owned|majority[‑-]owned)', re.I)
 YEAR = re.compile(r'\b(19|20)\d{2}[\u2011-]\d{2}\b|\b(19|20)\d{2}\b')
+
+
+def _consume_digits(text, index, allow_commas=False):
+    """Return the end of one forward-only decimal token.
+
+    ``re`` is excellent for the bounded patterns below, but amounts and
+    percentages arrive from long, externally supplied legislative text.  These
+    scanners deliberately advance their cursor only forward, avoiding a
+    backtracking path for an unterminated run of digits.
+    """
+    start = index
+    while index < len(text):
+        char = text[index]
+        if char.isdecimal():
+            index += 1
+        elif (allow_commas and char == "," and index > start and
+              index + 1 < len(text) and text[index + 1].isdecimal()):
+            index += 1
+        else:
+            break
+    return index
+
+
+def money_values(text):
+    """Return well-formed dollar amounts without regex backtracking."""
+    values, index = [], 0
+    while index < len(text):
+        if text[index] != "$":
+            index += 1
+            continue
+        start = index
+        index += 1
+        if index < len(text) and text[index].isspace():
+            index += 1
+        number_start = index
+        index = _consume_digits(text, index, allow_commas=True)
+        if index == number_start:
+            continue
+        if index < len(text) and text[index] == ".":
+            fraction_start = index + 1
+            fraction_end = _consume_digits(text, fraction_start)
+            if fraction_end > fraction_start:
+                index = fraction_end
+        values.append(text[start:index])
+    return values
+
+
+def percentage_matches(text):
+    r"""Return ``(value, start, end)`` triples for decimal percentages.
+
+    The accepted forms remain the ones used by the rate index: ``10%`` and
+    ``12.5 %``.  ``str.isdecimal`` has the same Unicode-decimal intent as the
+    former ``\d`` pattern.
+    """
+    values, index = [], 0
+    while index < len(text):
+        if not text[index].isdecimal() or (index and text[index - 1].isdecimal()):
+            index += 1
+            continue
+        start = index
+        end = _consume_digits(text, index)
+        if end < len(text) and text[end] == ".":
+            fraction_start = end + 1
+            fraction_end = _consume_digits(text, fraction_start)
+            if fraction_end > fraction_start:
+                end = fraction_end
+        if end < len(text) and text[end].isspace():
+            end += 1
+        if end < len(text) and text[end] == "%":
+            values.append((text[start:end + 1], start, end + 1))
+            index = end + 1
+        else:
+            index = end
+    return values
+
+
+def percentage_values(text):
+    return [value for value, _start, _end in percentage_matches(text)]
+
+
+OWNERSHIP_PHRASES = (
+    "continuity of ownership",
+    "beneficial own", "beneficial entitled",
+    "beneficially own", "beneficially entitled",
+    "wholly-owned", "wholly‑owned",
+    "majority-owned", "majority‑owned",
+)
+
+
+def _starts_with_ownership_word(text, index):
+    for word in ("stake", "subsidiary", "interest"):
+        end = index + len(word)
+        if text.startswith(word, index) and (end == len(text) or not text[end].isalpha()):
+            return True
+    return False
+
+
+def is_ownership_test(text):
+    """Identify ownership/control tests without an unbounded numeric regex."""
+    lower = text.casefold()
+    if any(phrase in lower for phrase in OWNERSHIP_PHRASES):
+        return True
+    if any("%s %s" % (left, right) in lower
+           for left in ("voting", "dividend", "capital", "ownership", "control", "equity")
+           for right in ("interest", "right", "stake", "power")):
+        return True
+    for _value, _start, end in percentage_matches(text):
+        # The previous expression recognised ``10% stake`` style tests.  Keep
+        # that delimiter rule while allowing the scanner to run in linear time.
+        if end < len(text) and text[end] == " " and _starts_with_ownership_word(lower, end + 1):
+            return True
+    return False
 
 # Topic buckets, matched against Act name + section heading.
 TOPICS = [
@@ -95,12 +200,34 @@ def table_blocks(text):
 
 def is_rate_table(lines):
     body = " ".join(lines)
-    return bool(MONEY.search(body) or PCT.search(body))
+    return bool(money_values(body) or percentage_values(body))
 
 
 def sentences(text):
     plain = "\n".join(l for l in text.split("\n") if not l.startswith("|"))
-    for s in re.split(r'(?<=[.;:])\s+(?=[A-Z(\u2022*])|\n{2,}', plain):
+    pieces, start, index = [], 0, 0
+    while index < len(plain):
+        char = plain[index]
+        if char == "\n" and index + 1 < len(plain) and plain[index + 1] == "\n":
+            pieces.append(plain[start:index])
+            index += 2
+            while index < len(plain) and plain[index] == "\n":
+                index += 1
+            start = index
+            continue
+        if char in ".;:":
+            following = index + 1
+            while following < len(plain) and plain[following].isspace():
+                following += 1
+            if following > index + 1 and following < len(plain) and (
+                    plain[following] in "ABCDEFGHIJKLMNOPQRSTUVWXYZ(\u2022*"):
+                pieces.append(plain[start:index + 1])
+                start = following
+                index = following
+                continue
+        index += 1
+    pieces.append(plain[start:])
+    for s in pieces:
         s = s.strip()
         if 15 < len(s) < 600:
             yield s
@@ -110,20 +237,24 @@ def main():
     os.makedirs(OUT, exist_ok=True)
     records = []
 
-    for p in sorted(glob.glob(os.path.join(ROOT, "markdown", "*", "sections.jsonl"))):
+    markdown_root = child(ROOT, "markdown")
+    for candidate in sorted(glob.glob(os.path.join(markdown_root, "*", "sections.jsonl"))):
+        rid = register_id(os.path.basename(os.path.dirname(candidate)))
+        p = child(markdown_root, rid, "sections.jsonl")
         for ln in open(p, encoding="utf-8"):
             if not ln.strip():
                 continue
             r = json.loads(ln)
             text = r.get("text") or ""
+            rid = register_id(r["register_id"])
             # Gross-up factors, indexation factors and statutory fractions are
             # bare decimals (2.0802, 1.8868, 0.5), not $ or %, so a filter on
             # currency and percent alone misses them entirely.
-            if not (MONEY.search(text) or PCT.search(text) or
+            if not (money_values(text) or percentage_values(text) or
                     (FACTOR.search(text) and RATE_PHRASE.search(text))):
                 continue
             base = {
-                "register_id": r["register_id"], "act": r["act"],
+                "register_id": rid, "act": r["act"],
                 "collection": r.get("collection"),
                 "compilation_number": r.get("compilation_number"),
                 "compilation_date": r.get("compilation_date"),
@@ -139,7 +270,7 @@ def main():
                                         content="\n".join(tbl)))
 
             for s in sentences(text):
-                has_money, has_pct = bool(MONEY.search(s)), bool(PCT.search(s))
+                has_money, has_pct = bool(money_values(s)), bool(percentage_values(s))
                 has_factor = bool(FACTOR.search(s)) and bool(RATE_PHRASE.search(s))
                 if not (has_money or has_pct or has_factor):
                     continue
@@ -154,11 +285,11 @@ def main():
                                         or INDEX_PHRASE.search(s)):
                     continue
                 kind = ("indexation" if INDEX_PHRASE.search(s)
-                        else "ownership test" if has_pct and TEST_PHRASE.search(s)
+                        else "ownership test" if has_pct and is_ownership_test(s)
                         else "rate" if has_pct else
                         "factor" if has_factor and not has_money else "threshold")
                 records.append(dict(base, kind=kind,
-                                    amounts=sorted(set(MONEY.findall(s)) | set(PCT.findall(s))
+                                    amounts=sorted(set(money_values(s)) | set(percentage_values(s))
                                                    | (set(FACTOR.findall(s)) if has_factor else set())),
                                     years=sorted({m.group(0) for m in YEAR.finditer(s)}),
                                     content=s))
@@ -179,7 +310,7 @@ def main():
         r["content_ascii"] = fold(r["content"])
         r["heading_ascii"] = fold(r["heading"]) if r.get("heading") else None
 
-    with open(os.path.join(OUT, "rates.jsonl"), "w", encoding="utf-8") as f:
+    with open(child(OUT, "rates.jsonl"), "w", encoding="utf-8") as f:
         for r in records:
             f.write(json.dumps(r, ensure_ascii=False) + "\n")
 
@@ -250,7 +381,7 @@ def main():
                 md.append("")
                 md.append("_%d further provisions in rates.jsonl._" % (len(others) - 120))
 
-    with open(os.path.join(OUT, "RATES.md"), "w", encoding="utf-8") as f:
+    with open(child(OUT, "RATES.md"), "w", encoding="utf-8") as f:
         f.write("\n".join(md) + "\n")
 
     print("entries: %d  titles: %d" % (

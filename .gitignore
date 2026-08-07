@@ -6,6 +6,7 @@ external/
 sources.json
 INDEX.md
 LICENCE-NOTICE.md
+corpus/
 
 # Run artefacts
 *.log
