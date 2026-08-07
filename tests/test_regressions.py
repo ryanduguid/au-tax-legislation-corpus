@@ -11,6 +11,7 @@ from pathlib import Path
 import shutil
 import sys
 import tempfile
+import time
 import unittest
 
 
@@ -298,6 +299,22 @@ class DistributionTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, "symbolic link"):
                 dist.main()
 
+    def test_readme_count_replacement_is_precise_and_linear(self):
+        dist = load_module("dist_count_regression", REPO / "dist.py")
+        text = ("1 Acts and 2 legislative and notifiable instruments. "
+                "3 Acts and 4 legislative and notifiable instruments.")
+        self.assertEqual(
+            dist.replace_readme_collection_counts(text, 5, 6),
+            "5 Acts and 6 legislative and notifiable instruments. "
+            "5 Acts and 6 legislative and notifiable instruments.")
+
+        digits = "9" * 200_000
+        started = time.perf_counter()
+        rewritten = dist.replace_readme_collection_counts(
+            digits + " Acts and " + digits + " legislative and notifiable", 5, 6)
+        self.assertEqual(rewritten, "5 Acts and 6 legislative and notifiable")
+        self.assertLess(time.perf_counter() - started, 2.0)
+
 
 class PathBoundaryTests(unittest.TestCase):
     def test_register_id_and_contained_child_reject_traversal(self):
@@ -356,7 +373,25 @@ class RateParsingTests(unittest.TestCase):
             "Next sentence carries 10%.",
             "Third sentence is here.",
         ])
-        self.assertEqual(rates.PCT.findall("10% and 12.5 %"), ["10%", "12.5 %"])
+        self.assertEqual(rates.percentage_values("10% and 12.5 %"), ["10%", "12.5 %"])
+
+    def test_amount_scanners_keep_tax_formats_and_ownership_tests(self):
+        rates = load_module("rates_amount_regression", REPO / "rates.py")
+        self.assertEqual(rates.money_values("$1,234.50 and $ 20"), ["$1,234.50", "$ 20"])
+        self.assertEqual(rates.percentage_values("10% and 12.5 %"), ["10%", "12.5 %"])
+        self.assertTrue(rates.is_rate_table(["| $1,000 | 12.5 % |"]))
+        self.assertTrue(rates.is_ownership_test("A 75% voting interest is required."))
+        self.assertTrue(rates.is_ownership_test("The company is a 100% subsidiary."))
+        self.assertFalse(rates.is_ownership_test("The tax rate is 10%."))
+
+    def test_numeric_scanners_complete_linearly_on_long_digit_runs(self):
+        rates = load_module("rates_linear_regression", REPO / "rates.py")
+        digits = "9" * 200_000
+        started = time.perf_counter()
+        self.assertEqual(rates.percentage_values(digits + "."), [])
+        self.assertEqual(len(rates.money_values("$" + digits + ".")), 1)
+        self.assertTrue(rates.is_ownership_test(digits + "% stake"))
+        self.assertLess(time.perf_counter() - started, 2.0)
 
 
 if __name__ == "__main__":

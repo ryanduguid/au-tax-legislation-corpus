@@ -95,6 +95,45 @@ def render_rates_markdown(records):
     return "\n".join(md) + "\n"
 
 
+def replace_readme_collection_counts(text, acts, instruments):
+    """Rewrite every ``N Acts and N legislative and notifiable`` summary.
+
+    README.md is source-controlled but still treated as input by the build.
+    Scanning decimal runs directly keeps the replacement linear for malformed,
+    arbitrarily long digit strings while preserving the former whole-phrase
+    replacement behavior.
+    """
+    marker = " Acts and "
+    suffix = " legislative and notifiable"
+    replacement = "%d Acts and %d legislative and notifiable" % (acts, instruments)
+    parts, cursor = [], 0
+    while True:
+        marker_at = text.find(marker, cursor)
+        if marker_at < 0:
+            parts.append(text[cursor:])
+            return "".join(parts)
+
+        number_start = marker_at
+        while number_start > cursor and text[number_start - 1].isdecimal():
+            number_start -= 1
+        second_start = marker_at + len(marker)
+        second_end = second_start
+        while second_end < len(text) and text[second_end].isdecimal():
+            second_end += 1
+        suffix_end = second_end + len(suffix)
+
+        if (number_start < marker_at and second_start < second_end and
+                text.startswith(suffix, second_end)):
+            parts.append(text[cursor:number_start])
+            parts.append(replacement)
+            cursor = suffix_end
+        else:
+            # Retain the first marker character and move forward so every
+            # candidate is examined once, even when malformed.
+            parts.append(text[cursor:marker_at + 1])
+            cursor = marker_at + 1
+
+
 def main():
     with open(os.path.join(HERE, "pii_flagged.json"), encoding="utf-8") as f:
         flagged = json.load(f)
@@ -268,9 +307,8 @@ def main():
     # themselves, whitespace-tolerant.
     rd = re.sub(r"%s in-force principal titles" % len(src["titles"]),
                 "%d in-force principal titles" % len(titles), rd)
-    rd = re.sub(r"(?<!\d)\d+ Acts and \d+ legislative and notifiable",
-                 "%d Acts and %d legislative and notifiable"
-                 % (stats["Act"], len(titles) - stats["Act"]), rd)
+    rd = replace_readme_collection_counts(
+        rd, stats["Act"], len(titles) - stats["Act"])
     rd = re.sub(r"instruments\.\s+[\d,]+ retrieval rows, [\d,]+ words\.",
                 "instruments. %s retrieval rows, %s words."
                 % (f"{kept_rows:,}", f"{kept_words:,}"), rd)
