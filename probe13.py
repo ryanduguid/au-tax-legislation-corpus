@@ -1,7 +1,8 @@
 import json, os, subprocess, time, urllib.parse
 API = "https://api.prod.legislation.gov.au/v1"
+SCRATCH = os.path.dirname(os.path.abspath(__file__))
 def curl_json(url, tries=3):
-    dst = "_p13.json"
+    dst = os.path.join(SCRATCH, "_p13.json")
     for _ in range(tries):
         if os.path.exists(dst): os.remove(dst)
         p = subprocess.run(["curl","-sL","--max-time","90","-o",dst,url], capture_output=True)
@@ -13,7 +14,7 @@ def curl_json(url, tries=3):
         time.sleep(6)
     return None
 
-m = json.load(open("manifest_raw.json", encoding="utf-8"))
+m = json.load(open(os.path.join(SCRATCH, "manifest_raw.json"), encoding="utf-8"))
 bad = [a for a in m if not a.get("epub")]
 out = []
 for a in bad:
@@ -31,4 +32,4 @@ for a in bad:
         rid, len(vs), bool(cur and cur[0].get("registerId")),
         (latest or {}).get("registerId"), (latest or {}).get("start","")[:10]))
     time.sleep(1.5)
-json.dump(out, open("probe13.json","w",encoding="utf-8"), indent=1)
+json.dump(out, open(os.path.join(SCRATCH, "probe13.json"),"w",encoding="utf-8"), indent=1)
