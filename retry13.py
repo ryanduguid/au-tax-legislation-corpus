@@ -67,6 +67,24 @@ def main():
         json.dump(patches, f, indent=1)
     print("\nrecovered %d / %d" % (sum(1 for p in patches if p["epub"]), len(patches)))
 
+    # Apply the recoveries to manifest_raw.json here, so the documented
+    # pipeline needs no manual patching step. retry13_patch.json above stays
+    # as the audit record of what this run changed. Only an entry whose id
+    # matches a patch record with an epub is rewritten; a failed retry leaves
+    # the original no_epub record in place.
+    recovered = {p["id"]: p for p in patches if p.get("epub")}
+    if recovered:
+        merged = 0
+        for i, a in enumerate(manifest):
+            p = recovered.get(a["id"])
+            if p:
+                manifest[i] = dict(a, **p)
+                merged += 1
+        with open(os.path.join(SCRATCH, "manifest_raw.json"), "w", encoding="utf-8") as f:
+            json.dump(manifest, f, indent=1)
+        print("patched %d entr%s in manifest_raw.json"
+              % (merged, "y" if merged == 1 else "ies"))
+
 
 if __name__ == "__main__":
     main()
