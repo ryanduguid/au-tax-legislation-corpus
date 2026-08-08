@@ -13,7 +13,7 @@ def curl_json(url, tries=3):
     for _ in range(tries):
         if os.path.exists(dst):
             os.remove(dst)
-        p = subprocess.run(["curl.exe", "-sL", "--max-time", "90", "-o", dst, url],
+        p = subprocess.run(["curl", "-sL", "--max-time", "90", "-o", dst, url],
                            capture_output=True)
         if p.returncode == 0:
             try:
