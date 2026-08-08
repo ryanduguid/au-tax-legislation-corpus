@@ -142,6 +142,79 @@ class FailureHandlingTests(unittest.TestCase):
             self.assertFalse((tmp_path / "markdown" / "F2020L01498").exists())
 
 
+class Retry13MergeTests(unittest.TestCase):
+    def test_recoveries_are_merged_into_the_raw_manifest_in_place(self):
+        """The documented pipeline has no manual patch step: retry13.py itself
+        must fold successful recoveries into manifest_raw.json, keep
+        retry13_patch.json as the audit record, and leave failed retries and
+        untouched titles exactly as the download stage wrote them."""
+        retry13 = load_module("retry13_regression", REPO / "retry13.py")
+        with tempfile.TemporaryDirectory() as tmp:
+            scratch = Path(tmp)
+            epub_dir = scratch / "corpus" / "epub"
+            epub_dir.mkdir(parents=True)
+
+            manifest = [
+                {"id": "C2004A00001", "name": "Already Downloaded Act",
+                 "epub": "C2004A00001.epub", "bytes": 10, "status": "ok",
+                 "versionStart": "2026-01-01"},
+                {"id": "F2020L01498", "name": "Recoverable Instrument",
+                 "epub": None, "bytes": 0, "status": "no_epub",
+                 "httpCode": "404", "versionStart": "2026-03-01"},
+                {"id": "F2021L00002", "name": "Unrecoverable Instrument",
+                 "epub": None, "bytes": 0, "status": "no_epub",
+                 "httpCode": "404", "versionStart": "2026-04-01"},
+            ]
+            (scratch / "manifest_raw.json").write_text(
+                json.dumps(manifest), encoding="utf-8")
+            latest = {"start": "2025-06-30T00:00:00", "compilationNumber": "4",
+                      "registerId": "F2025C00010"}
+            (scratch / "probe13.json").write_text(json.dumps([
+                {"id": "F2020L01498", "name": "Recoverable Instrument",
+                 "latest_doc": dict(latest)},
+                {"id": "F2021L00002", "name": "Unrecoverable Instrument",
+                 "latest_doc": dict(latest)},
+            ]), encoding="utf-8")
+
+            class FakeDownload:
+                CRAWL_DELAY = 0
+
+                @staticmethod
+                def fetch(url, dst):
+                    if "F2020L01498" in url:
+                        Path(dst).write_bytes(b"PK-fake-epub")
+                        return True, "200", "application/epub+zip", 12, {
+                            "registerId": "F2025C00010", "isAuthorised": True}
+                    return False, "404", "text/html", 0, None
+
+            retry13.SCRATCH = str(scratch)
+            retry13.EPUB_DIR = str(epub_dir)
+            retry13.dl = FakeDownload
+            retry13.time.sleep = lambda _seconds: None
+            with contextlib.redirect_stdout(io.StringIO()):
+                retry13.main()
+
+            patches = json.loads(
+                (scratch / "retry13_patch.json").read_text(encoding="utf-8"))
+            self.assertEqual({p["id"] for p in patches},
+                             {"F2020L01498", "F2021L00002"})
+
+            merged = {a["id"]: a for a in json.loads(
+                (scratch / "manifest_raw.json").read_text(encoding="utf-8"))}
+            self.assertEqual(len(merged), 3)
+            recovered = merged["F2020L01498"]
+            self.assertEqual(recovered["epub"], "F2020L01498.epub")
+            self.assertEqual(recovered["status"], "ok_superseded_version")
+            self.assertIs(recovered["version_is_current"], False)
+            self.assertEqual(recovered["current_version_start"], "2026-03-01")
+            self.assertEqual(recovered["name"], "Recoverable Instrument")
+            # A failed retry must not overwrite the original record.
+            self.assertEqual(merged["F2021L00002"]["status"], "no_epub")
+            self.assertIsNone(merged["F2021L00002"]["epub"])
+            self.assertNotIn("version_is_current", merged["F2021L00002"])
+            self.assertEqual(merged["C2004A00001"]["status"], "ok")
+
+
 class DistributionTests(unittest.TestCase):
     PUBLIC_ID = "C2004A00001"
     PRIVATE_ID = "C2004A00002"
