@@ -18,7 +18,7 @@ def curl_json(url, tries=3):
     for attempt in range(tries):
         if os.path.exists(dst):
             os.remove(dst)
-        r = subprocess.run(["curl.exe", "-sL", "--max-time", "90", "-o", dst, url],
+        r = subprocess.run(["curl", "-sL", "--max-time", "90", "-o", dst, url],
                            capture_output=True)
         if r.returncode == 0:
             try:
@@ -96,7 +96,7 @@ def main():
                   "latest/downloads/epub",
                   "latest/epub"]:
         u = "https://www.legislation.gov.au/C2004A05138/" + shape
-        p = subprocess.run(["curl.exe", "-sIL", "--max-time", "60", "-o", os.path.join(SCRATCH, "_h.txt"),
+        p = subprocess.run(["curl", "-sIL", "--max-time", "60", "-o", os.path.join(SCRATCH, "_h.txt"),
                             "-w", "%{http_code} %{content_type} %{size_download}", u],
                            capture_output=True, text=True)
         print("   %-32s -> %s" % (shape, p.stdout.strip()))
