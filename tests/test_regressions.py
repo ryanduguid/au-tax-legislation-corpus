@@ -142,6 +142,24 @@ class FailureHandlingTests(unittest.TestCase):
             self.assertFalse((tmp_path / "markdown" / "F2020L01498").exists())
 
 
+class FinalizePiiSummaryTests(unittest.TestCase):
+    def test_readme_pii_totals_derive_from_the_scan_with_a_fallback(self):
+        finalize = load_module("finalize_pii_regression", REPO / "finalize.py")
+        # The committed scan: 12 titles, 5,404 name mentions, rounded to 5,400.
+        self.assertEqual(finalize.pii_summary(), (12, 5400))
+        with tempfile.TemporaryDirectory() as tmp:
+            finalize.SCRATCH = tmp
+            # pii_scan.py runs after finalize.py in the documented pipeline,
+            # so a fresh build has no scan output yet: fall back to the last
+            # committed totals rather than crash or print prose constants.
+            self.assertEqual(finalize.pii_summary(), (12, 5400))
+            (Path(tmp) / "pii_flagged.json").write_text(json.dumps([
+                {"register_id": "F2023N00096", "names_est": 130},
+                {"register_id": "F2021N00219", "names_est": 220},
+            ]), encoding="utf-8")
+            self.assertEqual(finalize.pii_summary(), (2, 350))
+
+
 class Retry13MergeTests(unittest.TestCase):
     def test_recoveries_are_merged_into_the_raw_manifest_in_place(self):
         """The documented pipeline has no manual patch step: retry13.py itself
