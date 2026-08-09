@@ -142,6 +142,167 @@ class FailureHandlingTests(unittest.TestCase):
             self.assertFalse((tmp_path / "markdown" / "F2020L01498").exists())
 
 
+class FinalizePiiSummaryTests(unittest.TestCase):
+    def test_readme_pii_totals_derive_from_the_scan_with_a_fallback(self):
+        finalize = load_module("finalize_pii_regression", REPO / "finalize.py")
+        # The committed scan: 12 titles, 5,404 name mentions, rounded to 5,400.
+        self.assertEqual(finalize.pii_summary(), (12, 5400))
+        with tempfile.TemporaryDirectory() as tmp:
+            finalize.SCRATCH = tmp
+            # pii_scan.py runs after finalize.py in the documented pipeline,
+            # so a fresh build has no scan output yet: fall back to the last
+            # committed totals rather than crash or print prose constants.
+            self.assertEqual(finalize.pii_summary(), (12, 5400))
+            (Path(tmp) / "pii_flagged.json").write_text(json.dumps([
+                {"register_id": "F2023N00096", "names_est": 130},
+                {"register_id": "F2021N00219", "names_est": 220},
+            ]), encoding="utf-8")
+            self.assertEqual(finalize.pii_summary(), (2, 350))
+
+
+class Retry13MergeTests(unittest.TestCase):
+    def test_recoveries_are_merged_into_the_raw_manifest_in_place(self):
+        """The documented pipeline has no manual patch step: retry13.py itself
+        must fold successful recoveries into manifest_raw.json, keep
+        retry13_patch.json as the audit record, and leave failed retries and
+        untouched titles exactly as the download stage wrote them."""
+        retry13 = load_module("retry13_regression", REPO / "retry13.py")
+        with tempfile.TemporaryDirectory() as tmp:
+            scratch = Path(tmp)
+            epub_dir = scratch / "corpus" / "epub"
+            epub_dir.mkdir(parents=True)
+
+            manifest = [
+                {"id": "C2004A00001", "name": "Already Downloaded Act",
+                 "epub": "C2004A00001.epub", "bytes": 10, "status": "ok",
+                 "versionStart": "2026-01-01"},
+                {"id": "F2020L01498", "name": "Recoverable Instrument",
+                 "epub": None, "bytes": 0, "status": "no_epub",
+                 "httpCode": "404", "versionStart": "2026-03-01"},
+                {"id": "F2021L00002", "name": "Unrecoverable Instrument",
+                 "epub": None, "bytes": 0, "status": "no_epub",
+                 "httpCode": "404", "versionStart": "2026-04-01"},
+            ]
+            (scratch / "manifest_raw.json").write_text(
+                json.dumps(manifest), encoding="utf-8")
+            latest = {"start": "2025-06-30T00:00:00", "compilationNumber": "4",
+                      "registerId": "F2025C00010"}
+            (scratch / "probe13.json").write_text(json.dumps([
+                {"id": "F2020L01498", "name": "Recoverable Instrument",
+                 "latest_doc": dict(latest)},
+                {"id": "F2021L00002", "name": "Unrecoverable Instrument",
+                 "latest_doc": dict(latest)},
+            ]), encoding="utf-8")
+
+            class FakeDownload:
+                CRAWL_DELAY = 0
+
+                @staticmethod
+                def fetch(url, dst):
+                    if "F2020L01498" in url:
+                        Path(dst).write_bytes(b"PK-fake-epub")
+                        return True, "200", "application/epub+zip", 12, {
+                            "registerId": "F2025C00010", "isAuthorised": True}
+                    return False, "404", "text/html", 0, None
+
+            retry13.SCRATCH = str(scratch)
+            retry13.EPUB_DIR = str(epub_dir)
+            retry13.dl = FakeDownload
+            retry13.time.sleep = lambda _seconds: None
+            with contextlib.redirect_stdout(io.StringIO()):
+                retry13.main()
+
+            patches = json.loads(
+                (scratch / "retry13_patch.json").read_text(encoding="utf-8"))
+            self.assertEqual({p["id"] for p in patches},
+                             {"F2020L01498", "F2021L00002"})
+
+            merged = {a["id"]: a for a in json.loads(
+                (scratch / "manifest_raw.json").read_text(encoding="utf-8"))}
+            self.assertEqual(len(merged), 3)
+            recovered = merged["F2020L01498"]
+            self.assertEqual(recovered["epub"], "F2020L01498.epub")
+            self.assertEqual(recovered["status"], "ok_superseded_version")
+            self.assertIs(recovered["version_is_current"], False)
+            self.assertEqual(recovered["current_version_start"], "2026-03-01")
+            self.assertEqual(recovered["name"], "Recoverable Instrument")
+            # A failed retry must not overwrite the original record.
+            self.assertEqual(merged["F2021L00002"]["status"], "no_epub")
+            self.assertIsNone(merged["F2021L00002"]["epub"])
+            self.assertNotIn("version_is_current", merged["F2021L00002"])
+            self.assertEqual(merged["C2004A00001"]["status"], "ok")
+
+
+class PiiNameGateTests(unittest.TestCase):
+    """The person-name gate shared by pii_scan.py, pii_scan2.py and
+    dist_verify.py through pii_patterns.py."""
+
+    # A disciplinary-register row in the all-caps style the old
+    # Capitalised-lowercase pair could not see: three surnames the old pattern
+    # missed (all-caps, internal capital, apostrophe), three 8-digit
+    # registration numbers.
+    ALL_CAPS_ROW = ("| SMITH, John | 12345678 | s 30-15 |\n"
+                    "| McDonald, Anne | 23456789 | s 30-15 |\n"
+                    "| O'Brien, Patrick | 34567890 | s 30-20 |")
+
+    def test_caps_mac_and_apostrophe_surnames_are_visible_to_the_gate(self):
+        patterns = load_module("pii_patterns_regression", REPO / "pii_patterns.py")
+        names = patterns.person_names(self.ALL_CAPS_ROW)
+        self.assertIn("SMITH, John", names)
+        self.assertIn("McDonald, Anne", names)
+        self.assertIn("O'Brien, Patrick", names)
+        self.assertGreaterEqual(len(names), 3)
+        self.assertGreaterEqual(
+            len(set(patterns.REGNO.findall(self.ALL_CAPS_ROW))), 3)
+
+    def test_statutory_vocabulary_is_filtered_case_insensitively(self):
+        patterns = load_module("pii_patterns_statutory", REPO / "pii_patterns.py")
+        # The statutory list holds capitalised forms, so an all-caps candidate
+        # must be checked against it case-insensitively, not waved through.
+        self.assertEqual(patterns.person_names(
+            "TAXATION ADMINISTRATION PROVISIONS 12345678 23456789 34567890"),
+            set())
+        self.assertEqual(
+            patterns.person_names("Deputy Commissioner of Taxation"), set())
+
+    def test_pii_scan_flags_a_register_written_in_capitals(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            base = Path(tmp)
+            build = base / "build"
+            build.mkdir()
+            for name in ("pii_scan.py", "pii_patterns.py", "corpus_paths.py"):
+                shutil.copy2(REPO / name, build / name)
+
+            titles = [
+                {"register_id": "F2026N00001", "name": "All Caps Register",
+                 "collection": "NotifiableInstrument"},
+                {"register_id": "C2004A00001", "name": "Ordinary Tax Act",
+                 "collection": "Act"},
+            ]
+            (base / "sources.json").write_text(
+                json.dumps({"titles": titles}), encoding="utf-8")
+            rows = {
+                "F2026N00001": {"row_id": "F2026N00001-1",
+                                "text": self.ALL_CAPS_ROW},
+                "C2004A00001": {"row_id": "C2004A00001-1",
+                                "text": "The Commissioner may determine the rate."},
+            }
+            for rid, row in rows.items():
+                folder = base / "markdown" / rid
+                folder.mkdir(parents=True)
+                (folder / "sections.jsonl").write_text(
+                    json.dumps(row) + "\n", encoding="utf-8")
+
+            scan = load_module("pii_scan_regression", build / "pii_scan.py")
+            with contextlib.redirect_stdout(io.StringIO()):
+                scan.main()
+
+            flagged = json.loads(
+                (build / "pii_flagged.json").read_text(encoding="utf-8"))
+            self.assertEqual([f["register_id"] for f in flagged], ["F2026N00001"])
+            self.assertGreaterEqual(flagged[0]["names_est"], 3)
+
+
 class DistributionTests(unittest.TestCase):
     PUBLIC_ID = "C2004A00001"
     PRIVATE_ID = "C2004A00002"
@@ -205,7 +366,17 @@ class DistributionTests(unittest.TestCase):
             encoding="utf-8")
         (root / "README.md").write_text(
             "2 in-force principal titles covering tax.\n\n"
-            "1 Acts and 1 legislative and notifiable instruments. 2 retrieval rows, 10 words.\n",
+            "1 Acts and 1 legislative and notifiable instruments. 2 retrieval rows, 10 words.\n\n"
+            "Each title is stored as:\n\n"
+            "- `epub/<register_id>.epub` - the file exactly as the Register served it\n"
+            "- `markdown/<register_id>/<register_id>.md` - full text\n\n"
+            # Spelled-out lead, as the README built by the previous finalize
+            # generation actually reads — the rewrite must strip this form
+            # too, not only the numeric "**12 titles name people.**" the new
+            # finalize writes.
+            "**Eleven titles name people.** The corpus carries about 3 name mentions\n"
+            "of disciplined agents with their registration numbers.\n\n"
+            "**0 titles are not the current text.** Placeholder.\n",
             encoding="utf-8")
 
         rates = root / "rates"
@@ -253,6 +424,16 @@ class DistributionTests(unittest.TestCase):
             self.assertIn("1 entries across 1 titles.", rates_md)
             self.assertIn(self.PUBLIC_NAME, rates_md)
             self.assertNotIn(self.PRIVATE_NAME, rates_md)
+
+            # The full-corpus README's EPUB layout bullet and its paragraph on
+            # titles naming people are both false for dist and must not
+            # survive the rewrite; the markdown bullet must.
+            dist_readme = (output / "README.md").read_text(encoding="utf-8")
+            self.assertNotIn("epub/<register_id>.epub", dist_readme)
+            self.assertNotIn("titles name people", dist_readme)
+            self.assertNotIn("disciplined agents", dist_readme)
+            self.assertIn("markdown/<register_id>/<register_id>.md", dist_readme)
+            self.assertIn("REMOVED.md", dist_readme)
 
             verify.DIST = str(output)
             with contextlib.redirect_stdout(io.StringIO()):

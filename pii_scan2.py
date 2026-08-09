@@ -14,6 +14,7 @@ number, so the phone pattern requires the conventional grouping.
 import collections, glob, json, os, re
 
 from corpus_paths import child, corpus_root, register_id
+from pii_patterns import REGNO, person_names
 
 ROOT = corpus_root(__file__)
 KNOWN = set(json.load(open(os.path.join(os.path.dirname(os.path.abspath(__file__)),
@@ -21,15 +22,6 @@ KNOWN = set(json.load(open(os.path.join(os.path.dirname(os.path.abspath(__file__
                      ) and [f["register_id"] for f in json.load(
     open(os.path.join(os.path.dirname(os.path.abspath(__file__)),
                       "pii_flagged.json"), encoding="utf-8"))])
-
-NAME = re.compile(r"\b[A-Z][a-z]{1,15},?\s+[A-Z][a-z]{1,15}(?:\s+[A-Z][a-z]{1,15})?\b")
-REGNO = re.compile(r"\b\d{8}\b")
-STATUTORY = re.compile(
-    r"\b(Act|Regulation|Schedule|Division|Subdivision|Part|Chapter|Section|"
-    r"Commissioner|Minister|Treasurer|Commonwealth|Australian|Australia|Board|"
-    r"Tax|Taxation|Income|Superannuation|Court|Tribunal|Determination|Notice|"
-    r"Instrument|Amendment|January|February|March|April|May|June|July|August|"
-    r"September|October|November|December)\b")
 
 EMAIL = re.compile(r"\b[\w.+-]+@[\w-]+\.[\w.]{2,}\b")
 # Australian formats: 02 1234 5678, (02) 1234 5678, 0412 345 678, 1300 123 456.
@@ -57,8 +49,7 @@ def main():
                         ex[label].append((rid, str(m)[:44]))
             if rid in KNOWN:
                 continue
-            names = {m.group(0) for m in NAME.finditer(t)
-                     if not STATUTORY.search(m.group(0))}
+            names = person_names(t)
             regs = set(REGNO.findall(t))
             if names and regs:
                 weak.append((rid, r.get("row_id"), len(names), len(regs)))
