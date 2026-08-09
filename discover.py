@@ -1,5 +1,5 @@
 """Stage 1: discover in-force principal tax Acts, and probe the 'latest' download alias."""
-import json, time, urllib.parse, subprocess, sys, os
+import json, time, urllib.parse, subprocess, os
 
 API = "https://api.prod.legislation.gov.au/v1"
 SCRATCH = os.path.dirname(os.path.abspath(__file__))
@@ -15,7 +15,7 @@ def curl_json(url, tries=3):
     shared temp file silently returns the PREVIOUS page as if it were this one.
     On the paging path that is exactly how 142 titles went missing."""
     dst = os.path.join(SCRATCH, "_tmp.json")
-    for attempt in range(tries):
+    for _attempt in range(tries):
         if os.path.exists(dst):
             os.remove(dst)
         r = subprocess.run(["curl", "-sL", "--max-time", "90", "-o", dst, url],

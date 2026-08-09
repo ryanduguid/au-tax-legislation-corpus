@@ -18,7 +18,7 @@ around the dash.
 Table cells wrap their content in <p>, so cell text must be accumulated in a
 buffer that survives a nested paragraph.
 """
-import datetime, html, json, os, re, sys, zipfile
+import datetime, json, os, re, sys, zipfile
 from html.parser import HTMLParser
 
 from corpus_paths import child, corpus_root, register_id

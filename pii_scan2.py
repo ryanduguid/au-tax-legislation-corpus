@@ -17,11 +17,9 @@ from corpus_paths import child, corpus_root, register_id
 from pii_patterns import REGNO, person_names
 
 ROOT = corpus_root(__file__)
-KNOWN = set(json.load(open(os.path.join(os.path.dirname(os.path.abspath(__file__)),
-                                        "pii_flagged.json"), encoding="utf-8")
-                     ) and [f["register_id"] for f in json.load(
-    open(os.path.join(os.path.dirname(os.path.abspath(__file__)),
-                      "pii_flagged.json"), encoding="utf-8"))])
+with open(os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                       "pii_flagged.json"), encoding="utf-8") as source:
+    KNOWN = {item["register_id"] for item in json.load(source)}
 
 EMAIL = re.compile(r"\b[\w.+-]+@[\w-]+\.[\w.]{2,}\b")
 # Australian formats: 02 1234 5678, (02) 1234 5678, 0412 345 678, 1300 123 456.
@@ -37,22 +35,23 @@ def main():
     for candidate in sorted(glob.glob(os.path.join(markdown_root, "*", "sections.jsonl"))):
         rid = register_id(os.path.basename(os.path.dirname(candidate)))
         p = child(markdown_root, rid, "sections.jsonl")
-        for l in open(p, encoding="utf-8"):
-            if not l.strip():
-                continue
-            r = json.loads(l)
-            t = r.get("text") or ""
-            for label, pat in (("email", EMAIL), ("phone", PHONE), ("tfn", TFN)):
-                for m in pat.findall(t):
-                    contacts[label] += 1
-                    if len(ex[label]) < 5:
-                        ex[label].append((rid, str(m)[:44]))
-            if rid in KNOWN:
-                continue
-            names = person_names(t)
-            regs = set(REGNO.findall(t))
-            if names and regs:
-                weak.append((rid, r.get("row_id"), len(names), len(regs)))
+        with open(p, encoding="utf-8") as source:
+            for line in source:
+                if not line.strip():
+                    continue
+                row = json.loads(line)
+                text = row.get("text") or ""
+                for label, pattern in (("email", EMAIL), ("phone", PHONE), ("tfn", TFN)):
+                    for match in pattern.findall(text):
+                        contacts[label] += 1
+                        if len(ex[label]) < 5:
+                            ex[label].append((rid, str(match)[:44]))
+                if rid in KNOWN:
+                    continue
+                names = person_names(text)
+                regs = set(REGNO.findall(text))
+                if names and regs:
+                    weak.append((rid, row.get("row_id"), len(names), len(regs)))
 
     print("rows outside the 12 known titles pairing a name with an 8-digit "
           "number: %d" % len(weak))
