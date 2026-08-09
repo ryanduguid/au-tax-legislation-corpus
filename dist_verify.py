@@ -116,6 +116,9 @@ def main():
     with open(child(DIST, "README.md"), encoding="utf-8") as f:
         rd = f.read()
     check("README states the real title count", "%d in-force principal" % len(titles) in rd)
+    check("README does not promise EPUB files", "epub/<register_id>.epub" not in rd)
+    check("README does not claim rows naming people",
+          "titles name people" not in rd and "disciplined agents" not in rd)
     with open(child(DIST, "REMOVED.md"), encoding="utf-8") as f:
         removed_md = f.read()
     check("REMOVED.md lists every exclusion", all(r in removed_md for r in removed))

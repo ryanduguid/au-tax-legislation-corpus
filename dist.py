@@ -312,6 +312,20 @@ def main():
     rd = re.sub(r"instruments\.\s+[\d,]+ retrieval rows, [\d,]+ words\.",
                 "instruments. %s retrieval rows, %s words."
                 % (f"{kept_rows:,}", f"{kept_words:,}"), rd)
+    # Two full-corpus claims are false for this subset and cannot be fixed by
+    # patching counts: the layout bullet promising epub/<register_id>.epub (no
+    # EPUBs ship) and the limits paragraph describing the titles that name
+    # people (every one of them is removed from dist).
+    rd = re.sub(r"^- `epub/<register_id>\.epub`[^\n]*\n", "", rd,
+                count=1, flags=re.M)
+    rd = re.sub(
+        r"\*\*[\d,]+ titles name people\.\*\*.*?\n\n",
+        "**Titles naming people are not in this distribution.** The Tax "
+        "Practitioners Board registers its terminations and suspensions as "
+        "notifiable instruments; the %d titles carrying those name tables were "
+        "removed before publication. See REMOVED.md for the list and their "
+        "Register links.\n\n" % len(drop),
+        rd, count=1, flags=re.S)
     rd = ("> **This is the redistributable subset.** The EPUBs and %d titles that "
           "name private individuals are not included. See REMOVED.md for what was "
           "dropped and why, and run the pipeline yourself for the full corpus.\n\n"
