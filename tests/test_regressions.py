@@ -233,6 +233,76 @@ class Retry13MergeTests(unittest.TestCase):
             self.assertEqual(merged["C2004A00001"]["status"], "ok")
 
 
+class PiiNameGateTests(unittest.TestCase):
+    """The person-name gate shared by pii_scan.py, pii_scan2.py and
+    dist_verify.py through pii_patterns.py."""
+
+    # A disciplinary-register row in the all-caps style the old
+    # Capitalised-lowercase pair could not see: three surnames the old pattern
+    # missed (all-caps, internal capital, apostrophe), three 8-digit
+    # registration numbers.
+    ALL_CAPS_ROW = ("| SMITH, John | 12345678 | s 30-15 |\n"
+                    "| McDonald, Anne | 23456789 | s 30-15 |\n"
+                    "| O'Brien, Patrick | 34567890 | s 30-20 |")
+
+    def test_caps_mac_and_apostrophe_surnames_are_visible_to_the_gate(self):
+        patterns = load_module("pii_patterns_regression", REPO / "pii_patterns.py")
+        names = patterns.person_names(self.ALL_CAPS_ROW)
+        self.assertIn("SMITH, John", names)
+        self.assertIn("McDonald, Anne", names)
+        self.assertIn("O'Brien, Patrick", names)
+        self.assertGreaterEqual(len(names), 3)
+        self.assertGreaterEqual(
+            len(set(patterns.REGNO.findall(self.ALL_CAPS_ROW))), 3)
+
+    def test_statutory_vocabulary_is_filtered_case_insensitively(self):
+        patterns = load_module("pii_patterns_statutory", REPO / "pii_patterns.py")
+        # The statutory list holds capitalised forms, so an all-caps candidate
+        # must be checked against it case-insensitively, not waved through.
+        self.assertEqual(patterns.person_names(
+            "TAXATION ADMINISTRATION PROVISIONS 12345678 23456789 34567890"),
+            set())
+        self.assertEqual(
+            patterns.person_names("Deputy Commissioner of Taxation"), set())
+
+    def test_pii_scan_flags_a_register_written_in_capitals(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            base = Path(tmp)
+            build = base / "build"
+            build.mkdir()
+            for name in ("pii_scan.py", "pii_patterns.py", "corpus_paths.py"):
+                shutil.copy2(REPO / name, build / name)
+
+            titles = [
+                {"register_id": "F2026N00001", "name": "All Caps Register",
+                 "collection": "NotifiableInstrument"},
+                {"register_id": "C2004A00001", "name": "Ordinary Tax Act",
+                 "collection": "Act"},
+            ]
+            (base / "sources.json").write_text(
+                json.dumps({"titles": titles}), encoding="utf-8")
+            rows = {
+                "F2026N00001": {"row_id": "F2026N00001-1",
+                                "text": self.ALL_CAPS_ROW},
+                "C2004A00001": {"row_id": "C2004A00001-1",
+                                "text": "The Commissioner may determine the rate."},
+            }
+            for rid, row in rows.items():
+                folder = base / "markdown" / rid
+                folder.mkdir(parents=True)
+                (folder / "sections.jsonl").write_text(
+                    json.dumps(row) + "\n", encoding="utf-8")
+
+            scan = load_module("pii_scan_regression", build / "pii_scan.py")
+            with contextlib.redirect_stdout(io.StringIO()):
+                scan.main()
+
+            flagged = json.loads(
+                (build / "pii_flagged.json").read_text(encoding="utf-8"))
+            self.assertEqual([f["register_id"] for f in flagged], ["F2026N00001"])
+            self.assertGreaterEqual(flagged[0]["names_est"], 3)
+
+
 class DistributionTests(unittest.TestCase):
     PUBLIC_ID = "C2004A00001"
     PRIVATE_ID = "C2004A00002"
