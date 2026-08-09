@@ -5,19 +5,12 @@ build script that made it: no personal names, no image bytes, every row parses,
 every title listed in sources.json is actually present, and nothing links to a
 title that was removed.
 """
-import collections, glob, json, os, re, sys
+import collections, glob, json, os, sys
 
 from corpus_paths import child, corpus_root, register_id
+from pii_patterns import REGNO, person_names
 
 DIST = child(corpus_root(__file__), "dist")
-NAME = re.compile(r"\b[A-Z][a-z]{1,15},?\s+[A-Z][a-z]{1,15}(?:\s+[A-Z][a-z]{1,15})?\b")
-REGNO = re.compile(r"\b\d{8}\b")
-STATUTORY = re.compile(
-    r"\b(Act|Regulation|Schedule|Division|Subdivision|Part|Chapter|Section|"
-    r"Commissioner|Minister|Treasurer|Commonwealth|Australian|Australia|Board|"
-    r"Tax|Taxation|Income|Superannuation|Court|Tribunal|Determination|Notice|"
-    r"Instrument|Amendment|January|February|March|April|May|June|July|August|"
-    r"September|October|November|December)\b")
 
 fails = []
 
@@ -76,7 +69,7 @@ def main():
                 kind_counts[kind] += 1
                 if r.get("section"):
                     section_rows += 1
-                names = {m.group(0) for m in NAME.finditer(t) if not STATUTORY.search(m.group(0))}
+                names = person_names(t)
                 if len(names) >= 3 and len(set(REGNO.findall(t))) >= 3:
                     hot[rid] += 1
     check("every JSONL row parses", bad == 0, "%s rows, %d malformed" % (f"{rows:,}", bad))
