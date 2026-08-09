@@ -366,7 +366,13 @@ class DistributionTests(unittest.TestCase):
             encoding="utf-8")
         (root / "README.md").write_text(
             "2 in-force principal titles covering tax.\n\n"
-            "1 Acts and 1 legislative and notifiable instruments. 2 retrieval rows, 10 words.\n",
+            "1 Acts and 1 legislative and notifiable instruments. 2 retrieval rows, 10 words.\n\n"
+            "Each title is stored as:\n\n"
+            "- `epub/<register_id>.epub` - the file exactly as the Register served it\n"
+            "- `markdown/<register_id>/<register_id>.md` - full text\n\n"
+            "**1 titles name people.** The corpus carries about 3 name mentions\n"
+            "of disciplined agents with their registration numbers.\n\n"
+            "**0 titles are not the current text.** Placeholder.\n",
             encoding="utf-8")
 
         rates = root / "rates"
@@ -414,6 +420,16 @@ class DistributionTests(unittest.TestCase):
             self.assertIn("1 entries across 1 titles.", rates_md)
             self.assertIn(self.PUBLIC_NAME, rates_md)
             self.assertNotIn(self.PRIVATE_NAME, rates_md)
+
+            # The full-corpus README's EPUB layout bullet and its paragraph on
+            # titles naming people are both false for dist and must not
+            # survive the rewrite; the markdown bullet must.
+            dist_readme = (output / "README.md").read_text(encoding="utf-8")
+            self.assertNotIn("epub/<register_id>.epub", dist_readme)
+            self.assertNotIn("titles name people", dist_readme)
+            self.assertNotIn("disciplined agents", dist_readme)
+            self.assertIn("markdown/<register_id>/<register_id>.md", dist_readme)
+            self.assertIn("REMOVED.md", dist_readme)
 
             verify.DIST = str(output)
             with contextlib.redirect_stdout(io.StringIO()):
