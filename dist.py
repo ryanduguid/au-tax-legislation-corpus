@@ -318,8 +318,12 @@ def main():
     # people (every one of them is removed from dist).
     rd = re.sub(r"^- `epub/<register_id>\.epub`[^\n]*\n", "", rd,
                 count=1, flags=re.M)
+    # The lead is matched loosely on purpose: the new finalize.py writes a
+    # numeric count ("**12 titles name people.**") but the README built by
+    # the previous generation spells it out ("**Eleven titles name
+    # people.**"), and the rewrite must strip both.
     rd = re.sub(
-        r"\*\*[\d,]+ titles name people\.\*\*.*?\n\n",
+        r"\*\*[^*\n]{1,24} titles name people\.\*\*.*?\n\n",
         "**Titles naming people are not in this distribution.** The Tax "
         "Practitioners Board registers its terminations and suspensions as "
         "notifiable instruments; the %d titles carrying those name tables were "

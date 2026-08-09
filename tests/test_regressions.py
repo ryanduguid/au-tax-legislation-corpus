@@ -370,7 +370,11 @@ class DistributionTests(unittest.TestCase):
             "Each title is stored as:\n\n"
             "- `epub/<register_id>.epub` - the file exactly as the Register served it\n"
             "- `markdown/<register_id>/<register_id>.md` - full text\n\n"
-            "**1 titles name people.** The corpus carries about 3 name mentions\n"
+            # Spelled-out lead, as the README built by the previous finalize
+            # generation actually reads — the rewrite must strip this form
+            # too, not only the numeric "**12 titles name people.**" the new
+            # finalize writes.
+            "**Eleven titles name people.** The corpus carries about 3 name mentions\n"
             "of disciplined agents with their registration numbers.\n\n"
             "**0 titles are not the current text.** Placeholder.\n",
             encoding="utf-8")
