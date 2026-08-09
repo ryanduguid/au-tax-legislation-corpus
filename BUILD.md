@@ -16,7 +16,7 @@ python discover.py      # -> titles_all.json, titles_principal.json
 python versions.py      # -> acts_resolved.json
 python download.py      # -> ../epub/*.epub, manifest_raw.json
 python probe13.py       # -> probe13.json      (only if download reports no_epub)
-python retry13.py       # -> retry13_patch.json, then patch manifest_raw.json
+python retry13.py       # -> retry13_patch.json; patches manifest_raw.json in place
 python extract.py       # -> ../markdown/**, manifest_md.json
 python finalize.py      # -> ../sources.json, ../INDEX.md, ../README.md, ../LICENCE-NOTICE.md
 python rates.py         # -> ../rates/rates.jsonl, ../rates/RATES.md

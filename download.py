@@ -62,7 +62,7 @@ def fetch(url, dst, tries=3):
     code = ctype = ""
     meta = None
     for attempt in range(tries):
-        args = ["curl.exe", "-sL", "--max-time", "600", "--retry", "2",
+        args = ["curl", "-sL", "--max-time", "600", "--retry", "2",
                 "--retry-all-errors", "--retry-delay", "5",
                 "-w", "%{http_code}|%{content_type}", "-o", dst]
         # Resume only makes sense for a truncated raw transfer.

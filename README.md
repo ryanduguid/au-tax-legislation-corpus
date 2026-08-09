@@ -57,7 +57,7 @@ python discover.py      # -> titles_all.json, titles_principal.json
 python versions.py      # -> acts_resolved.json
 python download.py      # -> ./corpus/epub/*.epub, manifest_raw.json
 python probe13.py       # only if download reports no_epub
-python retry13.py       # -> retry13_patch.json, then patch manifest_raw.json
+python retry13.py       # -> retry13_patch.json; patches manifest_raw.json in place
 python extract.py       # -> ./corpus/markdown/**, manifest_md.json
 python finalize.py      # -> ./corpus/sources.json, INDEX.md, README.md, LICENCE-NOTICE.md
 python rates.py         # -> ./corpus/rates/rates.jsonl, RATES.md
@@ -70,7 +70,7 @@ To produce a corpus you can pass on to someone else:
 python pii_scan.py      # -> pii_flagged.json, the titles that name people
 python pii_scan2.py     # second pass at a lower threshold, plus contact details
 python dist.py          # -> ./corpus/dist/, the redistributable subset
-python dist_verify.py   # 12 checks against the built subset, exits non-zero on any failure
+python dist_verify.py   # checks the built subset, exits non-zero if any check fails
 ```
 
 The intermediate JSON files from the 4 August run are committed, so any single
@@ -158,7 +158,7 @@ contact details anywhere are five organisational addresses.
 `dist.py` then writes `dist/`: 934 titles, 21,596 rows, 5,722,156 words, 106 MB,
 with a `REMOVED.md` listing every exclusion and its Register link so the
 omission is visible and reversible. `dist_verify.py` checks the result against
-its own claims — twelve assertions, non-zero exit on any failure.
+its own claims and exits non-zero if any check fails.
 
 ## Licence
 

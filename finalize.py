@@ -23,6 +23,26 @@ LICENCE = "CC BY 4.0"
 LICENCE_URL = "https://creativecommons.org/licenses/by/4.0/"
 REGISTER = "https://www.legislation.gov.au"
 
+
+def pii_summary():
+    """Totals for the README paragraph on titles naming people.
+
+    Derived from pii_flagged.json rather than hardcoded in prose, which is how
+    the corpus README came to claim eleven titles and 3,750 names against a
+    committed scan showing twelve and 5,404. pii_scan.py runs after this stage
+    in the documented pipeline, so on a fresh build the scan output may not
+    exist yet; fall back to the totals of the last committed scan.
+    """
+    try:
+        with open(os.path.join(SCRATCH, "pii_flagged.json"), encoding="utf-8") as f:
+            flagged = json.load(f)
+        titles = len(flagged)
+        names = sum(int(t.get("names_est") or 0) for t in flagged)
+    except (OSError, ValueError, TypeError):
+        titles, names = 12, 5400
+    # The paragraph says "about", so round the mention count to the nearest 50.
+    return titles, int(round(names / 50.0)) * 50
+
 # The Register requires different wording depending on whether the content was
 # changed. The EPUBs are byte-identical to what it served; everything derived
 # from them is not.
@@ -360,10 +380,11 @@ carrying the prose that preceded it — the sentence naming the enabling
 provision, or the basin name. The largest of these was a single 14,928-word row
 before the split.
 
-**Eleven titles name people.** The Tax Practitioners Board registers its
+**{pii_titles} titles name people.** The Tax Practitioners Board registers its
 terminations and suspensions as notifiable instruments, so the corpus carries
-about 3,750 named agents with their registration numbers and the provision they
-fell foul of. That text is public on the Register, but splitting it into rows
+about {pii_names} name mentions of disciplined agents with their registration
+numbers and the provision they fell foul of. That text is public on the
+Register, but splitting it into rows
 makes it searchable by name in a way the source document is not. Exclude
 `granularity: table_block` rows whose title starts with "Termination and
 Suspension" or "TPB Termination" if that is not wanted.
@@ -393,12 +414,14 @@ matches nothing.
 Table cells wrap content in `<p>`, so cell text must accumulate in a buffer that
 survives a nested paragraph.
 """
+    pii_titles, pii_names = pii_summary()
     with open(child(ROOT, "README.md"), "w", encoding="utf-8") as f:
         f.write(readme.format(
             retrieved=retrieved, n=len(ok), n_act=n_act, n_inst=n_inst,
             rows=f"{tot_rows:,}",
             words=f"{tot_words:,}", lic=LICENCE, lic_url=LICENCE_URL,
             mins=max(1, round(len(ok) * 1.5 / 60)),
+            pii_titles=pii_titles, pii_names=f"{pii_names:,}",
             whole=len([a for a in ok if a.get("granularity") == "whole_act"]),
             tabled=len([a for a in ok if a.get("granularity") == "table_block"]),
             notcurrent=len([a for a in ok if a.get("version_is_current") is False])))

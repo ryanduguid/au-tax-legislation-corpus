@@ -11,33 +11,12 @@ ordinary legislation constantly, so a bare name test would flag the whole
 corpus; the registration number is what separates a disciplinary register from
 a statute.
 """
-import collections, glob, json, os, re
+import collections, glob, json, os
 
 from corpus_paths import child, corpus_root, register_id
+from pii_patterns import REGNO, person_names
 
 ROOT = corpus_root(__file__)
-
-# "Smith, John" or "John Smith" — two or three capitalised words, no statutory
-# vocabulary in them.
-NAME = re.compile(r"\b[A-Z][a-z]{1,15},?\s+[A-Z][a-z]{1,15}(?:\s+[A-Z][a-z]{1,15})?\b")
-# TPB registration numbers run 8 digits; ABNs 11.
-REGNO = re.compile(r"\b\d{8}\b")
-STATUTORY = re.compile(
-    r"\b(Act|Regulation|Schedule|Division|Subdivision|Part|Chapter|Section|"
-    r"Commissioner|Minister|Treasurer|Commonwealth|Australian|Australia|Board|"
-    r"Tax|Taxation|Income|Superannuation|Court|Tribunal|Determination|Notice|"
-    r"Instrument|Amendment|January|February|March|April|May|June|July|August|"
-    r"September|October|November|December)\b")
-
-
-def person_names(text):
-    out = set()
-    for m in NAME.finditer(text):
-        s = m.group(0)
-        if STATUTORY.search(s):
-            continue
-        out.add(s)
-    return out
 
 
 def main():
