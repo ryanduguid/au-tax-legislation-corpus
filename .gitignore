@@ -12,5 +12,7 @@ corpus/
 *.log
 _*.json
 _*.html
+_*.txt
+download_log.txt
 __pycache__/
 *.pyc
