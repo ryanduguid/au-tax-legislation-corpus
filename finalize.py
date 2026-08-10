@@ -313,8 +313,9 @@ things separately: superseded compilations, titles whose in-force version has no
 published compilation, titles no longer in force, and lookups that failed.
 Read-only, about {mins} minutes for everything.
 
-Run on the build date over all {n} titles: 933 unchanged, 13 with no compilation
-published for the version now in force, 0 repealed or sunset, 0 lookup failures.
+It runs after this README is written and keeps no artefact, so no run's counts
+are repeated here. The {notcurrent} titles already known to hold a superseded
+compilation are listed in `sources.json` under `titles_not_current_version`.
 
 ## Licence and attribution
 

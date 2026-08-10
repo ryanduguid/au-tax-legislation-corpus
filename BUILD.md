@@ -121,8 +121,30 @@ prints a progress line every 25 titles.
   And keep the prose in document order rather than hoisting the first line as a
   shared lead — Excise By-law No. 127 prescribes petroleum fields one table per
   basin, and hoisting stranded "C. PERTH BASIN" and dropped the operative
-  paragraphs entirely. Assert afterwards that every body line appears in some
-  chunk; that check is what caught it.
+  paragraphs entirely. `table_split` asserts afterwards that every segmented
+  line appears in some chunk and raises if one does not; that check is what
+  caught it, and it now runs on every build. It covers the table-split path
+  only. `to_markdown` has no equivalent whole-document assertion, which is how
+  a heading-less EPUB volume was able to lose its whole body silently — see the
+  volume gate below.
+- **The pre-body gate is per volume, not per document.** A multi-volume EPUB
+  repeats its compilation cover page at the head of every volume, so `seen_body`
+  resets at each volume boundary — but the decision that the document *has*
+  structural headings was taken once, across all volumes. A volume that carries
+  none (F2025L00281 keeps Schedule 1 behind `ScheduleHeading`/`P1` markup) then
+  never opened its gate, and its tables, images and paragraphs were dropped with
+  no placeholder, no counter and no parse failure: 92% of that instrument, and
+  `manifest_md.json` recorded `sections=20, words=18583` with no error field.
+  Three things hold it shut now. Decide the gate from the volume's own blocks.
+  Open it, for a heading-less volume, at that volume's contents page when no
+  body-classed paragraph comes first and at the volume's first block when one
+  does, so the compilation cover page is still dropped. And leave the bare-text
+  endnote trigger armed only once a mapped heading has been seen — the cover
+  page lists "Endnotes" as one of the volumes, so arming it at the top of a
+  heading-less volume routes that volume's whole body into `endnotes.md`, which
+  is the same loss wearing a different hat. Recovered text also opens a row of
+  its own, or it is retrieved under the section number of whatever was still
+  open when the previous volume ended.
 - **Numbering gaps in ActHead instruments are genuine**, not parser misses.
   Compilation removes repealed sections, so 21-29 simply do not appear.
 - **`contains(name,...)` matches more than the current name.** It found the
