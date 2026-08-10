@@ -81,14 +81,14 @@ def main():
             if p:
                 manifest[i] = dict(a, **p)
                 merged += 1
-        # This is the only write in the pipeline that replaces an existing
-        # artefact rather than creating one, and manifest_raw.json is the sole
-        # record of a 2h40m crawl: every sourceUrl, compilationRegisterId and
-        # isAuthorised value. Truncating it in place means a Ctrl-C, a full disk
-        # or an exception mid-dump leaves a half-written file, extract.py fails
-        # on json.load, and the whole download stage has to be re-run. Write a
-        # sibling temp file and rename it over the target instead; os.replace is
-        # atomic on the same filesystem, on Windows as well as POSIX.
+        # manifest_raw.json is the sole record of a 2h40m crawl: every
+        # sourceUrl, compilationRegisterId and isAuthorised value. Truncating it
+        # in place means a Ctrl-C, a full disk or an exception mid-dump leaves a
+        # half-written file, extract.py fails on json.load, and the whole
+        # download stage has to be re-run. Write a sibling temp file and rename
+        # it over the target instead; os.replace is atomic on the same
+        # filesystem, on Windows as well as POSIX. download.py's own dump of
+        # this file uses the same idiom, so neither writer can truncate it.
         target = os.path.join(SCRATCH, "manifest_raw.json")
         tmp = target + ".tmp"
         try:

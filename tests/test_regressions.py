@@ -801,8 +801,9 @@ class Retry13MergeTests(unittest.TestCase):
 
 class Retry13ManifestWriteTests(unittest.TestCase):
     def test_a_failed_manifest_write_leaves_the_download_record_intact(self):
-        """manifest_raw.json is the only record of the download crawl, and this
-        is the pipeline's only write that replaces an existing artefact."""
+        """manifest_raw.json is the only record of the download crawl, and both
+        writers replace it in place, so neither may truncate it.  See
+        DownloadManifestWriteTests for the download.py half."""
         retry13 = load_module("retry13_atomic", REPO / "retry13.py")
         with tempfile.TemporaryDirectory() as tmp:
             scratch = Path(tmp)
@@ -850,6 +851,62 @@ class Retry13ManifestWriteTests(unittest.TestCase):
                 with contextlib.redirect_stdout(io.StringIO()):
                     with self.assertRaises(OSError):
                         retry13.main()
+
+            self.assertEqual(manifest_path.read_text(encoding="utf-8"), original)
+            self.assertFalse((scratch / "manifest_raw.json.tmp").exists())
+
+
+class DownloadManifestWriteTests(unittest.TestCase):
+    def test_a_failed_manifest_write_leaves_the_previous_crawl_intact(self):
+        """download.py's own dump of manifest_raw.json replaces the file an
+        earlier run wrote - BUILD.md documents re-running a single stage - and
+        it lands at the end of a 2h40m crawl.  Truncating it in place and then
+        failing mid-dump leaves a half-written file that extract.py cannot
+        json.load, with the crawl it recorded already spent."""
+        download = load_module("download_atomic_manifest", REPO / "download.py")
+        with tempfile.TemporaryDirectory() as tmp:
+            scratch = Path(tmp)
+            epub_dir = scratch / "corpus" / "epub"
+            epub_dir.mkdir(parents=True)
+            (scratch / "acts_resolved.json").write_text(json.dumps([
+                {"id": "F2020L01498", "name": "Recoverable Instrument",
+                 "versionStart": "2026-03-01", "compilationNumber": "4"}]),
+                encoding="utf-8")
+
+            previous = [
+                {"id": "C2004A00001", "name": "Already Downloaded Act",
+                 "epub": "C2004A00001.epub", "bytes": 10, "status": "ok",
+                 "sourceUrl": "https://example.test/C2004A00001",
+                 "versionStart": "2026-01-01"},
+            ]
+            manifest_path = scratch / "manifest_raw.json"
+            manifest_path.write_text(json.dumps(previous), encoding="utf-8")
+            original = manifest_path.read_text(encoding="utf-8")
+
+            def fake_fetch(url, dst, tries=3):
+                Path(dst).write_bytes(b"PK-fake-epub")
+                return True, "200", "application/epub+zip", 12, {
+                    "registerId": "F2025C00010", "isAuthorised": True}
+
+            real_dump = download.json.dump
+
+            def exploding_dump(obj, fp, **kwargs):
+                if os.path.basename(getattr(fp, "name", "")).startswith("manifest_raw.json"):
+                    fp.write('[{"id": "F2020')
+                    raise OSError("no space left on device")
+                return real_dump(obj, fp, **kwargs)
+
+            download.SCRATCH = str(scratch)
+            download.EPUB_DIR = str(epub_dir)
+            # CRAWL_DELAY rather than a patched time.sleep: the sleep patches
+            # elsewhere in this file mutate the shared time module for the whole
+            # process, and this test needs no such reach.
+            download.CRAWL_DELAY = 0
+            download.fetch = fake_fetch
+            with mock.patch.object(download.json, "dump", exploding_dump):
+                with contextlib.redirect_stdout(io.StringIO()):
+                    with self.assertRaises(OSError):
+                        download.main()
 
             self.assertEqual(manifest_path.read_text(encoding="utf-8"), original)
             self.assertFalse((scratch / "manifest_raw.json.tmp").exists())
@@ -980,6 +1037,20 @@ class GeneratedReadmeTests(unittest.TestCase):
             self.assertNotIn("superseded compilation", paragraph, paragraph)
         staleness = source.split("## Checking staleness", 1)[1].split("## Licence", 1)[0]
         self.assertIn("no published compilation", " ".join(staleness.split()))
+
+    def test_this_repositorys_readme_does_not_file_those_titles_as_superseded(self):
+        """The same claim, in the README a reader meets first.  The generated
+        text was corrected and this one was not, and the test above reads only
+        finalize.py, so nothing held the sibling.  BUILD.md and check_current.py
+        keep these titles out of the superseded bucket precisely because that
+        bucket says re-download, at a URL that answers 404."""
+        readme = (REPO / "README.md").read_text(encoding="utf-8")
+        paragraphs = [" ".join(p.split()) for p in re.split(r"\n\s*\n", readme)
+                      if "version_is_current" in p]
+        self.assertTrue(paragraphs, "no README paragraph cites the flag")
+        for paragraph in paragraphs:
+            self.assertNotIn("superseded compilation", paragraph, paragraph)
+            self.assertIn("no published compilation", paragraph, paragraph)
 
 
 class ShippedIntermediateTests(unittest.TestCase):
