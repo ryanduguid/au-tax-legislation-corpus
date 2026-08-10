@@ -11,7 +11,7 @@ ordinary legislation constantly, so a bare name test would flag the whole
 corpus; the registration number is what separates a disciplinary register from
 a statute.
 """
-import collections, glob, json, os
+import glob, json, os
 
 from corpus_paths import child, corpus_root, register_id
 from pii_patterns import REGNO, person_names
@@ -20,7 +20,8 @@ ROOT = corpus_root(__file__)
 
 
 def main():
-    src = json.load(open(child(ROOT, "sources.json"), encoding="utf-8"))
+    with open(child(ROOT, "sources.json"), encoding="utf-8") as source:
+        src = json.load(source)
     byid = {t["register_id"]: t for t in src["titles"]}
     flagged = []
 
@@ -28,7 +29,8 @@ def main():
     for candidate in sorted(glob.glob(os.path.join(markdown_root, "*", "sections.jsonl"))):
         rid = register_id(os.path.basename(os.path.dirname(candidate)))
         p = child(markdown_root, rid, "sections.jsonl")
-        rows = [json.loads(l) for l in open(p, encoding="utf-8") if l.strip()]
+        with open(p, encoding="utf-8") as source:
+            rows = [json.loads(line) for line in source if line.strip()]
         hot = []
         for i, r in enumerate(rows):
             t = r.get("text") or ""
@@ -61,9 +63,9 @@ def main():
           % (sum(f["rows_flagged"] for f in flagged),
              sum(f["names_est"] for f in flagged),
              f"{sum(f['words'] for f in flagged):,}"))
-    json.dump(flagged, open(os.path.join(os.path.dirname(os.path.abspath(__file__)),
-                                         "pii_flagged.json"), "w", encoding="utf-8"),
-              indent=1)
+    output = os.path.join(os.path.dirname(os.path.abspath(__file__)), "pii_flagged.json")
+    with open(output, "w", encoding="utf-8") as destination:
+        json.dump(flagged, destination, indent=1)
 
 
 if __name__ == "__main__":

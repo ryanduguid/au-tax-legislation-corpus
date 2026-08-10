@@ -22,9 +22,10 @@ EPUB_DIR = child(ROOT, "epub")
 
 
 def main():
-    probe = {p["id"]: p for p in
-             json.load(open(os.path.join(SCRATCH, "probe13.json"), encoding="utf-8"))}
-    manifest = json.load(open(os.path.join(SCRATCH, "manifest_raw.json"), encoding="utf-8"))
+    with open(os.path.join(SCRATCH, "probe13.json"), encoding="utf-8") as source:
+        probe = {p["id"]: p for p in json.load(source)}
+    with open(os.path.join(SCRATCH, "manifest_raw.json"), encoding="utf-8") as source:
+        manifest = json.load(source)
     todo = [a for a in manifest if not a.get("epub") and probe.get(a["id"], {}).get("latest_doc")]
     print("retrying %d titles" % len(todo), flush=True)
 

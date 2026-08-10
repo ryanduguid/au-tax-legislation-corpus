@@ -73,15 +73,16 @@ def main(retrieved):
     for a in ok:
         p = child(ROOT, "markdown", register_id(a["id"]), "sections.jsonl")
         n = sec = 0
-        for ln in open(p, encoding="utf-8"):
-            if not ln.strip():
-                continue
-            n += 1
-            row = json.loads(ln)
-            if row.get("section"):
-                sec += 1
-            k = row.get("kind") or ("section" if row.get("section") else "unnumbered")
-            tot_kind[k] = tot_kind.get(k, 0) + 1
+        with open(p, encoding="utf-8") as source:
+            for line in source:
+                if not line.strip():
+                    continue
+                n += 1
+                row = json.loads(line)
+                if row.get("section"):
+                    sec += 1
+                kind = row.get("kind") or ("section" if row.get("section") else "unnumbered")
+                tot_kind[kind] = tot_kind.get(kind, 0) + 1
         a["_rows"], a["_sec_rows"] = n, sec
 
     tot_rows = sum(a["_rows"] for a in ok)

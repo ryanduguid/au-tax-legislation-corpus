@@ -8,13 +8,15 @@ def curl_json(url, tries=3):
         p = subprocess.run(["curl","-sL","--max-time","90","-o",dst,url], capture_output=True)
         if p.returncode == 0:
             try:
-                d = json.load(open(dst, encoding="utf-8"))
+                with open(dst, encoding="utf-8") as source:
+                    d = json.load(source)
                 if "error" not in d: return d
             except Exception: pass
         time.sleep(6)
     return None
 
-m = json.load(open(os.path.join(SCRATCH, "manifest_raw.json"), encoding="utf-8"))
+with open(os.path.join(SCRATCH, "manifest_raw.json"), encoding="utf-8") as source:
+    m = json.load(source)
 bad = [a for a in m if not a.get("epub")]
 out = []
 for a in bad:
@@ -32,4 +34,5 @@ for a in bad:
         rid, len(vs), bool(cur and cur[0].get("registerId")),
         (latest or {}).get("registerId"), (latest or {}).get("start","")[:10]))
     time.sleep(1.5)
-json.dump(out, open(os.path.join(SCRATCH, "probe13.json"),"w",encoding="utf-8"), indent=1)
+with open(os.path.join(SCRATCH, "probe13.json"), "w", encoding="utf-8") as destination:
+    json.dump(out, destination, indent=1)

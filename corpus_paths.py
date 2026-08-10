@@ -49,8 +49,13 @@ def child(root: PathPart, *parts: PathPart) -> str:
 
 
 def reject_symlinks(directory: PathPart) -> None:
-    """Reject a tree containing links before a recursive distribution copy."""
-    for current, directories, files in os.walk(os.fspath(directory), followlinks=False):
+    """Reject a tree containing links or junctions before a recursive copy."""
+    is_junction = getattr(os.path, "isjunction", lambda _path: False)
+    root = os.fspath(directory)
+    if os.path.islink(root) or is_junction(root):
+        raise ValueError("corpus tree contains a symbolic link or junction")
+    for current, directories, files in os.walk(root, followlinks=False):
         for name in [*directories, *files]:
-            if os.path.islink(os.path.join(current, name)):
-                raise ValueError("corpus tree contains a symbolic link")
+            candidate = os.path.join(current, name)
+            if os.path.islink(candidate) or is_junction(candidate):
+                raise ValueError("corpus tree contains a symbolic link or junction")
