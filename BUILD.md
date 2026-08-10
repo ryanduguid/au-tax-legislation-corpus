@@ -25,6 +25,16 @@ python rates.py         # -> ../rates/rates.jsonl, ../rates/RATES.md
 The intermediate files shipped here are the ones that produced the current
 corpus, so any single stage can be re-run without repeating the earlier ones.
 
+**`manifest_md.json` and the published corpus predate the volume-gate fix
+below.** They were produced by the extractor as it stood before it, so
+F2025L00281 is still recorded as `sections=20, words=18583` - the lossy parse,
+not what `extract.py` now produces for it. Re-running `extract.py` changes that
+entry, and `finalize.py` reads the manifest, so the corpus README's title, row
+and word totals move with it. Re-running `finalize.py` on its own reproduces
+today's published figures, because it is fed the pre-fix manifest. The
+intermediates are still re-runnable; they are simply not a description of what
+this code does now.
+
 ## Timing
 
 `download.py` sleeps 10 seconds between titles, honouring the Crawl-delay in
@@ -121,8 +131,36 @@ prints a progress line every 25 titles.
   And keep the prose in document order rather than hoisting the first line as a
   shared lead — Excise By-law No. 127 prescribes petroleum fields one table per
   basin, and hoisting stranded "C. PERTH BASIN" and dropped the operative
-  paragraphs entirely. Assert afterwards that every body line appears in some
-  chunk; that check is what caught it.
+  paragraphs entirely. `table_split` asserts afterwards that every segmented
+  line appears in some chunk and raises if one does not; that check is what
+  caught it, and it now runs on every build. It covers the table-split path
+  only. `to_markdown` has no equivalent whole-document assertion, which is how
+  a heading-less EPUB volume was able to lose its whole body silently — see the
+  volume gate below.
+- **The pre-body gate is per volume, not per document.** A multi-volume EPUB
+  repeats its compilation cover page at the head of every volume, so `seen_body`
+  resets at each volume boundary — but the decision that the document *has*
+  structural headings was taken once, across all volumes. A volume that carries
+  none (F2025L00281 keeps Schedule 1 behind `ScheduleHeading`/`P1` markup) then
+  never opened its gate, and its tables, images and paragraphs were dropped with
+  no placeholder, no counter and no parse failure: 92% of that instrument, and
+  `manifest_md.json` recorded `sections=20, words=18583` with no error field.
+  Three things hold it shut now. Decide the gate from the volume's own blocks.
+  Open it, for a heading-less volume, at that volume's contents page, or at the
+  first paragraph carrying a body class if one comes first — never at the
+  volume's own first block, which is the compilation cover page that every
+  markdown file and every JSONL row states was omitted. `Header` and `Footer`
+  are skipped classes but not boundaries: Word repeats the running header above
+  the cover page. A volume showing neither boundary keeps the gate shut and is
+  dropped as it was before, which is the older documented loss in preference to
+  publishing a cover page under a notice saying it was removed; all 11
+  heading-less volumes across the 946 EPUBs open at a contents page. And leave
+  the bare-text endnote trigger armed only once a mapped heading has been seen
+  — the cover page lists "Endnotes" as one of the volumes, so arming it at the
+  top of a heading-less volume routes that volume's whole body into
+  `endnotes.md`, which is the same loss wearing a different hat. Recovered text
+  also opens a row of its own, or it is retrieved under the section number of
+  whatever was still open when the previous volume ended.
 - **Numbering gaps in ActHead instruments are genuine**, not parser misses.
   Compilation removes repealed sections, so 21-29 simply do not appear.
 - **`contains(name,...)` matches more than the current name.** It found the
