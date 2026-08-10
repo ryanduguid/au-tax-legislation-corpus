@@ -24,6 +24,10 @@ from html.parser import HTMLParser
 from corpus_paths import child, corpus_root, register_id
 
 SKIP_CLASS = re.compile(r'^(TOC\d|TofSects|Contents|Header|Footer)', re.I)
+# The contents page on its own. A running header or footer is skipped by
+# SKIP_CLASS too, but it is not a boundary: Word repeats it above the
+# compilation cover page, so it says nothing about where the body starts.
+CONTENTS_CLASS = re.compile(r'^(TOC\d|TofSects|Contents)', re.I)
 # Endnotes apparatus. The trigger must be narrow: CompiledActNo and UpdateDate
 # also appear in the FRONT matter, so keying on them flips the whole Act into
 # endnotes at line one.
@@ -268,6 +272,25 @@ def md_table(rows):
     return out
 
 
+def check_chunks_complete(lines, chunks):
+    """Raise unless every body line appears in some chunk.
+
+    The check that caught the hoisting bug, kept as a runtime guard. Hoisting
+    the first prose line of a table-shaped document as a shared lead stranded
+    "C. PERTH BASIN" and dropped Excise By-law No. 127's operative paragraphs
+    outright, and the shape of that mistake is easy to reintroduce. Failing
+    closed here makes it a recorded parse failure, and a parse failure refuses
+    to write manifest_md.json.
+    """
+    kept = {ln.strip() for chunk in chunks for ln in chunk["text"][0].split("\n")}
+    lost = [ln.strip() for ln in lines if ln.strip() and ln.strip() not in kept]
+    if lost:
+        # ascii() keeps the message printable when stdout is redirected on
+        # Windows, where it defaults to the ANSI code page.
+        raise RuntimeError("chunking dropped %d body line(s), first: %s"
+                           % (len(lost), ascii(lost[0][:80])))
+
+
 def table_split(body, name):
     """Chunk a document that is a run of tables rather than a run of sections.
 
@@ -355,6 +378,8 @@ def table_split(body, name):
         pending = []
     if pending:
         emit("%s — closing provisions" % name, "text_block", "\n".join(pending).strip())
+
+    check_chunks_complete([ln for _kind, seg in segs for ln in seg], out)
     return out
 
 
@@ -373,10 +398,77 @@ def to_markdown(blocks, meta, force_bare=False):
 
     # Counts the IASB template too, so its publisher boilerplate is held out of
     # the body by the same gate that holds out an Act's compilation cover page.
+    # Document-wide on purpose: it decides whether a CharSectno span alone may
+    # be read as a section heading, and that is a property of the template the
+    # whole EPUB was authored from, not of one volume.
     has_acthead = any(b["k"] == "p" and _head_lvl(b) for b in blocks)
+    # The pre-body gate is different: it must be decided per volume. seen_body
+    # resets at every volume boundary, so deciding it once across the whole
+    # document left it False for the entire run of any volume that carries no
+    # mapped heading, and every table, image and body paragraph in that volume
+    # was dropped with no placeholder and no counter. F2025L00281 carries five
+    # of its eight volumes' Schedule 1 behind ScheduleHeading/P1 markup and lost
+    # 92% of its words that way.
+    #
+    # A heading-less volume has nothing to release the gate, so release it at
+    # the first block shown to be past the compilation cover page. Every
+    # heading-less volume in the corpus opens the same way - Coat of Arms,
+    # short title, compilation number, the volume list, then TOC/Contents, then
+    # the text - so the contents page is the boundary of the same cover page
+    # the gate already drops in a volume that does have headings.
+    def _vol_gate(seg, start):
+        """Index where a heading-less volume's body starts, or None.
+
+        Never the volume's own first block. Every volume repeats the
+        compilation cover page, and every markdown file and every JSONL row
+        carries an attribution stating that cover pages are omitted, so
+        opening the gate at a block that has not been shown to be past the
+        cover page would publish it under a licence notice that says it was
+        removed. A volume showing neither boundary keeps the gate shut and is
+        dropped as it was before this gate existed - the older, documented
+        loss in preference to a new false statement. That costs nothing in the
+        current corpus: all 11 heading-less volumes across the 946 EPUBs open
+        at a contents page.
+
+        Header and Footer are skipped by SKIP_CLASS but are not boundaries:
+        Word repeats the running header above the cover page, so opening there
+        opens at the cover page.
+        """
+        for off, b in enumerate(seg):
+            if b["k"] != "p":
+                continue
+            if CONTENTS_CLASS.match(b["cls"]):
+                return start + off
+            if PREBODY_CLASS.match((b["cls"].split() or [""])[0]):
+                return start + off
+        return None
+
+    vol_heads, vol_gate = [], []
+
+    def _close_vol(start, end):
+        seg = blocks[start:end]
+        vol_heads.append(any(b["k"] == "p" and _head_lvl(b) for b in seg))
+        vol_gate.append(_vol_gate(seg, start))
+
+    _start = 0
+    for _i, b in enumerate(blocks):
+        if b["k"] == "file":
+            _close_vol(_start, _i)
+            _start = _i + 1
+    _close_vol(_start, len(blocks))
+    vol = 0
     # In bare mode there is no structural heading to mark the start of the body,
-    # so the pre-body gate would discard the whole document.
-    seen_body = not has_acthead or force_bare
+    # so the pre-body gate would discard the whole document. A document with no
+    # mapped heading anywhere is the same case and keeps its old behaviour: the
+    # gate is open from the first block, contents page or not.
+    gate_free = not has_acthead or force_bare
+    seen_body = gate_free
+    # The bare-text endnote trigger keeps the document-wide rule, because the
+    # cover page of every volume lists "Endnotes" as one of the volumes. Arming
+    # that trigger from the top of a heading-less volume routes the volume's
+    # entire body into endnotes.md, which is the same content loss wearing a
+    # different hat.
+    endnote_armed = gate_free
     # Bare mode is never chosen from the markup, because guessing which classes
     # count as structure was wrong twice: cosmetic Word classes look structural,
     # and one-off template families run to dozens. The caller runs the normal
@@ -439,10 +531,28 @@ def to_markdown(blocks, meta, force_bare=False):
             # reset it fuses into whichever section was open at the seam.
             # in_endnotes must reset too, or one stray trigger in volume 1
             # swallows every remaining volume.
-            seen_body = not has_acthead or force_bare
+            vol += 1
+            seen_body = gate_free
+            endnote_armed = gate_free
             in_endnotes = False
             container = None
             continue
+
+        # A volume with no mapped heading never reaches the heading branch
+        # below, so this is the only thing that opens its gate, and a volume
+        # _vol_gate could not place stays shut. Open a row of its own for it as
+        # well: sections carry across a volume boundary, so without this the
+        # recovered text is filed under whichever section was still open when
+        # the previous volume ended and is retrieved under that section's
+        # number. The row stays empty, and so is dropped, for a volume whose
+        # content turns out to be endnotes.
+        if (not seen_body and not vol_heads[vol]
+                and vol_gate[vol] is not None and bi >= vol_gate[vol]):
+            seen_body = True
+            container = "%s - volume %d" % (meta["name"], vol)
+            cur = {"section": None, "heading": container, "kind": "container",
+                   "container": container, "text": []}
+            sections.append(cur)
 
         if k in ("table", "img"):
             # Same gate as paragraphs. Without it a trailing amendment-history
@@ -466,9 +576,10 @@ def to_markdown(blocks, meta, force_bare=False):
         if SKIP_CLASS.match(cls):
             continue
         if not in_endnotes and (ENDNOTE_CLASS.match(base)
-                                or (seen_body and ENDNOTE_TEXT.match(text))):
+                                or (endnote_armed and ENDNOTE_TEXT.match(text))):
             in_endnotes = True
             seen_body = True
+            endnote_armed = True
             cur = None
         if FRONT_CLASS.match(base) and (long_title is None or base.lower().startswith('longt')):
             if long_title is None or not long_title_is_longt:
@@ -486,6 +597,7 @@ def to_markdown(blocks, meta, force_bare=False):
             lvl = 5
         if lvl and not in_endnotes:
             seen_body = True
+            endnote_armed = True
             lines.append("")
             lines.append("#" * lvl + " " + text)
             if lvl == 5:
@@ -597,7 +709,22 @@ def to_markdown(blocks, meta, force_bare=False):
     return "\n".join(fm) + body + "\n", sections, "\n".join(endnotes).strip(), long_title
 
 
-def main(retrieved):
+def main(retrieved=None):
+    """`retrieved` overrides the per-EPUB retrieval date; None keeps the mtime.
+
+    The date is not cosmetic: the Register's attribution wording embeds it, and
+    it is written into every markdown front matter, every endnotes header and
+    every JSONL row. EPUBs restored from a backup or copied between machines
+    carry the copy's mtime, so a build from restored files needs to be told the
+    real date. Validate it here rather than letting a mistyped argument reach
+    21,784 rows, and keep the parsed value: date.fromisoformat validates but
+    does not normalise, and from Python 3.11 it also accepts the basic and
+    week-date forms, so `20260803` and `2026-W32-1` passed the check and then
+    reached every front matter, every attribution sentence and every row
+    verbatim. The mtime path always emits .isoformat(); so does this one now.
+    """
+    if retrieved is not None:
+        retrieved = datetime.date.fromisoformat(retrieved).isoformat()
     scratch = os.path.dirname(os.path.abspath(__file__))
     with open(os.path.join(scratch, "manifest_raw.json"), encoding="utf-8") as f:
         manifest = json.load(f)
@@ -607,6 +734,18 @@ def main(retrieved):
     os.makedirs(md_root, exist_ok=True)
     out_manifest = []
     failures = []
+
+    def record_failure(entry, exc):
+        """One title's failure, reported and collected, never fatal on its own.
+
+        Every parse failure has to reach the end of the run: the summary lists
+        them together, and `failures` is what refuses to write
+        manifest_md.json. A raise that escapes the loop instead skips every
+        remaining title and reports nothing.
+        """
+        print("  FAIL %s %s" % (entry["id"], exc), flush=True)
+        out_manifest.append(dict(entry, markdown=None, sections=0, error=str(exc)))
+        failures.append((entry["id"], str(exc)))
 
     for i, a in enumerate([m for m in manifest if m.get("epub")], 1):
         try:
@@ -621,7 +760,7 @@ def main(retrieved):
         a = dict(a, id=rid)
         # Most EPUBs were fetched on an earlier day and served from cache, so
         # the build date would misstate when this Act was actually obtained.
-        fetched = datetime.date.fromtimestamp(os.path.getmtime(src)).isoformat()
+        fetched = retrieved or datetime.date.fromtimestamp(os.path.getmtime(src)).isoformat()
         attr = attribution(fetched)
         meta = dict(a, retrieved=fetched)
         try:
@@ -641,9 +780,7 @@ def main(retrieved):
                        and any(t.strip() for t in s["text"]) for s in b_sec):
                     md, sections, endnotes, long_title = b_md, b_sec, b_en, b_lt
         except Exception as e:
-            print("  FAIL %s %s" % (a["id"], e), flush=True)
-            out_manifest.append(dict(a, markdown=None, sections=0, error=str(e)))
-            failures.append((a["id"], str(e)))
+            record_failure(a, e)
             continue
 
         d = child(md_root, a["id"])
@@ -675,7 +812,16 @@ def main(retrieved):
         emitted = [s for s in sections if any(x.strip() for x in s["text"])]
         whole = tabled = False
         if not emitted:
-            emitted = table_split(body, a["name"])
+            # table_split fails closed on an incomplete chunking, and it is
+            # called out here, past the parse try/except above. Without its own
+            # handler that guard is not the recorded parse failure its
+            # docstring describes: it is an unhandled exception that skips
+            # every remaining title and prints nothing at all.
+            try:
+                emitted = table_split(body, a["name"])
+            except Exception as e:
+                record_failure(a, e)
+                continue
             tabled = bool(emitted)
         if not emitted:
             whole = True
@@ -734,4 +880,5 @@ def main(retrieved):
 
 
 if __name__ == "__main__":
-    main(sys.argv[1] if len(sys.argv) > 1 else "2026-08-03")
+    # No argument means every title keeps the retrieval date of its own EPUB.
+    main(sys.argv[1] if len(sys.argv) > 1 else None)

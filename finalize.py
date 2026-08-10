@@ -313,8 +313,12 @@ things separately: superseded compilations, titles whose in-force version has no
 published compilation, titles no longer in force, and lookups that failed.
 Read-only, about {mins} minutes for everything.
 
-Run on the build date over all {n} titles: 933 unchanged, 13 with no compilation
-published for the version now in force, 0 repealed or sunset, 0 lookup failures.
+No run's counts are repeated here: it is a separate command, run after this
+README is written, and its report goes to stdout. Its four buckets are not
+interchangeable. The {notcurrent} titles listed in `sources.json` under
+`titles_not_current_version` belong to the second bucket, not the first: their
+in-force version has no published compilation, so there is no newer document to
+re-download and the path built from that date answers 404.
 
 ## Licence and attribution
 
