@@ -92,72 +92,71 @@ def main():
     with open(os.path.join(SCRATCH, "acts_resolved.json"), encoding="utf-8") as f:
         acts = json.load(f)
 
-    log = open(os.path.join(SCRATCH, "download_log.txt"), "a", encoding="utf-8")
-    manifest, ok_n, fail_n, total_bytes = [], 0, 0, 0
+    with open(os.path.join(SCRATCH, "download_log.txt"), "a", encoding="utf-8") as log:
+        manifest, ok_n, fail_n, total_bytes = [], 0, 0, 0
 
-    for i, a in enumerate(acts, 1):
-        rid, d = register_id(a["id"]), a["versionStart"]
-        dst = child(EPUB_DIR, "%s.epub" % rid)
-        url = "https://www.legislation.gov.au/%s/%s/%s/text/original/epub" % (rid, d, d)
+        for i, a in enumerate(acts, 1):
+            rid, d = register_id(a["id"]), a["versionStart"]
+            dst = child(EPUB_DIR, "%s.epub" % rid)
+            url = "https://www.legislation.gov.au/%s/%s/%s/text/original/epub" % (rid, d, d)
 
-        # A cached file is only valid for the version it was fetched under.
-        # Without this check a re-run stamps the newly resolved compilation
-        # number onto stale bytes.
-        side = child(EPUB_DIR, "%s.epub.meta.json" % rid)
-        if os.path.exists(dst) and valid_zip(dst) and os.path.exists(side):
-            try:
-                with open(side, encoding="utf-8") as f:
-                    prev = json.load(f)
-            except Exception:
-                prev = {}
-            if prev.get("versionStart") == d:
-                sz = os.path.getsize(dst)
-                manifest.append(dict(a, epub=os.path.basename(dst), bytes=sz,
-                                     status="cached", sourceUrl=url,
-                                     compilationRegisterId=prev.get("compilationRegisterId")))
+            # A cached file is only valid for the version it was fetched under.
+            # Without this check a re-run stamps the newly resolved compilation
+            # number onto stale bytes.
+            side = child(EPUB_DIR, "%s.epub.meta.json" % rid)
+            if os.path.exists(dst) and valid_zip(dst) and os.path.exists(side):
+                try:
+                    with open(side, encoding="utf-8") as f:
+                        prev = json.load(f)
+                except Exception:
+                    prev = {}
+                if prev.get("versionStart") == d:
+                    sz = os.path.getsize(dst)
+                    manifest.append(dict(a, epub=os.path.basename(dst), bytes=sz,
+                                         status="cached", sourceUrl=url,
+                                         compilationRegisterId=prev.get("compilationRegisterId")))
+                    ok_n += 1
+                    total_bytes += sz
+                    continue
+            for p in (dst, side):
+                if os.path.exists(p):
+                    os.remove(p)
+
+            ok, code, ctype, sz, meta = fetch(url, dst)
+            rec = dict(a, sourceUrl=url)
+            if meta:
+                rec["compilationRegisterId"] = meta.get("registerId")
+                rec["isAuthorised"] = meta.get("isAuthorised")
+            if ok:
                 ok_n += 1
                 total_bytes += sz
-                continue
-        for p in (dst, side):
-            if os.path.exists(p):
-                os.remove(p)
+                rec.update(epub=os.path.basename(dst), bytes=sz, status="ok")
+                with open(side, "w", encoding="utf-8") as f:
+                    json.dump({"versionStart": d,
+                               "compilationNumber": a.get("compilationNumber"),
+                               "compilationRegisterId": rec.get("compilationRegisterId"),
+                               "bytes": sz}, f)
+            else:
+                fail_n += 1
+                if os.path.exists(dst):
+                    os.remove(dst)
+                rec.update(epub=None, bytes=0, status="no_epub",
+                           httpCode=code, contentType=ctype)
+            manifest.append(rec)
 
-        ok, code, ctype, sz, meta = fetch(url, dst)
-        rec = dict(a, sourceUrl=url)
-        if meta:
-            rec["compilationRegisterId"] = meta.get("registerId")
-            rec["isAuthorised"] = meta.get("isAuthorised")
-        if ok:
-            ok_n += 1
-            total_bytes += sz
-            rec.update(epub=os.path.basename(dst), bytes=sz, status="ok")
-            with open(side, "w", encoding="utf-8") as f:
-                json.dump({"versionStart": d,
-                           "compilationNumber": a.get("compilationNumber"),
-                           "compilationRegisterId": rec.get("compilationRegisterId"),
-                           "bytes": sz}, f)
-        else:
-            fail_n += 1
-            if os.path.exists(dst):
-                os.remove(dst)
-            rec.update(epub=None, bytes=0, status="no_epub",
-                       httpCode=code, contentType=ctype)
-        manifest.append(rec)
+            line = "%3d/%3d %-12s %-8s %9d  %s" % (
+                i, len(acts), rid, "OK" if ok else "NO_EPUB", sz, a["name"][:58])
+            print(line, flush=True)
+            log.write(line + "\n")
+            log.flush()
+            time.sleep(CRAWL_DELAY)
 
-        line = "%3d/%3d %-12s %-8s %9d  %s" % (
-            i, len(acts), rid, "OK" if ok else "NO_EPUB", sz, a["name"][:58])
-        print(line, flush=True)
-        log.write(line + "\n")
-        log.flush()
-        time.sleep(CRAWL_DELAY)
+        with open(os.path.join(SCRATCH, "manifest_raw.json"), "w", encoding="utf-8") as f:
+            json.dump(manifest, f, indent=1)
 
-    with open(os.path.join(SCRATCH, "manifest_raw.json"), "w", encoding="utf-8") as f:
-        json.dump(manifest, f, indent=1)
-
-    s = "\nDONE ok=%d no_epub=%d total=%.1f MB" % (ok_n, fail_n, total_bytes / 1e6)
-    print(s)
-    log.write(s + "\n")
-    log.close()
+        s = "\nDONE ok=%d no_epub=%d total=%.1f MB" % (ok_n, fail_n, total_bytes / 1e6)
+        print(s)
+        log.write(s + "\n")
 
 
 if __name__ == "__main__":
