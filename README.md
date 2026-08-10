@@ -128,8 +128,10 @@ former titles and substrings, which is how the Passenger Movement Charge Act
 `sources.json` records `keywords_in_name` rather than filtering them out, since
 any rule strict enough to drop Rotax also drops the Departure Tax Act.
 
-Thirteen titles carry a superseded compilation, marked `version_is_current:
-false` in the front matter and on every row.
+Thirteen titles have no published compilation for the version now in force, so
+they carry the last compilation the Register holds, marked `version_is_current:
+false` in the front matter and on every row. There is no newer document to
+re-download: the URL built from the in-force date answers 404.
 
 ## What this deliberately does not ship
 
