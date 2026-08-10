@@ -151,8 +151,28 @@ def main():
             log.flush()
             time.sleep(CRAWL_DELAY)
 
-        with open(os.path.join(SCRATCH, "manifest_raw.json"), "w", encoding="utf-8") as f:
-            json.dump(manifest, f, indent=1)
+        # manifest_raw.json is the sole record of this crawl: every sourceUrl,
+        # compilationRegisterId and isAuthorised value. BUILD.md documents
+        # re-running any single stage, so this dump normally replaces the file
+        # an earlier run left behind. Truncating it in place means a Ctrl-C, a
+        # full disk or an exception mid-dump leaves a half-written file,
+        # extract.py fails on json.load, and the whole 2h40m download stage has
+        # to be repeated. Write a sibling temp file and rename it over the
+        # target instead; os.replace is atomic on the same filesystem, on
+        # Windows as well as POSIX. retry13.py rewrites this same file the same
+        # way.
+        target = os.path.join(SCRATCH, "manifest_raw.json")
+        tmp = target + ".tmp"
+        try:
+            with open(tmp, "w", encoding="utf-8") as f:
+                json.dump(manifest, f, indent=1)
+                f.flush()
+                os.fsync(f.fileno())
+            os.replace(tmp, target)
+        except BaseException:
+            if os.path.exists(tmp):
+                os.remove(tmp)
+            raise
 
         s = "\nDONE ok=%d no_epub=%d total=%.1f MB" % (ok_n, fail_n, total_bytes / 1e6)
         print(s)
