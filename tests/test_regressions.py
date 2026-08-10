@@ -13,6 +13,8 @@ import sys
 import tempfile
 import time
 import unittest
+import zipfile
+from unittest import mock
 
 
 REPO = Path(__file__).resolve().parents[1]
@@ -28,6 +30,52 @@ def load_module(name, path):
         return module
     finally:
         sys.path.remove(module_dir)
+
+
+class ArchiveLifecycleTests(unittest.TestCase):
+    @staticmethod
+    def _epub_bytes():
+        payload = io.BytesIO()
+        with zipfile.ZipFile(payload, "w") as archive:
+            archive.writestr(
+                "document_1.xhtml",
+                '<html><body><p class="ActHead4"><span class="CharSectno">1</span> '
+                "Short title</p><p class=\"subsection\">Text.</p></body></html>",
+            )
+        return payload.getvalue()
+
+    def test_zip_validation_closes_the_archive(self):
+        download = load_module("download_archive_lifecycle", REPO / "download.py")
+        epub_bytes = self._epub_bytes()
+        real_zipfile = zipfile.ZipFile
+        opened = []
+
+        def tracked_zipfile(*args, **kwargs):
+            archive = real_zipfile(*args, **kwargs)
+            opened.append(archive)
+            return archive
+
+        with mock.patch.object(download.zipfile, "ZipFile", side_effect=tracked_zipfile):
+            self.assertTrue(download.valid_zip(io.BytesIO(epub_bytes)))
+        self.assertEqual(len(opened), 1)
+        self.assertIsNone(opened[0].fp)
+
+    def test_epub_extraction_closes_the_archive(self):
+        extract = load_module("extract_archive_lifecycle", REPO / "extract.py")
+        epub_bytes = self._epub_bytes()
+        real_zipfile = zipfile.ZipFile
+        opened = []
+
+        def tracked_zipfile(*args, **kwargs):
+            archive = real_zipfile(*args, **kwargs)
+            opened.append(archive)
+            return archive
+
+        with mock.patch.object(extract.zipfile, "ZipFile", side_effect=tracked_zipfile):
+            blocks = extract.epub_blocks(io.BytesIO(epub_bytes))
+        self.assertTrue(any(block.get("text") == "1 Short title" for block in blocks))
+        self.assertEqual(len(opened), 1)
+        self.assertIsNone(opened[0].fp)
 
 
 class FailureHandlingTests(unittest.TestCase):
@@ -498,6 +546,33 @@ class DistributionTests(unittest.TestCase):
 
 
 class PathBoundaryTests(unittest.TestCase):
+    def test_distribution_boundary_rejects_a_root_directory_junction(self):
+        paths = load_module("corpus_paths_root_junction", REPO / "corpus_paths.py")
+        with (
+            mock.patch.object(paths.os.path, "islink", return_value=False),
+            mock.patch.object(paths.os.path, "isjunction", return_value=True, create=True),
+            mock.patch.object(paths.os, "walk") as walk,
+        ):
+            with self.assertRaisesRegex(ValueError, "junction"):
+                paths.reject_symlinks("corpus")
+        walk.assert_not_called()
+
+    def test_distribution_boundary_rejects_windows_directory_junctions(self):
+        paths = load_module("corpus_paths_junction", REPO / "corpus_paths.py")
+        with (
+            mock.patch.object(paths.os, "walk", return_value=[("corpus", ["junction"], [])]) as walk,
+            mock.patch.object(paths.os.path, "islink", return_value=False),
+            mock.patch.object(
+                paths.os.path,
+                "isjunction",
+                side_effect=lambda candidate: candidate == paths.os.path.join("corpus", "junction"),
+                create=True,
+            ),
+        ):
+            with self.assertRaisesRegex(ValueError, "junction"):
+                paths.reject_symlinks("corpus")
+        walk.assert_called_once_with("corpus", followlinks=False)
+
     def test_register_id_and_contained_child_reject_traversal(self):
         paths = load_module("corpus_paths_regression", REPO / "corpus_paths.py")
         with tempfile.TemporaryDirectory() as tmp:

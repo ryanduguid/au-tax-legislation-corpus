@@ -241,58 +241,60 @@ def main():
     for candidate in sorted(glob.glob(os.path.join(markdown_root, "*", "sections.jsonl"))):
         rid = register_id(os.path.basename(os.path.dirname(candidate)))
         p = child(markdown_root, rid, "sections.jsonl")
-        for ln in open(p, encoding="utf-8"):
-            if not ln.strip():
-                continue
-            r = json.loads(ln)
-            text = r.get("text") or ""
-            rid = register_id(r["register_id"])
-            # Gross-up factors, indexation factors and statutory fractions are
-            # bare decimals (2.0802, 1.8868, 0.5), not $ or %, so a filter on
-            # currency and percent alone misses them entirely.
-            if not (money_values(text) or percentage_values(text) or
-                    (FACTOR.search(text) and RATE_PHRASE.search(text))):
-                continue
-            base = {
-                "register_id": rid, "act": r["act"],
-                "collection": r.get("collection"),
-                "compilation_number": r.get("compilation_number"),
-                "compilation_date": r.get("compilation_date"),
-                "section": r.get("section"), "heading": r.get("heading"),
-                "register_page": r.get("register_page"),
-                "topic": topic_for(r["act"], r.get("heading"), text),
-            }
-
-            for tbl in table_blocks(text):
-                if len(tbl) >= 3 and is_rate_table(tbl):
-                    records.append(dict(base, kind="table",
-                                        years=sorted({m.group(0) for m in YEAR.finditer(" ".join(tbl))}),
-                                        content="\n".join(tbl)))
-
-            for s in sentences(text):
-                has_money, has_pct = bool(money_values(s)), bool(percentage_values(s))
-                has_factor = bool(FACTOR.search(s)) and bool(RATE_PHRASE.search(s))
-                if not (has_money or has_pct or has_factor):
+        with open(p, encoding="utf-8") as source:
+            for line in source:
+                if not line.strip():
                     continue
-                # A percentage stands on its own. Requiring the word "rate"
-                # alongside it dropped s 9-70 of the GST Act — "The amount of
-                # GST on a taxable supply is 10% of the value of the taxable
-                # supply" — which is the operative charging provision for the
-                # whole tax. Dollar amounts still need a phrase, because
-                # legislation is full of incidental sums.
-                if not has_pct and not (RATE_PHRASE.search(s)
-                                        or THRESHOLD_PHRASE.search(s)
-                                        or INDEX_PHRASE.search(s)):
+                row = json.loads(line)
+                text = row.get("text") or ""
+                rid = register_id(row["register_id"])
+                # Gross-up factors, indexation factors and statutory fractions are
+                # bare decimals (2.0802, 1.8868, 0.5), not $ or %, so a filter on
+                # currency and percent alone misses them entirely.
+                if not (money_values(text) or percentage_values(text) or
+                        (FACTOR.search(text) and RATE_PHRASE.search(text))):
                     continue
-                kind = ("indexation" if INDEX_PHRASE.search(s)
-                        else "ownership test" if has_pct and is_ownership_test(s)
-                        else "rate" if has_pct else
-                        "factor" if has_factor and not has_money else "threshold")
-                records.append(dict(base, kind=kind,
-                                    amounts=sorted(set(money_values(s)) | set(percentage_values(s))
-                                                   | (set(FACTOR.findall(s)) if has_factor else set())),
-                                    years=sorted({m.group(0) for m in YEAR.finditer(s)}),
-                                    content=s))
+                base = {
+                    "register_id": rid, "act": row["act"],
+                    "collection": row.get("collection"),
+                    "compilation_number": row.get("compilation_number"),
+                    "compilation_date": row.get("compilation_date"),
+                    "section": row.get("section"), "heading": row.get("heading"),
+                    "register_page": row.get("register_page"),
+                    "topic": topic_for(row["act"], row.get("heading"), text),
+                }
+
+                for table in table_blocks(text):
+                    if len(table) >= 3 and is_rate_table(table):
+                        records.append(dict(base, kind="table",
+                                            years=sorted({m.group(0) for m in YEAR.finditer(" ".join(table))}),
+                                            content="\n".join(table)))
+
+                for sentence in sentences(text):
+                    has_money = bool(money_values(sentence))
+                    has_pct = bool(percentage_values(sentence))
+                    has_factor = bool(FACTOR.search(sentence)) and bool(RATE_PHRASE.search(sentence))
+                    if not (has_money or has_pct or has_factor):
+                        continue
+                    # A percentage stands on its own. Requiring the word "rate"
+                    # alongside it dropped s 9-70 of the GST Act — "The amount of
+                    # GST on a taxable supply is 10% of the value of the taxable
+                    # supply" — which is the operative charging provision for the
+                    # whole tax. Dollar amounts still need a phrase, because
+                    # legislation is full of incidental sums.
+                    if not has_pct and not (RATE_PHRASE.search(sentence)
+                                            or THRESHOLD_PHRASE.search(sentence)
+                                            or INDEX_PHRASE.search(sentence)):
+                        continue
+                    kind = ("indexation" if INDEX_PHRASE.search(sentence)
+                            else "ownership test" if has_pct and is_ownership_test(sentence)
+                            else "rate" if has_pct else
+                            "factor" if has_factor and not has_money else "threshold")
+                    records.append(dict(base, kind=kind,
+                                        amounts=sorted(set(money_values(sentence)) | set(percentage_values(sentence))
+                                                       | (set(FACTOR.findall(sentence)) if has_factor else set())),
+                                        years=sorted({m.group(0) for m in YEAR.finditer(sentence)}),
+                                        content=sentence))
 
     # Stable ids so a rebuild does not reshuffle references.
     records.sort(key=lambda r: (r["topic"], r["act"], str(r["section"] or ""), r["kind"]))
