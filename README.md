@@ -28,6 +28,11 @@ Last full run, 4 August 2026:
 | Download failures | 0 |
 | Parse failures | 0 |
 
+That run predates the volume-gate fix in `extract.py`, and so does the
+`manifest_md.json` shipped beside it: five volumes of F2025L00281 were dropped
+silently, so the next full run reports more rows and words. See
+[BUILD.md](BUILD.md).
+
 Layout under the corpus root:
 
 ```

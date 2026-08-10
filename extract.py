@@ -24,6 +24,10 @@ from html.parser import HTMLParser
 from corpus_paths import child, corpus_root, register_id
 
 SKIP_CLASS = re.compile(r'^(TOC\d|TofSects|Contents|Header|Footer)', re.I)
+# The contents page on its own. A running header or footer is skipped by
+# SKIP_CLASS too, but it is not a boundary: Word repeats it above the
+# compilation cover page, so it says nothing about where the body starts.
+CONTENTS_CLASS = re.compile(r'^(TOC\d|TofSects|Contents)', re.I)
 # Endnotes apparatus. The trigger must be narrow: CompiledActNo and UpdateDate
 # also appear in the FRONT matter, so keying on them flips the whole Act into
 # endnotes at line one.
@@ -407,21 +411,37 @@ def to_markdown(blocks, meta, force_bare=False):
     # 92% of its words that way.
     #
     # A heading-less volume has nothing to release the gate, so release it at
-    # the volume's own contents page when no body-classed paragraph comes
-    # first, and at the volume's first block when one does. Every heading-less
-    # volume in the corpus opens the same way - Coat of Arms, short title,
-    # compilation number, the volume list, then TOC/Contents, then the text -
-    # so the contents page is the boundary of the same compilation cover page
+    # the first block shown to be past the compilation cover page. Every
+    # heading-less volume in the corpus opens the same way - Coat of Arms,
+    # short title, compilation number, the volume list, then TOC/Contents, then
+    # the text - so the contents page is the boundary of the same cover page
     # the gate already drops in a volume that does have headings.
     def _vol_gate(seg, start):
+        """Index where a heading-less volume's body starts, or None.
+
+        Never the volume's own first block. Every volume repeats the
+        compilation cover page, and every markdown file and every JSONL row
+        carries an attribution stating that cover pages are omitted, so
+        opening the gate at a block that has not been shown to be past the
+        cover page would publish it under a licence notice that says it was
+        removed. A volume showing neither boundary keeps the gate shut and is
+        dropped as it was before this gate existed - the older, documented
+        loss in preference to a new false statement. That costs nothing in the
+        current corpus: all 11 heading-less volumes across the 946 EPUBs open
+        at a contents page.
+
+        Header and Footer are skipped by SKIP_CLASS but are not boundaries:
+        Word repeats the running header above the cover page, so opening there
+        opens at the cover page.
+        """
         for off, b in enumerate(seg):
             if b["k"] != "p":
                 continue
-            if SKIP_CLASS.match(b["cls"]):
+            if CONTENTS_CLASS.match(b["cls"]):
                 return start + off
             if PREBODY_CLASS.match((b["cls"].split() or [""])[0]):
-                break
-        return start
+                return start + off
+        return None
 
     vol_heads, vol_gate = [], []
 
@@ -519,13 +539,15 @@ def to_markdown(blocks, meta, force_bare=False):
             continue
 
         # A volume with no mapped heading never reaches the heading branch
-        # below, so this is the only thing that opens its gate. Open a row of
-        # its own for it as well: sections carry across a volume boundary, so
-        # without this the recovered text is filed under whichever section was
-        # still open when the previous volume ended and is retrieved under that
-        # section's number. The row stays empty, and so is dropped, for a volume
-        # whose content turns out to be endnotes.
-        if not seen_body and not vol_heads[vol] and bi >= vol_gate[vol]:
+        # below, so this is the only thing that opens its gate, and a volume
+        # _vol_gate could not place stays shut. Open a row of its own for it as
+        # well: sections carry across a volume boundary, so without this the
+        # recovered text is filed under whichever section was still open when
+        # the previous volume ended and is retrieved under that section's
+        # number. The row stays empty, and so is dropped, for a volume whose
+        # content turns out to be endnotes.
+        if (not seen_body and not vol_heads[vol]
+                and vol_gate[vol] is not None and bi >= vol_gate[vol]):
             seen_body = True
             container = "%s - volume %d" % (meta["name"], vol)
             cur = {"section": None, "heading": container, "kind": "container",
@@ -695,10 +717,14 @@ def main(retrieved=None):
     every JSONL row. EPUBs restored from a backup or copied between machines
     carry the copy's mtime, so a build from restored files needs to be told the
     real date. Validate it here rather than letting a mistyped argument reach
-    21,784 rows.
+    21,784 rows, and keep the parsed value: date.fromisoformat validates but
+    does not normalise, and from Python 3.11 it also accepts the basic and
+    week-date forms, so `20260803` and `2026-W32-1` passed the check and then
+    reached every front matter, every attribution sentence and every row
+    verbatim. The mtime path always emits .isoformat(); so does this one now.
     """
     if retrieved is not None:
-        datetime.date.fromisoformat(retrieved)
+        retrieved = datetime.date.fromisoformat(retrieved).isoformat()
     scratch = os.path.dirname(os.path.abspath(__file__))
     with open(os.path.join(scratch, "manifest_raw.json"), encoding="utf-8") as f:
         manifest = json.load(f)
@@ -708,6 +734,18 @@ def main(retrieved=None):
     os.makedirs(md_root, exist_ok=True)
     out_manifest = []
     failures = []
+
+    def record_failure(entry, exc):
+        """One title's failure, reported and collected, never fatal on its own.
+
+        Every parse failure has to reach the end of the run: the summary lists
+        them together, and `failures` is what refuses to write
+        manifest_md.json. A raise that escapes the loop instead skips every
+        remaining title and reports nothing.
+        """
+        print("  FAIL %s %s" % (entry["id"], exc), flush=True)
+        out_manifest.append(dict(entry, markdown=None, sections=0, error=str(exc)))
+        failures.append((entry["id"], str(exc)))
 
     for i, a in enumerate([m for m in manifest if m.get("epub")], 1):
         try:
@@ -742,9 +780,7 @@ def main(retrieved=None):
                        and any(t.strip() for t in s["text"]) for s in b_sec):
                     md, sections, endnotes, long_title = b_md, b_sec, b_en, b_lt
         except Exception as e:
-            print("  FAIL %s %s" % (a["id"], e), flush=True)
-            out_manifest.append(dict(a, markdown=None, sections=0, error=str(e)))
-            failures.append((a["id"], str(e)))
+            record_failure(a, e)
             continue
 
         d = child(md_root, a["id"])
@@ -776,7 +812,16 @@ def main(retrieved=None):
         emitted = [s for s in sections if any(x.strip() for x in s["text"])]
         whole = tabled = False
         if not emitted:
-            emitted = table_split(body, a["name"])
+            # table_split fails closed on an incomplete chunking, and it is
+            # called out here, past the parse try/except above. Without its own
+            # handler that guard is not the recorded parse failure its
+            # docstring describes: it is an unhandled exception that skips
+            # every remaining title and prints nothing at all.
+            try:
+                emitted = table_split(body, a["name"])
+            except Exception as e:
+                record_failure(a, e)
+                continue
             tabled = bool(emitted)
         if not emitted:
             whole = True

@@ -117,8 +117,8 @@ class VolumeGateTests(unittest.TestCase):
                 '<tr><td>55</td><td>12.5</td></tr></table>'
                 '</body></html>')
 
-    # The same volume without a contents page, so the gate opens at the top of
-    # the volume and the cover page's "Endnotes" line is in front of the body.
+    # The same volume with no contents page and no body-classed paragraph, so
+    # nothing marks where the compilation cover page ends.
     VOLUME_2_BARE = ('<html><body>'
                      '<p class="MadeunderText">Demo Approval 2025</p>'
                      '<p>Compilation No. 1</p>'
@@ -129,6 +129,33 @@ class VolumeGateTests(unittest.TestCase):
                      '<table><tr><td>Age</td><td>Factor</td></tr>'
                      '<tr><td>55</td><td>12.5</td></tr></table>'
                      '</body></html>')
+
+    # A running header above the cover page. SKIP_CLASS skips Header, but it is
+    # not a body boundary: it sits above the cover page, not below it.
+    VOLUME_2_HEADED = ('<html><body>'
+                       '<p class="Header">Demo Approval 2025</p>'
+                       '<p class="MadeunderText">Demo Approval 2025</p>'
+                       '<p>Compilation No. 1</p>'
+                       '<p>Volume 2: Schedule 1</p>'
+                       '<p class="ContentsHead">Contents</p>'
+                       '<p class="TOC6">Schedule 1 Valuation factors</p>'
+                       '<p class="Scheduletitle">Schedule 1 Valuation factors</p>'
+                       '<table><tr><td>Age</td><td>Factor</td></tr>'
+                       '<tr><td>55</td><td>12.5</td></tr></table>'
+                       '</body></html>')
+
+    # No contents page, but the volume's text starts on a body class. Unclassed
+    # compilation cover text is deliberately outside PREBODY_CLASS, so the
+    # first body-classed paragraph is a boundary the cover page cannot reach.
+    VOLUME_2_SUBSECTION = ('<html><body>'
+                           '<p class="MadeunderText">Demo Approval 2025</p>'
+                           '<p>Compilation No. 1</p>'
+                           '<p>Volume 2: Schedule 1</p>'
+                           '<p class="subsection">Factors in this Schedule apply '
+                           'to a lump sum interest.</p>'
+                           '<table><tr><td>Age</td><td>Factor</td></tr>'
+                           '<tr><td>55</td><td>12.5</td></tr></table>'
+                           '</body></html>')
 
     @classmethod
     def epub_bytes(cls, *volumes):
@@ -162,12 +189,61 @@ class VolumeGateTests(unittest.TestCase):
         self.assertNotIn("Compilation No. 1", markdown)
         self.assertNotIn("This compilation is in 2 volumes", markdown)
 
-    def test_a_cover_page_endnotes_line_cannot_capture_a_volume(self):
-        """Without a contents page the gate opens at the top of the volume, so
-        the bare-text endnote trigger has to stay disarmed on its own account."""
-        extract = load_module("extract_volume_gate_bare", REPO / "extract.py")
-        blocks = extract.epub_blocks(
-            io.BytesIO(self.epub_bytes(self.VOLUME_1, self.VOLUME_2_BARE)))
+    def _parse(self, name, *volumes):
+        extract = load_module(name, REPO / "extract.py")
+        blocks = extract.epub_blocks(io.BytesIO(self.epub_bytes(*volumes)))
+        return extract.to_markdown(blocks, self.META)
+
+    def test_a_volume_with_no_boundary_is_dropped_rather_than_publishing_a_cover_page(self):
+        """Every markdown file and every JSONL row carries an attribution
+        saying compilation cover pages are omitted, so a volume showing neither
+        a contents page nor a body class must not open at its own first block.
+        It keeps the older, documented loss instead: nothing recovered, and no
+        cover page published under a notice that says it was removed.  No
+        volume in the corpus takes this path - all 11 heading-less volumes open
+        at a contents page."""
+        markdown, _sections, endnotes, _long = self._parse(
+            "extract_volume_gate_bare", self.VOLUME_1, self.VOLUME_2_BARE)
+        self.assertNotIn("Compilation No. 1", markdown)
+        self.assertNotIn("Volume 2: Schedule 1", markdown)
+        self.assertNotIn("Endnotes", markdown)
+        self.assertNotIn("| 55 | 12.5 |", markdown)
+        self.assertEqual(endnotes, "")
+
+    def test_a_running_header_is_not_a_volume_body_boundary(self):
+        """Word repeats the running header above the cover page, so opening the
+        gate there opens it at the cover page."""
+        markdown, _sections, _endnotes, _long = self._parse(
+            "extract_volume_gate_header", self.VOLUME_1, self.VOLUME_2_HEADED)
+        self.assertNotIn("Compilation No. 1", markdown)
+        self.assertNotIn("Volume 2: Schedule 1", markdown)
+        self.assertIn("| 55 | 12.5 |", markdown)
+
+    def test_a_body_class_opens_the_gate_at_that_paragraph_not_at_the_cover_page(self):
+        markdown, _sections, _endnotes, _long = self._parse(
+            "extract_volume_gate_subsection", self.VOLUME_1, self.VOLUME_2_SUBSECTION)
+        self.assertNotIn("Compilation No. 1", markdown)
+        self.assertNotIn("Volume 2: Schedule 1", markdown)
+        self.assertIn("Factors in this Schedule apply to a lump sum interest.", markdown)
+        self.assertIn("| 55 | 12.5 |", markdown)
+
+    def test_an_endnotes_line_inside_a_heading_less_volume_cannot_capture_it(self):
+        """The bare-text endnote trigger stays disarmed until a mapped heading
+        or ENDNOTE_CLASS markup is seen.  In a multi-volume compilation the
+        word "Endnotes" on its own line is a volume-list entry, and arming the
+        trigger on it routes the volume's whole body into endnotes.md - the
+        same content loss the volume gate exists to stop, wearing a different
+        hat."""
+        extract = load_module("extract_volume_endnote_trigger", REPO / "extract.py")
+        blocks = [{"k": "file"},
+                  {"k": "p", "cls": "ActHead4", "sectno": True, "text": "1 Short title"},
+                  {"k": "p", "cls": "subsection", "sectno": False, "text": "Body."},
+                  {"k": "file"},
+                  {"k": "p", "cls": "ContentsHead", "sectno": False, "text": "Contents"},
+                  {"k": "p", "cls": "", "sectno": False, "text": "Endnotes"},
+                  {"k": "p", "cls": "Scheduletitle", "sectno": False,
+                   "text": "Schedule 1 Valuation factors"},
+                  {"k": "table", "rows": [["Age", "Factor"], ["55", "12.5"]]}]
         markdown, _sections, endnotes, _long = extract.to_markdown(blocks, self.META)
         self.assertIn("| 55 | 12.5 |", markdown)
         self.assertEqual(endnotes, "")
@@ -274,6 +350,34 @@ class ExtractPipelineTests(unittest.TestCase):
                     extract.main("--help")
             self.assertFalse((build / "manifest_md.json").exists())
 
+    def test_a_retrieved_argument_reaches_the_corpus_as_a_calendar_date(self):
+        """date.fromisoformat validates but does not normalise, and from 3.11 it
+        also accepts the basic and week-date forms, so validating and throwing
+        the result away let `20260803` through to every front matter, every
+        attribution sentence and every row exactly as typed."""
+        forms = ["20260804", "2026-W32-2"]
+        accepted = []
+        for supplied in forms:
+            try:
+                accepted.append((supplied, datetime.date.fromisoformat(supplied).isoformat()))
+            except ValueError:
+                # Refused outright before 3.11; nothing to normalise.
+                continue
+        for supplied, expected in accepted:
+            self.assertNotEqual(supplied, expected)
+            with tempfile.TemporaryDirectory() as tmp:
+                tmp_path = Path(tmp)
+                build, _epub = self._fixture(tmp_path)
+                self._run(build, supplied)
+                markdown, rows = self._outputs(tmp_path)
+                self.assertIn("retrieved: %s" % expected, markdown)
+                self.assertNotIn(supplied, markdown)
+                self.assertNotIn(supplied, rows[0]["attribution"])
+                self.assertIn(expected, rows[0]["attribution"])
+                manifest = json.loads(
+                    (build / "manifest_md.json").read_text(encoding="utf-8"))
+                self.assertEqual(manifest[0]["retrieved"], expected)
+
 
 def basin_table(field):
     """One markdown table of the shape Excise By-law No. 127 uses."""
@@ -317,6 +421,98 @@ class TableSplitTests(unittest.TestCase):
                                side_effect=RuntimeError("guard ran")):
             with self.assertRaisesRegex(RuntimeError, "guard ran"):
                 extract.table_split(self.BODY, "TPB Terminations")
+
+
+class ChunkGuardFailureReportingTests(unittest.TestCase):
+    """The completeness guard is a recorded parse failure, not a crash.
+
+    table_split is called past the per-title try/except, so a guard that raises
+    there took the whole build down: no FAIL line, no summary, every remaining
+    title unprocessed and the traceback the only output.  Every other failure
+    mode in extract.py reports the title and carries on.
+    """
+
+    TABLE_ID = "F2020L00001"
+    ORDINARY_ID = "C2004A00001"
+
+    ORDINARY = ('<html><body>'
+                '<p class="ActHead4"><span class="CharSectno">1</span> Short title</p>'
+                '<p class="subsection">This instrument is the Demo Tax Act.</p>'
+                '</body></html>')
+
+    @staticmethod
+    def _table_document():
+        """The shape table_split exists for: prose, then a run of tables."""
+        parts = ['<p>This by-law is made under section 77H of the Excise Act 1901.</p>']
+        for basin in ("PERTH", "COOPER", "BROWSE", "BONAPARTE"):
+            parts.append("<p>%s BASIN</p>" % basin)
+            cells = "".join(
+                "<tr><td>Field %d</td><td>L%03d</td><td>1 January 2026</td></tr>" % (n, n)
+                for n in range(1, 6))
+            parts.append("<table><tr><td>Field</td><td>Licence</td>"
+                         "<td>Commenced</td></tr>%s</table>" % cells)
+        return "<html><body>%s</body></html>" % "".join(parts)
+
+    @staticmethod
+    def _epub(document):
+        payload = io.BytesIO()
+        with zipfile.ZipFile(payload, "w") as archive:
+            archive.writestr("document_1.xhtml", document)
+        return payload.getvalue()
+
+    def _fixture(self, tmp_path):
+        build = tmp_path / "build"
+        build.mkdir()
+        for name in ("extract.py", "corpus_paths.py"):
+            shutil.copy2(REPO / name, build / name)
+        (tmp_path / "epub").mkdir()
+        (tmp_path / "epub" / ("%s.epub" % self.TABLE_ID)).write_bytes(
+            self._epub(self._table_document()))
+        (tmp_path / "epub" / ("%s.epub" % self.ORDINARY_ID)).write_bytes(
+            self._epub(self.ORDINARY))
+        (build / "manifest_raw.json").write_text(json.dumps([
+            {"id": self.TABLE_ID, "name": "Excise By-law No. 127",
+             "epub": "%s.epub" % self.TABLE_ID, "versionStart": "2026-01-01"},
+            {"id": self.ORDINARY_ID, "name": "Demo Tax Act",
+             "epub": "%s.epub" % self.ORDINARY_ID, "versionStart": "2026-01-01"},
+        ]), encoding="utf-8")
+        return build
+
+    def test_the_fixture_reaches_the_table_split_path(self):
+        """Otherwise the failure test below would prove nothing."""
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            build = self._fixture(tmp_path)
+            extract = load_module("extract_guard_reached", build / "extract.py")
+            reached = []
+            real = extract.table_split
+            extract.table_split = lambda body, name: reached.append(name) or real(body, name)
+            with contextlib.redirect_stdout(io.StringIO()):
+                extract.main(None)
+            self.assertEqual(reached, ["Excise By-law No. 127"])
+            rows = (tmp_path / "markdown" / self.TABLE_ID / "sections.jsonl")
+            self.assertIn('"granularity": "table_block"', rows.read_text(encoding="utf-8"))
+
+    def test_a_tripped_guard_is_reported_and_the_run_continues(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            build = self._fixture(tmp_path)
+            extract = load_module("extract_guard_failure", build / "extract.py")
+            buffer = io.StringIO()
+            with mock.patch.object(extract, "check_chunks_complete",
+                                   side_effect=RuntimeError("chunking dropped 1 body line(s)")):
+                with contextlib.redirect_stdout(buffer):
+                    with self.assertRaisesRegex(RuntimeError,
+                                                "refusing to write manifest_md.json"):
+                        extract.main(None)
+            printed = buffer.getvalue()
+            self.assertIn("FAIL %s chunking dropped 1 body line(s)" % self.TABLE_ID, printed)
+            # Every other title still gets its turn, and the manifest that would
+            # make a partial parse look like a complete corpus is not written.
+            self.assertIn(self.ORDINARY_ID, printed)
+            self.assertTrue((tmp_path / "markdown" / self.ORDINARY_ID
+                             / "sections.jsonl").exists())
+            self.assertFalse((build / "manifest_md.json").exists())
 
 
 class ParserRuleTests(unittest.TestCase):
@@ -761,13 +957,48 @@ class StalenessBucketTests(unittest.TestCase):
 
 class GeneratedReadmeTests(unittest.TestCase):
     def test_the_corpus_readme_states_no_staleness_counts_it_never_observed(self):
-        """finalize.py runs before check_current.py and keeps no artefact from
-        it, so any run's counts baked into the template go stale on the next
-        rebuild while the interpolated figures beside them stay correct."""
+        """check_current.py is a separate command run after this README is
+        written, so any run's counts baked into the template go stale on the
+        next rebuild while the interpolated figures beside them stay correct."""
         source = (REPO / "finalize.py").read_text(encoding="utf-8")
         stale = re.search(r"\d[\d,]* unchanged", source)
         self.assertIsNone(stale, stale.group(0) if stale else "")
         self.assertIn("{notcurrent} titles are not the current text", source)
+
+    def test_the_corpus_readme_does_not_file_those_titles_as_superseded(self):
+        """They are their own bucket.  check_current.py separates them, and
+        sources.json gives their reason as the in-force version having no
+        published compilation on the Register.  Calling them superseded tells
+        the reader to re-download a document that does not exist, at a URL that
+        answers 404 - the miscategorisation the pipeline was fixed to stop
+        making."""
+        source = (REPO / "finalize.py").read_text(encoding="utf-8")
+        paragraphs = [" ".join(p.split()) for p in re.split(r"\n\s*\n", source)
+                      if "`titles_not_current_version`" in p]
+        self.assertTrue(paragraphs, "no README paragraph cites the bucket")
+        for paragraph in paragraphs:
+            self.assertNotIn("superseded compilation", paragraph, paragraph)
+        staleness = source.split("## Checking staleness", 1)[1].split("## Licence", 1)[0]
+        self.assertIn("no published compilation", " ".join(staleness.split()))
+
+
+class ShippedIntermediateTests(unittest.TestCase):
+    def test_build_md_records_that_the_shipped_manifest_predates_the_fix(self):
+        """manifest_md.json still holds the pre-fix parse of F2025L00281 - the
+        published corpus was built before the volume gate was per volume - and
+        BUILD.md cites those same figures as the evidence of the bug.  Quote the
+        manifest's own numbers here, so regenerating it fails this test rather
+        than leaving BUILD.md describing a state that no longer exists."""
+        manifest = json.loads((REPO / "manifest_md.json").read_text(encoding="utf-8"))
+        entry = [a for a in manifest if a["id"] == "F2025L00281"]
+        self.assertEqual(len(entry), 1)
+        build = " ".join((REPO / "BUILD.md").read_text(encoding="utf-8").split())
+        self.assertIn("predate the volume-gate fix", build)
+        self.assertIn("sections=%d, words=%d" % (entry[0]["sections"], entry[0]["words"]),
+                      build)
+        # The headline table is where a reader meets those figures first.
+        readme = " ".join((REPO / "README.md").read_text(encoding="utf-8").split())
+        self.assertIn("predates the volume-gate fix", readme)
 
 
 class PiiNameGateTests(unittest.TestCase):

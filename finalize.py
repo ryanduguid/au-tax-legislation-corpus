@@ -313,9 +313,12 @@ things separately: superseded compilations, titles whose in-force version has no
 published compilation, titles no longer in force, and lookups that failed.
 Read-only, about {mins} minutes for everything.
 
-It runs after this README is written and keeps no artefact, so no run's counts
-are repeated here. The {notcurrent} titles already known to hold a superseded
-compilation are listed in `sources.json` under `titles_not_current_version`.
+No run's counts are repeated here: it is a separate command, run after this
+README is written, and its report goes to stdout. Its four buckets are not
+interchangeable. The {notcurrent} titles listed in `sources.json` under
+`titles_not_current_version` belong to the second bucket, not the first: their
+in-force version has no published compilation, so there is no newer document to
+re-download and the path built from that date answers 404.
 
 ## Licence and attribution
 
