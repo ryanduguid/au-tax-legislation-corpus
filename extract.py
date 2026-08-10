@@ -240,21 +240,21 @@ class Doc(HTMLParser):
 
 
 def epub_blocks(path):
-    z = zipfile.ZipFile(path)
-    names = [n for n in z.namelist() if n.lower().endswith((".html", ".xhtml"))]
+    with zipfile.ZipFile(path) as archive:
+        names = [n for n in archive.namelist() if n.lower().endswith((".html", ".xhtml"))]
 
-    def key(n):
-        m = re.search(r"document_(\d+)", n)
-        return (int(m.group(1)) if m else 0, n)
+        def key(n):
+            m = re.search(r"document_(\d+)", n)
+            return (int(m.group(1)) if m else 0, n)
 
-    sizes = {os.path.basename(i.filename): i.file_size for i in z.infolist()}
-    out = []
-    for n in sorted(names, key=key):
-        d = Doc(sizes)
-        d.feed(z.read(n).decode("utf-8", "replace"))
-        d._flush()
-        out.append({"k": "file"})      # volume boundary
-        out += d.blocks
+        sizes = {os.path.basename(i.filename): i.file_size for i in archive.infolist()}
+        out = []
+        for n in sorted(names, key=key):
+            d = Doc(sizes)
+            d.feed(archive.read(n).decode("utf-8", "replace"))
+            d._flush()
+            out.append({"k": "file"})      # volume boundary
+            out += d.blocks
     return out
 
 

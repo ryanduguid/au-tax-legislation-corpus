@@ -21,7 +21,8 @@ CRAWL_DELAY = 10
 
 def valid_zip(path):
     try:
-        return zipfile.ZipFile(path).testzip() is None
+        with zipfile.ZipFile(path) as archive:
+            return archive.testzip() is None
     except Exception:
         return False
 
