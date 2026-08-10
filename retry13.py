@@ -81,8 +81,26 @@ def main():
             if p:
                 manifest[i] = dict(a, **p)
                 merged += 1
-        with open(os.path.join(SCRATCH, "manifest_raw.json"), "w", encoding="utf-8") as f:
-            json.dump(manifest, f, indent=1)
+        # This is the only write in the pipeline that replaces an existing
+        # artefact rather than creating one, and manifest_raw.json is the sole
+        # record of a 2h40m crawl: every sourceUrl, compilationRegisterId and
+        # isAuthorised value. Truncating it in place means a Ctrl-C, a full disk
+        # or an exception mid-dump leaves a half-written file, extract.py fails
+        # on json.load, and the whole download stage has to be re-run. Write a
+        # sibling temp file and rename it over the target instead; os.replace is
+        # atomic on the same filesystem, on Windows as well as POSIX.
+        target = os.path.join(SCRATCH, "manifest_raw.json")
+        tmp = target + ".tmp"
+        try:
+            with open(tmp, "w", encoding="utf-8") as f:
+                json.dump(manifest, f, indent=1)
+                f.flush()
+                os.fsync(f.fileno())
+            os.replace(tmp, target)
+        except BaseException:
+            if os.path.exists(tmp):
+                os.remove(tmp)
+            raise
         print("patched %d entr%s in manifest_raw.json"
               % (merged, "y" if merged == 1 else "ies"))
 
