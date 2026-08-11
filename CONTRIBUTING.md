@@ -10,7 +10,7 @@ This repository builds a corpus; it does not ship one. The pipeline downloads in
 
 ## Extraction rules worth preserving
 
-- A document is a set of volumes. Any decision made once per document but applied per volume will silently discard content — this repository has already lost the body of an entire title that way. Decide per volume.
+- A document is a set of volumes. Any decision made once per document but applied per volume will silently discard content. This repository has already lost the body of an entire title that way. Decide per volume.
 - Manifest writes are atomic. Both writers of `manifest_raw.json` replace the file rather than truncating it.
 - A title with no compilation is not superseded. Say what is actually known.
 
