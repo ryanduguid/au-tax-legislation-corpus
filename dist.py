@@ -330,6 +330,20 @@ def main():
         "removed before publication. See REMOVED.md for the list and their "
         "Register links.\n\n" % len(drop),
         rd, count=1, flags=re.S)
+    # Every title removed from dist is a table_block title, so the full
+    # corpus's count is wrong here and so is its worked example: the Tax
+    # Practitioners Board instruments it names are exactly the ones dropped.
+    # The right figure is already computed for sources.json.
+    rd = re.sub(
+        r"\*\*Table-shaped instruments are split on their tables\.\*\*.*?\n\n",
+        "**Table-shaped instruments are split on their tables.** %d titles carry "
+        "`granularity: table_block`: no headings anywhere, just a run of tables. "
+        "Each table becomes a row, carrying the prose that preceded it, such as "
+        "the sentence naming the enabling provision or the basin name. The Tax "
+        "Practitioners Board instruments chunked this way are not in this "
+        "distribution; see REMOVED.md.\n\n"
+        % counts["titles_table_block_chunk"],
+        rd, count=1, flags=re.S)
     rd = ("> **This is the redistributable subset.** The EPUBs and %d titles that "
           "name private individuals are not included. See REMOVED.md for what was "
           "dropped and why, and run the pipeline yourself for the full corpus.\n\n"
