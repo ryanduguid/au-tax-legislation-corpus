@@ -130,6 +130,10 @@ class Doc(HTMLParser):
         self._row_raw = []
         self._table = []
         self._table_raw = []
+        # Word writes boxed formulas and sub-schedules as a table inside a
+        # cell. The table buffers are per-table, so an inner <table> must not
+        # be allowed to clear the enclosing one's rows.
+        self._tables = []
 
     def handle_starttag(self, tag, attrs):
         a = dict(attrs)
@@ -152,8 +156,17 @@ class Doc(HTMLParser):
             except ValueError:
                 self._colspan = 1
         elif tag == "table":
+            self._tables.append((self._table, self._table_raw, self._row,
+                                 self._row_raw, self._cell, self._in_td,
+                                 self._buf, self._colspan))
             self._table = []
             self._table_raw = []
+            self._row = []
+            self._row_raw = []
+            self._cell = []
+            self._in_td = False
+            self._buf = []
+            self._colspan = 1
         elif tag == "br":
             self._buf.append(" ")
         elif tag == "img":
@@ -220,8 +233,13 @@ class Doc(HTMLParser):
             rows = exp if spread(exp) <= spread(raw) else raw
             if rows:
                 self.blocks.append({"k": "table", "rows": rows})
-            self._table = []
-            self._table_raw = []
+            if self._tables:
+                (self._table, self._table_raw, self._row, self._row_raw,
+                 self._cell, self._in_td, self._buf,
+                 self._colspan) = self._tables.pop()
+            else:
+                self._table = []
+                self._table_raw = []
 
     def handle_data(self, data):
         self._buf.append(data)

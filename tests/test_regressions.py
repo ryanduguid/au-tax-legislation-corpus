@@ -595,6 +595,42 @@ class ParserRuleTests(unittest.TestCase):
         tables = [b["rows"] for b in parser.blocks if b["k"] == "table"]
         self.assertEqual(tables, [[["Rate", "", "Amount"], ["Low", "High", "$100"]]])
 
+    def test_a_nested_table_does_not_wipe_the_enclosing_table(self):
+        """Word writes boxed formulas and sub-schedules as a table inside a
+        cell. Without a stack the inner <table> clears the shared buffers, so
+        every row the enclosing table has already parsed disappears and the
+        cell that held the inner table merges into its first row."""
+        extract = load_module("extract_nested_table", REPO / "extract.py")
+        parser = extract.Doc()
+        parser.feed('<html><body><table>'
+                    '<tr><td>Item 1</td><td>Rate 5%</td></tr>'
+                    '<tr><td>Item 2'
+                    '<table><tr><td>sub a</td><td>1%</td></tr></table>'
+                    '</td><td>Rate 6%</td></tr>'
+                    '<tr><td>Item 3</td><td>Rate 7%</td></tr>'
+                    '</table></body></html>')
+        parser._flush()
+        tables = [b["rows"] for b in parser.blocks if b["k"] == "table"]
+        self.assertEqual(tables, [
+            [["sub a", "1%"]],
+            [["Item 1", "Rate 5%"], ["Item 2", "Rate 6%"], ["Item 3", "Rate 7%"]]])
+
+    def test_a_nested_table_does_not_steal_the_enclosing_cell_colspan(self):
+        """The inner table's own cells reset _colspan, so without saving it the
+        enclosing spanned cell loses its filler columns and the row shifts."""
+        extract = load_module("extract_nested_colspan", REPO / "extract.py")
+        parser = extract.Doc()
+        parser.feed('<html><body><table>'
+                    '<tr><td colspan="2">Band'
+                    '<table><tr><td>note</td></tr></table>'
+                    '</td><td>Rate</td></tr>'
+                    '<tr><td>Low</td><td>High</td><td>5%</td></tr>'
+                    '</table></body></html>')
+        parser._flush()
+        tables = [b["rows"] for b in parser.blocks if b["k"] == "table"]
+        self.assertEqual(tables[-1],
+                         [["Band", "", "Rate"], ["Low", "High", "5%"]])
+
 
 class FailureHandlingTests(unittest.TestCase):
     def test_discovery_does_not_write_a_partial_title_list(self):
@@ -1067,9 +1103,13 @@ class ShippedIntermediateTests(unittest.TestCase):
         self.assertIn("predate the volume-gate fix", build)
         self.assertIn("sections=%d, words=%d" % (entry[0]["sections"], entry[0]["words"]),
                       build)
+        # The table stack landed after the same run, so it moves the same
+        # figures and has to be recorded in the same breath as the volume gate.
+        self.assertIn("table stack", build)
         # The headline table is where a reader meets those figures first.
         readme = " ".join((REPO / "README.md").read_text(encoding="utf-8").split())
         self.assertIn("predates the volume-gate fix", readme)
+        self.assertIn("table-stack fix", readme)
 
 
 class PiiNameGateTests(unittest.TestCase):

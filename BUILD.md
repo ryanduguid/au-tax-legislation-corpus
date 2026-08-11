@@ -35,6 +35,12 @@ today's published figures, because it is fed the pre-fix manifest. The
 intermediates are still re-runnable; they are simply not a description of what
 this code does now.
 
+The same is true of the table stack added after that run. A table nested inside
+a cell used to discard the rows its enclosing table had already parsed. Four
+titles carry nested tables (F2005B01198, F2005L00211, F2005L01901, F2026L00716)
+and between them recovered 84 text fragments; the other 942 parse identically,
+so re-running `extract.py` moves those four titles' figures as well.
+
 ## Timing
 
 `download.py` sleeps 10 seconds between titles, honouring the Crawl-delay in
