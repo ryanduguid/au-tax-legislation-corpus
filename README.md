@@ -30,10 +30,17 @@ Last full run, 4 August 2026:
 | Download failures | 0 |
 | Parse failures | 0 |
 
-That run predates the volume-gate fix in `extract.py`, and so does the
-`manifest_md.json` shipped beside it: five volumes of F2025L00281 were dropped
-silently, so the next full run reports more rows and words. See
-[BUILD.md](BUILD.md).
+That run predates the volume-gate fix in `extract.py` and the table-stack fix
+after it, and so does the `manifest_md.json`
+shipped beside it, so the next full run reports more rows and words:
+
+- the volume gate, which silently dropped five volumes of F2025L00281;
+- the table stack, which let a table nested inside a cell discard the rows its
+  enclosing table had already parsed. Four titles carry nested tables
+  (F2005B01198, F2005L00211, F2005L01901, F2026L00716) and between them
+  recovered 84 text fragments; the other 942 titles parse identically.
+
+See [BUILD.md](BUILD.md).
 
 Layout under the corpus root:
 
