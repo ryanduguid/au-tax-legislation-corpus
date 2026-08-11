@@ -3,6 +3,7 @@
 These tests use only the standard library and temporary directories.  They do
 not call the Register API or require a built corpus.
 """
+import ast
 import contextlib
 import datetime
 import importlib.util
@@ -1559,3 +1560,138 @@ class RateParsingTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class PreSectionTextTests(unittest.TestCase):
+    """Text ahead of the first section, and across a volume seam."""
+
+    META = {"id": "C2004A00074", "name": "Demo Tax Act",
+            "retrieved": "2026-08-11", "versionStart": "2026-01-01"}
+
+    def markdown(self, blocks, **kwargs):
+        extract = load_module("extract_presection", REPO / "extract.py")
+        return extract.to_markdown(blocks, self.META, **kwargs)
+
+    def test_text_before_the_first_bare_section_reaches_the_jsonl(self):
+        """A document with no mapped heading is gate-free from block one, so the
+        pre-body branch never runs and bare_mode is False on the first pass.
+        The enacting words then reached the markdown with no row to hold them
+        and never appeared in sections.jsonl, which is what retrieval reads."""
+        blocks = [{"k": "file"},
+                  {"k": "p", "cls": "", "sectno": False,
+                   "text": "The Parliament of Australia enacts:"},
+                  {"k": "p", "cls": "", "sectno": True, "text": "1 Short title"},
+                  {"k": "p", "cls": "", "sectno": False, "text": "Body."}]
+        md, sections, _en, _lt = self.markdown(blocks)
+        self.assertIn("The Parliament of Australia enacts:", md)
+        retrievable = "\n".join("\n".join(s["text"]) for s in sections)
+        self.assertIn("The Parliament of Australia enacts:", retrievable)
+
+    def test_a_volume_seam_does_not_file_text_under_the_previous_section(self):
+        """The seam reset claims front matter must not fuse into the section
+        open at the boundary, but cur survived it, so volume 2's pre-heading
+        note was appended to volume 1's last section and retrieved under its
+        number."""
+        blocks = [{"k": "file"},
+                  {"k": "p", "cls": "ActHead5", "sectno": True, "text": "1 Short title"},
+                  {"k": "p", "cls": "subsection", "sectno": False, "text": "Volume one body."},
+                  {"k": "file"},
+                  {"k": "p", "cls": "notetext", "sectno": False,
+                   "text": "Note for the second volume."},
+                  {"k": "p", "cls": "ActHead5", "sectno": True, "text": "2 Interpretation"},
+                  {"k": "p", "cls": "subsection", "sectno": False, "text": "Volume two body."}]
+        _md, sections, _en, _lt = self.markdown(blocks)
+        first = [s for s in sections if s["section"] == "1"]
+        self.assertEqual(len(first), 1)
+        self.assertNotIn("Note for the second volume.", "\n".join(first[0]["text"]))
+        retrievable = "\n".join("\n".join(s["text"]) for s in sections)
+        self.assertIn("Note for the second volume.", retrievable)
+
+    def test_a_table_between_pre_body_paragraphs_is_not_dropped(self):
+        """PREBODY_CLASS paragraphs are admitted without setting seen_body, so
+        the table/img gate discarded a table sitting between two of them while
+        keeping the prose either side - silently, which this file promises
+        never to do."""
+        blocks = [{"k": "file"},
+                  {"k": "p", "cls": "subsection", "sectno": False,
+                   "text": "USER'S GUIDE"},
+                  {"k": "table", "rows": [["Column", "Meaning"], ["A", "First"]]},
+                  {"k": "img", "src": "fig.png", "alt": "Decision flowchart"},
+                  {"k": "p", "cls": "subsection", "sectno": False,
+                   "text": "Read the guide with the table above."},
+                  {"k": "p", "cls": "ActHead5", "sectno": True, "text": "1 Short title"},
+                  {"k": "p", "cls": "subsection", "sectno": False, "text": "Body."}]
+        md, sections, _en, _lt = self.markdown(blocks)
+        self.assertIn("First", md)
+        self.assertIn("Decision flowchart", md)
+        retrievable = "\n".join("\n".join(s["text"]) for s in sections)
+        self.assertIn("First", retrievable)
+        self.assertIn("Decision flowchart", retrievable)
+
+
+class ExtractManifestWriteTests(unittest.TestCase):
+    def test_a_failed_manifest_dump_leaves_the_previous_one_intact(self):
+        """download.py and retry13.py both stage and rename so neither can
+        truncate the raw manifest. extract.py opened manifest_md.json directly,
+        so a full disk during the dump destroyed it after the whole markdown
+        tree had already been written."""
+        extract = load_module("extract_manifest_write", REPO / "extract.py")
+        with tempfile.TemporaryDirectory() as tmp:
+            scratch = Path(tmp)
+            target = scratch / "manifest_md.json"
+            previous = '[{"id": "C2004A00001", "sections": 20}]'
+            target.write_text(previous, encoding="utf-8")
+
+            class Unserialisable:
+                pass
+
+            with self.assertRaises(TypeError):
+                extract.write_md_manifest(str(scratch), [{"bad": Unserialisable()}])
+
+            self.assertEqual(target.read_text(encoding="utf-8"), previous)
+            self.assertEqual([p.name for p in scratch.iterdir()], ["manifest_md.json"])
+
+
+class DistTableBlockParagraphTests(unittest.TestCase):
+    """finalize.py writes the paragraph; dist.py has to rewrite it.
+
+    Every title dist removes is a table_block title, so the full corpus's count
+    is wrong for the subset and the worked example names exactly the
+    instruments that were dropped. This pins the two files to each other: if
+    finalize.py rewords the paragraph, dist.py's pattern stops matching and the
+    stale claim ships silently.
+    """
+
+    LEAD = "**Table-shaped instruments are split on their tables.**"
+    SAMPLE = (
+        "**Table-shaped instruments are split on their tables.** 14 titles carry\n"
+        "`granularity: table_block`: no headings anywhere, just a run of tables. The Tax\n"
+        "Practitioners Board publishes its terminations this way, and Excise By-law No.\n"
+        "127 prescribes petroleum fields one table per basin.\n\n"
+    )
+
+    def _dist_source(self):
+        return (REPO / "dist.py").read_text(encoding="utf-8")
+
+    def test_finalize_still_writes_the_paragraph_dist_rewrites(self):
+        finalize = (REPO / "finalize.py").read_text(encoding="utf-8")
+        self.assertIn(self.LEAD, finalize)
+
+    def test_the_dist_pattern_matches_the_paragraph_finalize_writes(self):
+        source = self._dist_source()
+        marker = "Table-shaped instruments are split on their tables"
+        pattern_lines = [ln for ln in source.split("\n")
+                         if marker in ln and ln.strip().startswith("r\"")]
+        self.assertEqual(len(pattern_lines), 1,
+                         "dist.py must carry exactly one rewrite pattern for this paragraph")
+        pattern = ast.literal_eval(pattern_lines[0].strip().rstrip(","))
+        # re.S, because the paragraph the pattern has to span wraps over four
+        # lines; dist.py passes the same flag.
+        self.assertRegex(self.SAMPLE, re.compile(pattern, re.S))
+
+    def test_the_replacement_uses_the_computed_subset_figure(self):
+        after = self._dist_source().split(self.LEAD, 1)[1]
+        replacement = after.split("rd = (\"> **This is the redistributable subset.", 1)[0]
+        self.assertIn("titles_table_block_chunk", replacement)
+        # the full corpus's worked example names the very titles dist removes
+        self.assertNotIn("Excise By-law No.", replacement)
