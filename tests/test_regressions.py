@@ -1657,41 +1657,55 @@ class DistTableBlockParagraphTests(unittest.TestCase):
 
     Every title dist removes is a table_block title, so the full corpus's count
     is wrong for the subset and the worked example names exactly the
-    instruments that were dropped. This pins the two files to each other: if
-    finalize.py rewords the paragraph, dist.py's pattern stops matching and the
-    stale claim ships silently.
+    instruments that were dropped.
     """
 
-    LEAD = "**Table-shaped instruments are split on their tables.**"
     SAMPLE = (
+        "Intro paragraph.\n\n"
         "**Table-shaped instruments are split on their tables.** 14 titles carry\n"
         "`granularity: table_block`: no headings anywhere, just a run of tables. The Tax\n"
         "Practitioners Board publishes its terminations this way, and Excise By-law No.\n"
         "127 prescribes petroleum fields one table per basin.\n\n"
+        "Following paragraph.\n"
     )
 
-    def _dist_source(self):
-        return (REPO / "dist.py").read_text(encoding="utf-8")
+    def _dist(self):
+        return load_module("dist_table_block", REPO / "dist.py")
 
     def test_finalize_still_writes_the_paragraph_dist_rewrites(self):
+        """If finalize.py rewords the lead, the rewrite silently stops firing
+        and the subset ships the full corpus's claim."""
         finalize = (REPO / "finalize.py").read_text(encoding="utf-8")
-        self.assertIn(self.LEAD, finalize)
+        self.assertIn(self._dist().TABLE_BLOCK_LEAD, finalize)
 
-    def test_the_dist_pattern_matches_the_paragraph_finalize_writes(self):
-        source = self._dist_source()
-        marker = "Table-shaped instruments are split on their tables"
-        pattern_lines = [ln for ln in source.split("\n")
-                         if marker in ln and ln.strip().startswith("r\"")]
-        self.assertEqual(len(pattern_lines), 1,
-                         "dist.py must carry exactly one rewrite pattern for this paragraph")
-        pattern = ast.literal_eval(pattern_lines[0].strip().rstrip(","))
-        # re.S, because the paragraph the pattern has to span wraps over four
-        # lines; dist.py passes the same flag.
-        self.assertRegex(self.SAMPLE, re.compile(pattern, re.S))
+    def test_the_paragraph_is_replaced_with_the_subset_figure(self):
+        result = self._dist().replace_readme_table_block_paragraph(self.SAMPLE, 2)
+        self.assertIn("2 titles carry", result)
+        self.assertNotIn("14 titles carry", result)
+        # the worked example names the very titles dist removes
+        self.assertNotIn("Excise By-law No.", result)
+        self.assertNotIn("publishes its terminations this way", result)
+        # neighbours untouched
+        self.assertTrue(result.startswith("Intro paragraph.\n\n"))
+        self.assertTrue(result.endswith("Following paragraph.\n"))
 
-    def test_the_replacement_uses_the_computed_subset_figure(self):
-        after = self._dist_source().split(self.LEAD, 1)[1]
-        replacement = after.split("rd = (\"> **This is the redistributable subset.", 1)[0]
-        self.assertIn("titles_table_block_chunk", replacement)
-        # the full corpus's worked example names the very titles dist removes
-        self.assertNotIn("Excise By-law No.", replacement)
+    def test_a_readme_without_the_paragraph_is_returned_unchanged(self):
+        dist = self._dist()
+        text = "No such paragraph here.\n"
+        self.assertEqual(dist.replace_readme_table_block_paragraph(text, 2), text)
+
+    def test_the_replacement_is_linear_not_backtracking(self):
+        """py/polynomial-redos: a pattern ending `.*?\\n\\n` backtracks on a
+        README repeating the lead. This repo already fixed that rule once in
+        rates.py, so the replacement must stay a scan, not a regex."""
+        dist = self._dist()
+        hostile = dist.TABLE_BLOCK_LEAD * 20000
+        start = time.monotonic()
+        dist.replace_readme_table_block_paragraph(hostile, 2)
+        self.assertLess(time.monotonic() - start, 1.0)
+
+    def test_it_rewrites_the_real_generated_corpus_paragraph(self):
+        """The shape finalize.py actually emits, not just a hand-written one."""
+        dist = self._dist()
+        result = dist.replace_readme_table_block_paragraph(self.SAMPLE, 2)
+        self.assertEqual(result.count(dist.TABLE_BLOCK_LEAD), 1)
