@@ -309,6 +309,28 @@ def check_chunks_complete(lines, chunks):
                            % (len(lost), ascii(lost[0][:80])))
 
 
+def write_md_manifest(scratch, out_manifest):
+    """Stage and rename, so a failed dump cannot destroy the previous manifest.
+
+    Both writers of manifest_raw.json already do this and each has a regression
+    test. This one opened the target directly, so a full disk or a Ctrl-C part
+    way through the dump truncated manifest_md.json after the whole markdown
+    tree had already been written, leaving the build with no manifest at all.
+    """
+    target = os.path.join(scratch, "manifest_md.json")
+    tmp = target + ".tmp"
+    try:
+        with open(tmp, "w", encoding="utf-8") as f:
+            json.dump(out_manifest, f, indent=1)
+            f.flush()
+            os.fsync(f.fileno())
+        os.replace(tmp, target)
+    except BaseException:
+        if os.path.exists(tmp):
+            os.remove(tmp)
+        raise
+
+
 def table_split(body, name):
     """Chunk a document that is a run of tables rather than a run of sections.
 
@@ -481,6 +503,10 @@ def to_markdown(blocks, meta, force_bare=False):
     # gate is open from the first block, contents page or not.
     gate_free = not has_acthead or force_bare
     seen_body = gate_free
+    # Set once a PREBODY_CLASS paragraph has been admitted in this volume, so
+    # the table/img gate can let through the tables and figures embedded in
+    # that same run of pre-body prose. Per volume, like seen_body.
+    prebody_open = False
     # The bare-text endnote trigger keeps the document-wide rule, because the
     # cover page of every volume lists "Endnotes" as one of the volumes. Arming
     # that trigger from the top of a heading-less volume routes the volume's
@@ -535,10 +561,26 @@ def to_markdown(blocks, meta, force_bare=False):
                 classless_heads.add(i)
 
     def emit(s):
+        nonlocal cur
         if in_endnotes:
             endnotes.append(s)
             return
         lines.append(s)
+        # A document with no mapped heading anywhere is gate-free from block
+        # one, so the pre-body branch never runs and bare_mode is False on the
+        # first pass. Body text ahead of the first CharSectno section then
+        # reached the markdown with no row to hold it and never appeared in
+        # sections.jsonl, which is the file retrieval actually reads. Opening
+        # the row here covers tables and figures in that position too, which a
+        # branch further down could not.
+        if cur is None and s.strip():
+            cur = {"section": None, "heading": "Introductory material",
+                   "kind": "introductory", "container": container, "text": [],
+                   # Read by the table_split gate, which must not treat a row
+                   # opened here as evidence that the document chunked. The
+                   # JSONL writer builds its own dict, so this never ships.
+                   "emit_fallback": True}
+            sections.append(cur)
         if cur is not None:
             cur["text"].append(s)
 
@@ -554,6 +596,13 @@ def to_markdown(blocks, meta, force_bare=False):
             endnote_armed = gate_free
             in_endnotes = False
             container = None
+            # cur must go with them. The comment above says front matter must
+            # not fuse into the section open at the seam, but leaving the row
+            # open did exactly that: the next volume's pre-heading text was
+            # appended to the previous volume's last section and retrieved
+            # under its number.
+            cur = None
+            prebody_open = False
             continue
 
         # A volume with no mapped heading never reaches the heading branch
@@ -575,7 +624,13 @@ def to_markdown(blocks, meta, force_bare=False):
         if k in ("table", "img"):
             # Same gate as paragraphs. Without it a trailing amendment-history
             # table lands in whatever section was last open.
-            if not seen_body and not in_endnotes:
+            #
+            # prebody_open is what keeps the two gates level. A PREBODY_CLASS
+            # paragraph is admitted below without setting seen_body, so once
+            # pre-body prose is flowing, a table or figure sitting between two
+            # such paragraphs was dropped while the prose around it was kept -
+            # silently, which the file elsewhere promises never to do.
+            if not seen_body and not in_endnotes and not prebody_open:
                 continue
             if k == "img":
                 emit("> Figure: %s" % b["alt"])
@@ -682,6 +737,9 @@ def to_markdown(blocks, meta, force_bare=False):
         if not seen_body and not in_endnotes:
             if not PREBODY_CLASS.match(base):
                 continue
+            # Tables and figures between pre-body paragraphs belong to the same
+            # run of prose; the table/img gate above reads this.
+            prebody_open = True
             if cur is None:
                 cur = {"section": None, "heading": "Introductory material",
                        "kind": "introductory", "container": None, "text": []}
@@ -829,18 +887,26 @@ def main(retrieved=None):
         body = md.split("\n---\n", 1)[-1] if md.startswith("---") else md
         emitted = [s for s in sections if any(x.strip() for x in s["text"])]
         whole = tabled = False
-        if not emitted:
+        # A row opened by emit's fallback holds text that would otherwise be
+        # lost; it is not evidence that the document chunked into sections. A
+        # table-shaped instrument opens one for its leading prose, so counting
+        # it here would skip table_split and cost that whole class its
+        # table_block granularity. Documents that had no rows at all before
+        # still take exactly the paths they took before.
+        structured = [s for s in emitted if not s.get("emit_fallback")]
+        if not structured:
             # table_split fails closed on an incomplete chunking, and it is
             # called out here, past the parse try/except above. Without its own
             # handler that guard is not the recorded parse failure its
             # docstring describes: it is an unhandled exception that skips
             # every remaining title and prints nothing at all.
             try:
-                emitted = table_split(body, a["name"])
+                chunks = table_split(body, a["name"])
             except Exception as e:
                 record_failure(a, e)
                 continue
-            tabled = bool(emitted)
+            emitted = chunks or []
+            tabled = bool(chunks)
         if not emitted:
             whole = True
             emitted = [{"section": None, "heading": a["name"],
@@ -892,8 +958,7 @@ def main(retrieved=None):
                            "refusing to write manifest_md.json"
                            % (len(failures), ids, more))
 
-    with open(os.path.join(scratch, "manifest_md.json"), "w", encoding="utf-8") as f:
-        json.dump(out_manifest, f, indent=1)
+    write_md_manifest(scratch, out_manifest)
     print("\nEXTRACT DONE: %d acts" % len(out_manifest))
 
 

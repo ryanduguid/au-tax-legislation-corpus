@@ -95,6 +95,37 @@ def render_rates_markdown(records):
     return "\n".join(md) + "\n"
 
 
+TABLE_BLOCK_LEAD = "**Table-shaped instruments are split on their tables.**"
+
+
+def replace_readme_table_block_paragraph(text, count):
+    """Rewrite the table_block paragraph finalize.py writes, for the subset.
+
+    Every title dist.py removes is a table_block title, so the full corpus's
+    count is wrong here and so is its worked example: it names the Tax
+    Practitioners Board instruments that were just removed.
+
+    Located by find() rather than a pattern, for the same reason as the sibling
+    above: a regex ending `.*?\\n\\n` backtracks polynomially on a README that
+    repeats the lead, and py/polynomial-redos is a rule this repo already
+    fixed once in rates.py.
+    """
+    start = text.find(TABLE_BLOCK_LEAD)
+    if start < 0:
+        return text
+    end = text.find("\n\n", start)
+    end = len(text) if end < 0 else end + 2
+    replacement = (
+        "%s %d titles carry `granularity: table_block`: no headings anywhere, "
+        "just a run of tables. Each table becomes a row, carrying the prose that "
+        "preceded it, such as the sentence naming the enabling provision or the "
+        "basin name. The Tax Practitioners Board instruments chunked this way "
+        "are not in this distribution; see REMOVED.md.\n\n"
+        % (TABLE_BLOCK_LEAD, count)
+    )
+    return text[:start] + replacement + text[end:]
+
+
 def replace_readme_collection_counts(text, acts, instruments):
     """Rewrite every ``N Acts and N legislative and notifiable`` summary.
 
@@ -330,6 +361,11 @@ def main():
         "removed before publication. See REMOVED.md for the list and their "
         "Register links.\n\n" % len(drop),
         rd, count=1, flags=re.S)
+    # Every title removed from dist is a table_block title, so the full
+    # corpus's count is wrong here and so is its worked example. The right
+    # figure is already computed for sources.json.
+    rd = replace_readme_table_block_paragraph(
+        rd, counts["titles_table_block_chunk"])
     rd = ("> **This is the redistributable subset.** The EPUBs and %d titles that "
           "name private individuals are not included. See REMOVED.md for what was "
           "dropped and why, and run the pipeline yourself for the full corpus.\n\n"
