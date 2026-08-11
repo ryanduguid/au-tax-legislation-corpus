@@ -70,7 +70,7 @@ prints a progress line every 25 titles.
   than a missing document. Thirteen titles were in this state, the Family Law
   (Superannuation) Regulations 2025 among them. `retry13.py` falls back to the
   most recent version that does have a `registerId` and marks the result
-  `version_is_current: false` — in the front matter, on every JSONL row, and in
+  `version_is_current: false`, in the front matter, on every JSONL row, and in
   `sources.json`. Substituting an older compilation silently would misreport the
   corpus as current. `check_current.py` reports these in their own bucket: it
   used to file them under "SUPERSEDED, re-download these", which sends you at a
@@ -80,11 +80,11 @@ prints a progress line every 25 titles.
   `CharSectno` span. Some use `<h1>`-`<h6>` instead of `<p>`.
 - **Instruments use dozens.** Three worth mapping by name, because together they
   cover most of the volume:
-  - `LI-Heading1`/`LI-Heading2` — the standard modern instrument template.
+  - `LI-Heading1`/`LI-Heading2`: the standard modern instrument template.
     Heading1 is the Part, Heading2 the section. `LI-Heading3` and below are
     sub-headings *inside* a section and are deliberately left unmapped, or they
     split the section they belong to.
-  - `IASBSectionTitle1`-`4` — accounting standards registered as instruments
+  - `IASBSectionTitle1`-`4`: accounting standards registered as instruments
     (AASB 112 Income Taxes). Unnumbered headings. Mapping them turned one
     29,000-word blob into 62 rows.
   - No classes at all, headings as bare paragraphs (`3 Definition`).
@@ -92,14 +92,14 @@ prints a progress line every 25 titles.
   Word classes (`Header`, `ListParagraph`, `Normal`) look structural, and the
   one-off families run past 25. `extract.py` runs the structural pass, and only
   when that yields no section at all re-runs with `force_bare=True`. A document
-  that parsed keeps its result untouched, so this cannot corrupt an Act —
-  verified across all 175, which come out row-for-row identical.
+  that parsed keeps its result untouched, so this cannot corrupt an Act.
+  Verified across all 175, which come out row-for-row identical.
 - **Accept the fallback only if it found headings.** A single "Introductory
   material" row holding the whole document is the same blob under a worse label;
   let the `whole_act` path own that case and say so.
 - **Let the document supply its own heading vocabulary.** APRA prudential
   standards head their sections with classless, unnumbered paragraphs
-  ("Authority", "Application") that no rule can pick out of body text — but they
+  ("Authority", "Application") that no rule can pick out of body text, but they
   list every one in their own table of contents. The fallback collects the
   `TOC\d` entries and treats a later exact match as a heading. `SKIP_CLASS`
   already drops the contents page, so the only hits are the real headings.
@@ -107,11 +107,11 @@ prints a progress line every 25 titles.
 - **An unstyled heading is still a heading.** Most APRA determinations carry no
   contents page either. They mark headings by omission: the heading is unstyled
   and the body under it is styled. That asymmetry is the whole signal, and it
-  rejects the signature block for free — "Clare Gibney" is followed by
+  rejects the signature block for free: "Clare Gibney" is followed by
   "Executive Director", unstyled as well, while "Authority" is followed by
   `BodyText1`. Guard on length (<= 80) and no trailing `.;,:` so the making
   words do not qualify. Do NOT test the following block against
-  `COSMETIC_CLASS`: it contains `BodyText`, which prefix-matches `BodyText1` —
+  `COSMETIC_CLASS`: it contains `BodyText`, which prefix-matches `BodyText1`,
   the very class that proves the paragraph is styled body. That one mistake left
   the rule finding 2 headings where it should have found 17.
 - **Bare heading detection, three ways it goes wrong.** Numbering is `1` or
@@ -129,17 +129,17 @@ prints a progress line every 25 titles.
   instruments repeat their lead-in sentence above every table, so 36 prose lines
   against 32 tables reads as narrative when it is the same sentence 32 times.
   And keep the prose in document order rather than hoisting the first line as a
-  shared lead — Excise By-law No. 127 prescribes petroleum fields one table per
+  shared lead. Excise By-law No. 127 prescribes petroleum fields one table per
   basin, and hoisting stranded "C. PERTH BASIN" and dropped the operative
   paragraphs entirely. `table_split` asserts afterwards that every segmented
   line appears in some chunk and raises if one does not; that check is what
   caught it, and it now runs on every build. It covers the table-split path
   only. `to_markdown` has no equivalent whole-document assertion, which is how
-  a heading-less EPUB volume was able to lose its whole body silently — see the
+  a heading-less EPUB volume was able to lose its whole body silently. See the
   volume gate below.
 - **The pre-body gate is per volume, not per document.** A multi-volume EPUB
   repeats its compilation cover page at the head of every volume, so `seen_body`
-  resets at each volume boundary — but the decision that the document *has*
+  resets at each volume boundary, but the decision that the document *has*
   structural headings was taken once, across all volumes. A volume that carries
   none (F2025L00281 keeps Schedule 1 behind `ScheduleHeading`/`P1` markup) then
   never opened its gate, and its tables, images and paragraphs were dropped with
@@ -147,7 +147,7 @@ prints a progress line every 25 titles.
   `manifest_md.json` recorded `sections=20, words=18583` with no error field.
   Three things hold it shut now. Decide the gate from the volume's own blocks.
   Open it, for a heading-less volume, at that volume's contents page, or at the
-  first paragraph carrying a body class if one comes first — never at the
+  first paragraph carrying a body class if one comes first, never at the
   volume's own first block, which is the compilation cover page that every
   markdown file and every JSONL row states was omitted. `Header` and `Footer`
   are skipped classes but not boundaries: Word repeats the running header above
@@ -155,8 +155,8 @@ prints a progress line every 25 titles.
   dropped as it was before, which is the older documented loss in preference to
   publishing a cover page under a notice saying it was removed; all 11
   heading-less volumes across the 946 EPUBs open at a contents page. And leave
-  the bare-text endnote trigger armed only once a mapped heading has been seen
-  — the cover page lists "Endnotes" as one of the volumes, so arming it at the
+  the bare-text endnote trigger armed only once a mapped heading has been seen.
+  The cover page lists "Endnotes" as one of the volumes, so arming it at the
   top of a heading-less volume routes that volume's whole body into
   `endnotes.md`, which is the same loss wearing a different hat. Recovered text
   also opens a row of its own, or it is retrieved under the section number of
@@ -167,7 +167,7 @@ prints a progress line every 25 titles.
   Passenger Movement Charge Act 1978 under its former title, the Departure Tax
   Act 1978. It also matches substrings, which is how two dozen `AD/ROTAX/...`
   airworthiness directives arrived: "Rotax" contains "tax". Do not filter these
-  out on a name regex — any rule strict enough to drop Rotax also drops the
+  out on a name regex, because any rule strict enough to drop Rotax also drops the
   Departure Tax Act. `sources.json` records `keywords_in_name` instead.
 - **Section numbers render as `40 <U+2011> 1`**, a non-breaking hyphen padded
   with non-breaking spaces. A regex expecting a plain adjacent hyphen matches
