@@ -5,7 +5,7 @@ title from the Federal Register of Legislation and turn it into a retrieval
 corpus: full-text markdown with provenance front matter, one JSONL row per
 section, and a derived rates-and-thresholds index.
 
-No dependencies beyond the standard library and `curl`. No API key — the
+No dependencies beyond the standard library and `curl`. No API key: the
 Register's API is free and unauthenticated.
 
 **This repository holds the code, not the corpus.** The output is roughly a
@@ -20,7 +20,7 @@ Last full run, 4 August 2026:
 
 | | |
 |---|---|
-| Titles | 946 — 175 Acts, 675 legislative instruments, 96 notifiable instruments |
+| Titles | 946: 175 Acts, 675 legislative instruments, 96 notifiable instruments |
 | Retrieval rows | 21,784 |
 | Words | 6,041,512 |
 | EPUB downloaded | 37.5 MB |
@@ -104,7 +104,7 @@ real defect. The short version:
 - **Acts use two Word templates; instruments use dozens.** Deciding the template
   from the markup fails, because cosmetic classes look structural. Run the
   structural pass, and only when it finds nothing at all re-run with the
-  bare-paragraph fallback — verified not to change a single Act row.
+  bare-paragraph fallback, verified not to change a single Act row.
 - **Never filter images by byte size.** Doing so deleted a GST decision
   flowchart and a maintenance-income formula.
 
@@ -118,8 +118,8 @@ Check the `collection` field before relying on a provision. An Act and a
 regulation made under it are not interchangeable, and an instrument can be
 disallowed or sunset while its enabling Act stands.
 
-Selection is by title keyword — Tax, Excise, Superannuation, Customs Tariff,
-Medicare Levy — applied to the Act, LegislativeInstrument and
+Selection uses title keywords (Tax, Excise, Superannuation, Customs Tariff,
+Medicare Levy) applied to the Act, LegislativeInstrument and
 NotifiableInstrument collections. A tax-relevant title without one of those
 words in its name is absent. The Register's `contains(name,...)` also matches
 former titles and substrings, which is how the Passenger Movement Charge Act
@@ -144,8 +144,8 @@ them out:
    Register's CC BY 4.0 grant, along with any third-party material the Register
    has not cleared. Stripping the image would also destroy the only thing that
    makes shipping EPUBs worthwhile, which is that they are byte-identical to
-   what the Register served. The markdown and JSONL carry no image data at all —
-   `extract.py` never emits any — so they need nothing removed.
+   what the Register served. The markdown and JSONL carry no image data at all, because
+   `extract.py` never emits any, so they need nothing removed.
 2. **Twelve titles name private individuals.** The Tax Practitioners Board
    registers terminations and suspensions of tax and BAS agents as notifiable
    instruments: tables of named people with registration numbers and the
@@ -155,7 +155,7 @@ them out:
 
 `pii_scan.py` finds the second category without being told where to look. It
 tests every row in all 946 titles for personal names appearing alongside agent
-registration numbers, because a bare name test flags the whole corpus —
+registration numbers, because a bare name test flags the whole corpus:
 legislation names Ministers, Commissioners and litigants constantly, and the
 registration number is what separates a disciplinary register from a statute.
 `pii_scan2.py` re-runs at a lower threshold and sweeps for emails, phone numbers
@@ -169,7 +169,7 @@ its own claims and exits non-zero if any check fails.
 
 ## Licence
 
-The code is MIT — see [LICENSE](LICENSE).
+The code is MIT. See [LICENSE](LICENSE).
 
 Everything it downloads is Commonwealth legislation from the Federal Register of
 Legislation, licensed
@@ -182,7 +182,7 @@ differs for the unchanged EPUBs ("Sourced from") and the converted markdown
 ## Related
 
 ATO rulings and guidance are not legislation and are not on the Register. The
-`simplelex` datasets on HuggingFace cover them — see
+`simplelex` datasets on HuggingFace cover them. See
 [ATO-Australian-Tax-Rulings-and-Guidance](https://huggingface.co/datasets/simplelex/ATO-Australian-Tax-Rulings-and-Guidance).
 Validated against the live ATO Legal Database on 4 August 2026: the document
 text is close to verbatim, but `Date_of_Issue` is empty on all 5,677 public
