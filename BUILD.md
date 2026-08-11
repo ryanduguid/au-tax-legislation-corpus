@@ -41,6 +41,13 @@ titles carry nested tables (F2005B01198, F2005L00211, F2005L01901, F2026L00716)
 and between them recovered 84 text fragments; the other 942 parse identically,
 so re-running `extract.py` moves those four titles' figures as well.
 
+Two more changes move the figures further. Text ahead of a document's first
+section had no row to hold it, so it reached the markdown and never
+`sections.jsonl`; opening a row for it adds one `Introductory material` row to
+511 of the 946 titles, and no title loses retrievable text. A table or figure
+between two pre-body paragraphs was dropped while the prose either side was
+kept; admitting it changes the markdown for one title.
+
 ## Timing
 
 `download.py` sleeps 10 seconds between titles, honouring the Crawl-delay in
