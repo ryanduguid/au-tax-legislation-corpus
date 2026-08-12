@@ -9,7 +9,7 @@ in advance:
     useful metadata (registerId, fileName, sizeInBytes, isAuthorised).
 Large raw transfers also drop mid-stream, so those get a resumed retry.
 """
-import base64, json, os, subprocess, time, zipfile
+import base64, binascii, json, os, subprocess, time, zipfile
 
 from corpus_paths import child, corpus_root, register_id
 
@@ -54,15 +54,18 @@ def decode_envelope(path):
         with open(path, encoding="utf-8") as f:
             d = json.load(f)
     except Exception:
-        return None
+        return {"_invalid": True}
     if not isinstance(d, dict):
-        return None
+        return {"_invalid": True}
     b64 = d.get("bytes")
-    if not b64:
-        return {"_no_bytes": True, **{k: d.get(k) for k in
-                                      ("registerId", "extension", "mimeType", "sizeInBytes")}}
+    if not isinstance(b64, str) or not b64:
+        return {"_invalid": True}
+    try:
+        decoded = base64.b64decode(b64, validate=True)
+    except (ValueError, TypeError, binascii.Error):
+        return {"_invalid": True}
     with open(path, "wb") as f:
-        f.write(base64.b64decode(b64))
+        f.write(decoded)
     return {k: d.get(k) for k in
             ("registerId", "fileName", "sizeInBytes", "isAuthorised",
              "compilationNumber", "mimeType", "extension")}
@@ -93,15 +96,19 @@ def fetch(url, dst, tries=3):
         elif not code.isdigit() or not 200 <= int(code) < 300:
             problem = "HTTP %s" % code
         elif os.path.exists(part):
+            invalid_envelope = False
             if sniff(part) == b"{":
                 m = decode_envelope(part)
-                if m and not m.get("_no_bytes"):
+                if m and m.get("_invalid"):
+                    invalid_envelope = True
+                elif m:
                     meta = m
-            if valid_zip(part):
+            if not invalid_envelope and valid_zip(part):
                 size = os.path.getsize(part)
                 os.replace(part, dst)
                 return True, code, ctype, size, meta
-            problem = "invalid EPUB response"
+            problem = ("invalid JSON envelope"
+                       if invalid_envelope else "invalid EPUB response")
         else:
             problem = "missing response body"
         if attempt + 1 < tries:

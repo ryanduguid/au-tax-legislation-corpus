@@ -85,8 +85,8 @@ prints a progress line every 25 titles.
   true` happily returns a version whose `registerId` is null: the Register knows
   an amendment commenced but has not published the compilation. Every document
   path built from that date answers 404, which reads as a broken download rather
-  than a missing document. Thirteen titles were in this state, the Family Law
-  (Superannuation) Regulations 2025 among them. `retry13.py` falls back to the
+  than a missing document. Titles can enter or leave this state as compilations
+  are published. `retry13.py` falls back to the
   most recent version that does have a `registerId` and marks the result
   `version_is_current: false`, in the front matter, on every JSONL row, and in
   `sources.json`. Substituting an older compilation silently would misreport the

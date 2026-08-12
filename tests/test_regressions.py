@@ -958,44 +958,52 @@ class DownloadManifestWriteTests(unittest.TestCase):
 
     def test_a_response_error_is_logged_then_aborts_before_manifest_replacement(self):
         download = load_module("download_response_failure", REPO / "download.py")
-        with tempfile.TemporaryDirectory() as tmp:
-            scratch = Path(tmp)
-            epub_dir = scratch / "corpus" / "epub"
-            epub_dir.mkdir(parents=True)
-            (scratch / "acts_resolved.json").write_text(json.dumps([{
-                "id": "F2020L01498", "name": "Blocked Instrument",
-                "versionStart": "2026-03-01", "compilationNumber": "4",
-                "compilationRegisterId": "F2026C00001",
-            }]), encoding="utf-8")
-            manifest_path = scratch / "manifest_raw.json"
-            original = '[{"id": "previous-crawl"}]'
-            manifest_path.write_text(original, encoding="utf-8")
+        cases = (
+            ("http", b"<html>BODY_MUST_NOT_REACH_LOG</html>",
+             "403|text/html\r\nX-Untrusted: value", "HTTP 403"),
+            ("malformed-base64", b'{"bytes":"%%%NOT_BASE64%%%"}',
+             "200|application/json", "invalid JSON envelope"),
+            ("invalid-type", b'{"bytes":{"BODY_MUST_NOT_REACH_LOG":true}}',
+             "200|application/json", "invalid JSON envelope"),
+        )
+        for label, body, response_meta, expected_error in cases:
+            with self.subTest(label=label), tempfile.TemporaryDirectory() as tmp:
+                scratch = Path(tmp)
+                epub_dir = scratch / "corpus" / "epub"
+                epub_dir.mkdir(parents=True)
+                (scratch / "acts_resolved.json").write_text(json.dumps([{
+                    "id": "F2020L01498", "name": "Blocked Instrument",
+                    "versionStart": "2026-03-01", "compilationNumber": "4",
+                    "compilationRegisterId": "F2026C00001",
+                }]), encoding="utf-8")
+                manifest_path = scratch / "manifest_raw.json"
+                original = '[{"id": "previous-crawl"}]'
+                manifest_path.write_text(original, encoding="utf-8")
 
-            def blocked(args, **kwargs):
-                Path(args[args.index("-o") + 1]).write_bytes(
-                    b"<html>BODY_MUST_NOT_REACH_LOG</html>")
-                return mock.Mock(stdout="403|text/html\r\nX-Untrusted: value",
-                                 returncode=0)
+                def failed_response(args, **kwargs):
+                    Path(args[args.index("-o") + 1]).write_bytes(body)
+                    return mock.Mock(stdout=response_meta, returncode=0)
 
-            download.SCRATCH = str(scratch)
-            download.EPUB_DIR = str(epub_dir)
-            download.CRAWL_DELAY = 0
-            download.time.sleep = lambda _seconds: None
-            with mock.patch.object(download.subprocess, "run", blocked):
-                with contextlib.redirect_stdout(io.StringIO()):
-                    with self.assertRaisesRegex(download.DownloadError,
-                                                "HTTP 403"):
-                        download.main()
+                download.SCRATCH = str(scratch)
+                download.EPUB_DIR = str(epub_dir)
+                download.CRAWL_DELAY = 0
+                download.time.sleep = lambda _seconds: None
+                with mock.patch.object(download.subprocess, "run", failed_response):
+                    with contextlib.redirect_stdout(io.StringIO()):
+                        with self.assertRaisesRegex(download.DownloadError,
+                                                    expected_error):
+                            download.main()
 
-            self.assertEqual(manifest_path.read_text(encoding="utf-8"), original)
-            self.assertFalse((epub_dir / "F2020L01498.epub").exists())
-            self.assertFalse((epub_dir / "F2020L01498.epub.part").exists())
-            logged = (scratch / "download_log.txt").read_text(encoding="utf-8")
-            self.assertIn("HTTP 403", logged)
-            self.assertIn("text/html X-Untrusted: value", logged)
-            self.assertNotIn("BODY_MUST_NOT_REACH_LOG", logged)
-            self.assertEqual(len(logged.splitlines()), 1)
-            self.assertLessEqual(len(logged), 180)
+                self.assertEqual(manifest_path.read_text(encoding="utf-8"), original)
+                self.assertFalse((epub_dir / "F2020L01498.epub").exists())
+                self.assertFalse((epub_dir / "F2020L01498.epub.part").exists())
+                logged = (scratch / "download_log.txt").read_text(encoding="utf-8")
+                self.assertIn(expected_error, logged)
+                expected_ctype = " ".join(response_meta.split("|", 1)[1].split())
+                self.assertIn(expected_ctype, logged)
+                self.assertNotIn(body.decode("utf-8"), logged)
+                self.assertEqual(len(logged.splitlines()), 1)
+                self.assertLessEqual(len(logged), 180)
 
 
 class DiscoveryPagingTests(unittest.TestCase):
@@ -1078,12 +1086,21 @@ class DownloadValidationTests(unittest.TestCase):
             self.assertEqual(size, os.path.getsize(dst))
             valid_before_failure = Path(dst).read_bytes()
 
-            with self.assertRaisesRegex(download.DownloadError,
-                                        "invalid EPUB response"):
-                self._fetch(download, dst, b'{"bytes": null}',
-                            content_type="application/json")
+            invalid_envelopes = (
+                b'{"bytes":"%%%NOT_BASE64%%%"}',
+                b'{"bytes":17}',
+                b'{"bytes":null}',
+            )
+            for index, envelope in enumerate(invalid_envelopes):
+                bad_dst = str(Path(tmp) / ("invalid-%d.epub" % index))
+                with self.subTest(envelope=envelope):
+                    with self.assertRaisesRegex(download.DownloadError,
+                                                "invalid JSON envelope"):
+                        self._fetch(download, bad_dst, envelope,
+                                    content_type="application/json")
+                    self.assertFalse(Path(bad_dst).exists())
+                    self.assertFalse(Path(bad_dst + ".part").exists())
             self.assertEqual(Path(dst).read_bytes(), valid_before_failure)
-            self.assertFalse(Path(dst + ".part").exists())
 
     def test_only_a_null_compilation_register_id_is_no_epub(self):
         """A current version with no registerId is the API's no-edition case;

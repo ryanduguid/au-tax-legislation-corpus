@@ -121,7 +121,8 @@ real defect. The short version:
 - **The current version can have no document.** The Register records that an
   amendment commenced before publishing the compilation, so the URL 404s. That
   is not a broken download. Only an explicit null `registerId` on the current
-  version is recorded as `no_epub`; 13 titles were in that state in this build.
+  version is recorded as `no_epub`; the count changes as compilations are
+  published.
 - **Acts use two Word templates; instruments use dozens.** Deciding the template
   from the markup fails, because cosmetic classes look structural. Run the
   structural pass, and only when it finds nothing at all re-run with the
