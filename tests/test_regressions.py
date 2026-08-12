@@ -918,19 +918,32 @@ class DownloadManifestWriteTests(unittest.TestCase):
                  "compilationRegisterId": "F2026C00001"}]),
                 encoding="utf-8")
 
-            previous = [
-                {"id": "C2004A00001", "name": "Already Downloaded Act",
-                 "epub": "C2004A00001.epub", "bytes": 10, "status": "ok",
-                 "sourceUrl": "https://example.test/C2004A00001",
-                 "versionStart": "2026-01-01"},
-            ]
+            previous = [{
+                "id": "F2020L01498", "name": "Prior Instrument",
+                "epub": "F2020L01498.epub", "bytes": 10, "status": "ok",
+                "sourceUrl": "https://example.test/F2020L01498",
+                "versionStart": "2025-06-30",
+            }]
             manifest_path = scratch / "manifest_raw.json"
             manifest_path.write_text(json.dumps(previous), encoding="utf-8")
             original = manifest_path.read_text(encoding="utf-8")
 
+            old_payload = io.BytesIO()
+            with zipfile.ZipFile(old_payload, "w") as archive:
+                archive.writestr("document_1.xhtml", "<html>prior version</html>")
+            epub = epub_dir / "F2020L01498.epub"
+            sidecar = epub_dir / "F2020L01498.epub.meta.json"
+            old_epub = old_payload.getvalue()
+            old_sidecar = '{"versionStart":"2025-06-30"}'
+            epub.write_bytes(old_epub)
+            sidecar.write_text(old_sidecar, encoding="utf-8")
+
             def fake_fetch(url, dst, tries=3):
-                Path(dst).write_bytes(b"PK-fake-epub")
-                return True, "200", "application/epub+zip", 12, {
+                new_payload = io.BytesIO()
+                with zipfile.ZipFile(new_payload, "w") as archive:
+                    archive.writestr("document_1.xhtml", "<html>new version</html>")
+                Path(dst).write_bytes(new_payload.getvalue())
+                return True, "200", "application/epub+zip", len(new_payload.getvalue()), {
                     "registerId": "F2025C00010", "isAuthorised": True}
 
             real_dump = download.json.dump
@@ -954,7 +967,11 @@ class DownloadManifestWriteTests(unittest.TestCase):
                         download.main()
 
             self.assertEqual(manifest_path.read_text(encoding="utf-8"), original)
+            self.assertEqual(epub.read_bytes(), old_epub)
+            self.assertEqual(sidecar.read_text(encoding="utf-8"), old_sidecar)
             self.assertFalse((scratch / "manifest_raw.json.tmp").exists())
+            self.assertFalse(Path(str(epub) + ".rollback").exists())
+            self.assertFalse(Path(str(sidecar) + ".rollback").exists())
 
     def test_a_response_error_is_logged_then_aborts_before_manifest_replacement(self):
         download = load_module("download_response_failure", REPO / "download.py")
@@ -1002,8 +1019,10 @@ class DownloadManifestWriteTests(unittest.TestCase):
                 expected_ctype = " ".join(response_meta.split("|", 1)[1].split())
                 self.assertIn(expected_ctype, logged)
                 self.assertNotIn(body.decode("utf-8"), logged)
-                self.assertEqual(len(logged.splitlines()), 1)
-                self.assertLessEqual(len(logged), 180)
+                lines = logged.splitlines()
+                self.assertEqual(len(lines), 2)
+                self.assertLessEqual(len(lines[0]), 180)
+                self.assertEqual(lines[1], "ROLLBACK restored 1 changed title(s)")
 
     def test_a_failed_upgrade_preserves_the_prior_epub_and_sidecar(self):
         download = load_module("download_upgrade_failure", REPO / "download.py")
@@ -1047,6 +1066,59 @@ class DownloadManifestWriteTests(unittest.TestCase):
             self.assertEqual(sidecar.read_text(encoding="utf-8"), old_sidecar)
             self.assertFalse(Path(str(epub) + ".part").exists())
 
+    def test_a_later_fetch_failure_rolls_back_every_earlier_upgrade(self):
+        download = load_module("download_run_rollback", REPO / "download.py")
+        with tempfile.TemporaryDirectory() as tmp:
+            scratch = Path(tmp)
+            epub_dir = scratch / "corpus" / "epub"
+            epub_dir.mkdir(parents=True)
+            ids = ("F2020L01498", "F2021L00002")
+            (scratch / "acts_resolved.json").write_text(json.dumps([
+                {"id": rid, "name": "Instrument %d" % index,
+                 "versionStart": "2026-03-0%d" % index,
+                 "compilationNumber": str(index),
+                 "compilationRegisterId": "F2026C0000%d" % index}
+                for index, rid in enumerate(ids, 1)
+            ]), encoding="utf-8")
+            manifest_path = scratch / "manifest_raw.json"
+            old_manifest = '[{"id":"F2020L01498","epub":"F2020L01498.epub"}]'
+            manifest_path.write_text(old_manifest, encoding="utf-8")
+
+            old_payload = io.BytesIO()
+            with zipfile.ZipFile(old_payload, "w") as archive:
+                archive.writestr("document_1.xhtml", "<html>prior version</html>")
+            new_payload = io.BytesIO()
+            with zipfile.ZipFile(new_payload, "w") as archive:
+                archive.writestr("document_1.xhtml", "<html>new version</html>")
+            first_epub = epub_dir / (ids[0] + ".epub")
+            first_sidecar = epub_dir / (ids[0] + ".epub.meta.json")
+            old_epub = old_payload.getvalue()
+            old_sidecar = '{"versionStart":"2025-06-30"}'
+            first_epub.write_bytes(old_epub)
+            first_sidecar.write_text(old_sidecar, encoding="utf-8")
+
+            def fetch(_url, dst, tries=3):
+                if ids[0] in dst:
+                    Path(dst).write_bytes(new_payload.getvalue())
+                    return True, "200", "application/epub+zip", len(new_payload.getvalue()), None
+                raise download.DownloadError(
+                    "HTTP 403 after 1 attempt (content-type text/html, 919 bytes)")
+
+            download.SCRATCH = str(scratch)
+            download.EPUB_DIR = str(epub_dir)
+            download.CRAWL_DELAY = 0
+            download.fetch = fetch
+            with contextlib.redirect_stdout(io.StringIO()):
+                with self.assertRaisesRegex(download.DownloadError, "HTTP 403"):
+                    download.main()
+
+            self.assertEqual(manifest_path.read_text(encoding="utf-8"), old_manifest)
+            self.assertEqual(first_epub.read_bytes(), old_epub)
+            self.assertEqual(first_sidecar.read_text(encoding="utf-8"), old_sidecar)
+            self.assertFalse((epub_dir / (ids[1] + ".epub")).exists())
+            self.assertFalse((epub_dir / (ids[1] + ".epub.meta.json")).exists())
+            self.assertEqual(list(epub_dir.glob("*.rollback")), [])
+
     def test_a_sidecar_failure_rolls_back_the_epub_publication(self):
         download = load_module("download_sidecar_rollback", REPO / "download.py")
         for had_prior in (True, False):
@@ -1082,7 +1154,7 @@ class DownloadManifestWriteTests(unittest.TestCase):
                 real_replace = download.os.replace
 
                 def fail_sidecar_replace(source, destination):
-                    if destination == str(sidecar):
+                    if source == str(sidecar) + ".tmp" and destination == str(sidecar):
                         raise OSError("injected sidecar failure")
                     return real_replace(source, destination)
 
@@ -1242,6 +1314,12 @@ class DownloadValidationTests(unittest.TestCase):
                 with self.assertRaisesRegex(ValueError,
                                             "missing compilationRegisterId"):
                     download.main()
+
+    def test_no_document_count_is_not_hard_coded_in_maintained_prose(self):
+        for name in ("README.md", "BUILD.md", "retry13.py", "extract.py"):
+            with self.subTest(name=name):
+                text = (REPO / name).read_text(encoding="utf-8")
+                self.assertNotRegex(text, r"(?i)\bthirteen titles\b")
 
 
 class StalenessBucketTests(unittest.TestCase):

@@ -44,6 +44,55 @@ def write_json_atomic(path, value, **kwargs):
         raise
 
 
+def snapshot_pair(dst, side):
+    """Back up one EPUB/sidecar pair for whole-run rollback."""
+    snapshot = []
+    for path in (dst, side):
+        backup = path + ".rollback"
+        if os.path.exists(backup):
+            raise RuntimeError("unfinished rollback file: %s" % backup)
+        snapshot.append((path, backup, os.path.exists(path)))
+    try:
+        for path, backup, existed in snapshot:
+            if existed:
+                shutil.copy2(path, backup)
+    except BaseException:
+        for _path, backup, _existed in snapshot:
+            if os.path.exists(backup):
+                os.remove(backup)
+        raise
+    return snapshot
+
+
+def rollback_snapshots(snapshots):
+    """Restore every pair changed since the prior manifest was read."""
+    for snapshot in reversed(snapshots):
+        for path, backup, existed in reversed(snapshot):
+            if existed:
+                if not os.path.exists(backup):
+                    raise RuntimeError("missing rollback file: %s" % backup)
+                os.replace(backup, path)
+            elif os.path.exists(path):
+                os.remove(path)
+        for path, backup, _existed in snapshot:
+            for transient in (backup, path + ".part", path + ".tmp"):
+                if os.path.exists(transient):
+                    os.remove(transient)
+
+
+def discard_snapshots(snapshots):
+    """Remove rollback copies after the new manifest commits."""
+    leftovers = []
+    for snapshot in snapshots:
+        for _path, backup, _existed in snapshot:
+            if os.path.exists(backup):
+                try:
+                    os.remove(backup)
+                except OSError:
+                    leftovers.append(backup)
+    return leftovers
+
+
 def valid_zip(path):
     try:
         with zipfile.ZipFile(path) as archive:
@@ -142,57 +191,53 @@ def main():
 
     with open(os.path.join(SCRATCH, "download_log.txt"), "a", encoding="utf-8") as log:
         manifest, ok_n, fail_n, total_bytes = [], 0, 0, 0
+        snapshots = []
+        try:
+            for i, a in enumerate(acts, 1):
+                rid, d = register_id(a["id"]), a["versionStart"]
+                dst = child(EPUB_DIR, "%s.epub" % rid)
+                url = "https://www.legislation.gov.au/%s/%s/%s/text/original/epub" % (rid, d, d)
+                if "compilationRegisterId" not in a:
+                    raise ValueError("%s: missing compilationRegisterId" % rid)
+                no_document = a["compilationRegisterId"] is None
 
-        for i, a in enumerate(acts, 1):
-            rid, d = register_id(a["id"]), a["versionStart"]
-            dst = child(EPUB_DIR, "%s.epub" % rid)
-            url = "https://www.legislation.gov.au/%s/%s/%s/text/original/epub" % (rid, d, d)
-            if "compilationRegisterId" not in a:
-                raise ValueError("%s: missing compilationRegisterId" % rid)
-            no_document = a["compilationRegisterId"] is None
+                # A cached file is only valid for the version it was fetched under.
+                # Without this check a re-run stamps the newly resolved compilation
+                # number onto stale bytes.
+                side = child(EPUB_DIR, "%s.epub.meta.json" % rid)
+                if (not no_document and os.path.exists(dst) and valid_zip(dst)
+                        and os.path.exists(side)):
+                    try:
+                        with open(side, encoding="utf-8") as f:
+                            prev = json.load(f)
+                    except Exception:
+                        prev = {}
+                    if prev.get("versionStart") == d:
+                        sz = os.path.getsize(dst)
+                        manifest.append(dict(
+                            a, epub=os.path.basename(dst), bytes=sz,
+                            status="cached", sourceUrl=url,
+                            compilationRegisterId=prev.get("compilationRegisterId")))
+                        ok_n += 1
+                        total_bytes += sz
+                        continue
+                if no_document:
+                    # Stale prior-version files are deliberately left unreferenced:
+                    # deleting them here would break the previous manifest if this
+                    # run failed before publishing its replacement.
+                    for p in (dst + ".part", side + ".tmp"):
+                        if os.path.exists(p):
+                            os.remove(p)
 
-            # A cached file is only valid for the version it was fetched under.
-            # Without this check a re-run stamps the newly resolved compilation
-            # number onto stale bytes.
-            side = child(EPUB_DIR, "%s.epub.meta.json" % rid)
-            if (not no_document and os.path.exists(dst) and valid_zip(dst)
-                    and os.path.exists(side)):
-                try:
-                    with open(side, encoding="utf-8") as f:
-                        prev = json.load(f)
-                except Exception:
-                    prev = {}
-                if prev.get("versionStart") == d:
-                    sz = os.path.getsize(dst)
-                    manifest.append(dict(a, epub=os.path.basename(dst), bytes=sz,
-                                         status="cached", sourceUrl=url,
-                                         compilationRegisterId=prev.get("compilationRegisterId")))
-                    ok_n += 1
-                    total_bytes += sz
-                    continue
-            if no_document:
-                # Stale prior-version files are deliberately left unreferenced:
-                # deleting them here would break the previous manifest if this
-                # run failed before publishing its replacement.
-                for p in (dst + ".part", side + ".tmp"):
-                    if os.path.exists(p):
-                        os.remove(p)
-
-            rec = dict(a, sourceUrl=url)
-            if no_document:
-                fail_n += 1
-                sz = 0
-                rec.update(epub=None, bytes=0, status="no_epub",
-                           reason="current_version_has_no_document")
-                label = "NO_EPUB"
-            else:
-                rollback = dst + ".rollback"
-                if os.path.exists(rollback):
-                    os.remove(rollback)
-                had_prior = os.path.exists(dst)
-                if had_prior:
-                    shutil.copy2(dst, rollback)
-                try:
+                rec = dict(a, sourceUrl=url)
+                if no_document:
+                    fail_n += 1
+                    sz = 0
+                    rec.update(epub=None, bytes=0, status="no_epub",
+                               reason="current_version_has_no_document")
+                    label = "NO_EPUB"
+                else:
+                    snapshots.append(snapshot_pair(dst, side))
                     try:
                         _ok, _code, _ctype, sz, meta = fetch(url, dst)
                     except DownloadError as error:
@@ -214,41 +259,40 @@ def main():
                         "compilationRegisterId": rec.get("compilationRegisterId"),
                         "bytes": sz,
                     })
-                except BaseException:
-                    if had_prior and os.path.exists(rollback):
-                        os.replace(rollback, dst)
-                    elif not had_prior and os.path.exists(dst):
-                        os.remove(dst)
-                    raise
-                else:
-                    if os.path.exists(rollback):
-                        os.remove(rollback)
-                label = "OK"
-            manifest.append(rec)
+                    label = "OK"
+                manifest.append(rec)
 
-            line = "%3d/%3d %-12s %-8s %9d  %s" % (
-                i, len(acts), rid, label, sz, a["name"][:58])
-            print(line, flush=True)
-            log.write(line + "\n")
+                line = "%3d/%3d %-12s %-8s %9d  %s" % (
+                    i, len(acts), rid, label, sz, a["name"][:58])
+                print(line, flush=True)
+                log.write(line + "\n")
+                log.flush()
+                time.sleep(CRAWL_DELAY)
+
+            # manifest_raw.json is the sole record of this crawl: every sourceUrl,
+            # compilationRegisterId and isAuthorised value. Replace it only after
+            # all downloads and sidecars are ready; retained snapshots restore the
+            # entire prior file graph if this final write fails.
+            target = os.path.join(SCRATCH, "manifest_raw.json")
+            write_json_atomic(target, manifest, indent=1)
+        except BaseException:
+            try:
+                rollback_snapshots(snapshots)
+            except BaseException as rollback_error:
+                raise RuntimeError(
+                    "download failed and rollback was incomplete") from rollback_error
+            log.write("ROLLBACK restored %d changed title(s)\n" % len(snapshots))
             log.flush()
-            time.sleep(CRAWL_DELAY)
-
-        # manifest_raw.json is the sole record of this crawl: every sourceUrl,
-        # compilationRegisterId and isAuthorised value. BUILD.md documents
-        # re-running any single stage, so this dump normally replaces the file
-        # an earlier run left behind. Truncating it in place means a Ctrl-C, a
-        # full disk or an exception mid-dump leaves a half-written file,
-        # extract.py fails on json.load, and the whole 2h40m download stage has
-        # to be repeated. Write a sibling temp file and rename it over the
-        # target instead; os.replace is atomic on the same filesystem, on
-        # Windows as well as POSIX. retry13.py rewrites this same file the same
-        # way.
-        target = os.path.join(SCRATCH, "manifest_raw.json")
-        write_json_atomic(target, manifest, indent=1)
-
-        s = "\nDONE ok=%d no_epub=%d total=%.1f MB" % (ok_n, fail_n, total_bytes / 1e6)
-        print(s)
-        log.write(s + "\n")
+            raise
+        else:
+            leftovers = discard_snapshots(snapshots)
+            if leftovers:
+                log.write("WARNING retained %d rollback file(s) after commit\n"
+                          % len(leftovers))
+            s = "\nDONE ok=%d no_epub=%d total=%.1f MB" % (
+                ok_n, fail_n, total_bytes / 1e6)
+            print(s)
+            log.write(s + "\n")
 
 
 if __name__ == "__main__":

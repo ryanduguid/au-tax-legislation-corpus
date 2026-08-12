@@ -3,7 +3,7 @@
 The Register can record that a version commenced without yet publishing a
 compilation for it. `versions?$filter=isCurrent eq true` still returns that
 version, but every document path built from its date answers 404, because the
-document does not exist. Thirteen titles landed here.
+document does not exist. Some titles can be in this state at any given build.
 
 The recovery is to fall back to the most recent version that does have a
 `registerId`, and to say so in the manifest: `version_is_current` goes false and

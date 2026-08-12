@@ -79,12 +79,12 @@ prints a progress line every 25 titles.
   non-EPUB bodies instead of recording them as `no_epub`. Responses are staged
   in `.part`; only a validated archive replaces the `.epub`. The failure log
   records bounded status and content-type metadata, never the response body. A
-  failed upgrade leaves the prior EPUB and sidecar in place; a successful
-  sidecar update is staged and atomically replaced too.
-  Ordinary exceptions between those two replacements roll back the EPUB. A
-  process or power loss in that short interval can still leave a new EPUB with
-  the prior sidecar; fully crash-atomic cross-file publication would require
-  versioned filenames plus a separately committed pointer.
+  failed run restores every changed EPUB and sidecar to the graph referenced by
+  the prior manifest; successful sidecar and manifest writes are staged and
+  atomically replaced. A process or power loss while that run-level journal is
+  open can still leave changed files and `.rollback` evidence beside the prior
+  manifest. Fully crash-atomic cross-file publication would require versioned
+  filenames plus a separately committed pointer.
 - **`/latest/` is not a download alias.** It returns the SPA shell as
   `text/html`. Resolve the version date first.
 - **The current version can have no document.** `versions?$filter=isCurrent eq
