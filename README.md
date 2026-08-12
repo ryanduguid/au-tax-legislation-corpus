@@ -115,9 +115,14 @@ real defect. The short version:
   re-reads the previous response and hands one Act another Act's compilation.
 - **The download endpoint answers in two shapes**, raw EPUB bytes or a JSON
   envelope with the file base64 inside. Sniff the first byte.
+- **HTTP errors and non-EPUB responses stop the download stage.** They are not
+  evidence that a document is absent and must not be counted as `no_epub`.
+  Only a validated staged download is moved to an `.epub` path.
 - **The current version can have no document.** The Register records that an
   amendment commenced before publishing the compilation, so the URL 404s. That
-  is not a broken download, and 13 titles are in that state.
+  is not a broken download. Only an explicit null `registerId` on the current
+  version is recorded as `no_epub`; the count changes as compilations are
+  published.
 - **Acts use two Word templates; instruments use dozens.** Deciding the template
   from the markup fails, because cosmetic classes look structural. Run the
   structural pass, and only when it finds nothing at all re-run with the
@@ -145,8 +150,8 @@ former titles and substrings, which is how the Passenger Movement Charge Act
 `sources.json` records `keywords_in_name` rather than filtering them out, since
 any rule strict enough to drop Rotax also drops the Departure Tax Act.
 
-Thirteen titles have no published compilation for the version now in force, so
-they carry the last compilation the Register holds, marked `version_is_current:
+Some titles have no published compilation for the version now in force, so they
+carry the last compilation the Register holds, marked `version_is_current:
 false` in the front matter and on every row. There is no newer document to
 re-download: the URL built from the in-force date answers 404.
 

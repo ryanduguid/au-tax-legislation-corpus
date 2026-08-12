@@ -763,8 +763,8 @@ def to_markdown(blocks, meta, force_bare=False):
           "compilation_number: %s" % (meta.get("compilationNumber") or "null"),
           "compilation_date: %s" % meta.get("versionStart"),
           # The Register can record that a version commenced without publishing
-          # a compilation for it. Thirteen titles are in that state, so the text
-          # below is the last compilation that exists, not the law in force.
+          # a compilation for it. For titles in that state, the text below is
+          # the last compilation that exists, not the law in force.
           # Say so on the face of the document rather than only in sources.json.
           "version_is_current: %s" % ("false" if meta.get("version_is_current") is False
                                       else "true"),
