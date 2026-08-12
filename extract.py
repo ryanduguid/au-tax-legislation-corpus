@@ -846,7 +846,13 @@ def main(retrieved=None):
             # of the structural detectors found a single section, fall back to
             # reading numbered paragraphs as headings rather than shipping the
             # whole instrument as one undifferentiated chunk.
-            if not any(any(t.strip() for t in s["text"]) for s in sections):
+            # An emit_fallback row holds text that would otherwise be lost; it
+            # is not evidence the document chunked into sections. The same
+            # exclusion is applied below when computing `structured`, and the
+            # two must agree: counting it here suppresses the bare-mode pass,
+            # and discarding it there then sends the document to whole_act.
+            if not any(any(t.strip() for t in s["text"]) for s in sections
+                       if not s.get("emit_fallback")):
                 b_md, b_sec, b_en, b_lt = to_markdown(blocks, meta, force_bare=True)
                 # Accept only if it actually found headings. A single
                 # "Introductory material" row holding the whole document is the
