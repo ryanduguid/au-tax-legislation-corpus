@@ -14,7 +14,7 @@ number, so the phone pattern requires the conventional grouping.
 import collections, glob, json, os, re
 
 from corpus_paths import child, corpus_root, register_id
-from pii_patterns import REGNO, person_names
+from pii_patterns import private_person_registration_details
 
 ROOT = corpus_root(__file__)
 with open(os.path.join(os.path.dirname(os.path.abspath(__file__)),
@@ -48,8 +48,7 @@ def main():
                             ex[label].append((rid, str(match)[:44]))
                 if rid in KNOWN:
                     continue
-                names = person_names(text)
-                regs = set(REGNO.findall(text))
+                names, regs = private_person_registration_details(text)
                 if names and regs:
                     weak.append((rid, row.get("row_id"), len(names), len(regs)))
 

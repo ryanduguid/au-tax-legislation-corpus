@@ -71,15 +71,17 @@ def main():
     for i, a in enumerate(acts, 1):
         v = versions("titleId eq '%s' and isCurrent eq true" % a["register_id"])
         # Guard against a response for the wrong title being read as this one's.
-        if v and v[0].get("titleId") not in (None, a["register_id"]):
-            v = []
-        if not v:
+        if v is None:
+            errors.append(a)
+        elif v and v[0].get("titleId") not in (None, a["register_id"]):
+            errors.append(a)
+        elif not v:
             # Distinguish sunset or repealed from a failed lookup.
             any_v = versions("titleId eq '%s'" % a["register_id"])
             time.sleep(DELAY)
             if any_v is None:
                 errors.append(a)
-            elif any_v:
+            elif any_v and any_v[0].get("titleId") in (None, a["register_id"]):
                 gone.append(a)
             else:
                 errors.append(a)
