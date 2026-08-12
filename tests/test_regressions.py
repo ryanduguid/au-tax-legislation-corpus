@@ -1047,6 +1047,63 @@ class DownloadManifestWriteTests(unittest.TestCase):
             self.assertEqual(sidecar.read_text(encoding="utf-8"), old_sidecar)
             self.assertFalse(Path(str(epub) + ".part").exists())
 
+    def test_a_sidecar_failure_rolls_back_the_epub_publication(self):
+        download = load_module("download_sidecar_rollback", REPO / "download.py")
+        for had_prior in (True, False):
+            with self.subTest(had_prior=had_prior), tempfile.TemporaryDirectory() as tmp:
+                scratch = Path(tmp)
+                epub_dir = scratch / "corpus" / "epub"
+                epub_dir.mkdir(parents=True)
+                (scratch / "acts_resolved.json").write_text(json.dumps([{
+                    "id": "F2020L01498", "name": "Upgraded Instrument",
+                    "versionStart": "2026-03-01", "compilationNumber": "5",
+                    "compilationRegisterId": "F2026C00001",
+                }]), encoding="utf-8")
+
+                epub = epub_dir / "F2020L01498.epub"
+                sidecar = epub_dir / "F2020L01498.epub.meta.json"
+                old_payload = io.BytesIO()
+                with zipfile.ZipFile(old_payload, "w") as archive:
+                    archive.writestr("document_1.xhtml", "<html>prior version</html>")
+                old_epub = old_payload.getvalue()
+                old_sidecar = '{"versionStart":"2025-06-30"}'
+                if had_prior:
+                    epub.write_bytes(old_epub)
+                    sidecar.write_text(old_sidecar, encoding="utf-8")
+
+                new_payload = io.BytesIO()
+                with zipfile.ZipFile(new_payload, "w") as archive:
+                    archive.writestr("document_1.xhtml", "<html>new version</html>")
+
+                def successful_fetch(_url, dst, tries=3):
+                    Path(dst).write_bytes(new_payload.getvalue())
+                    return True, "200", "application/epub+zip", len(new_payload.getvalue()), None
+
+                real_replace = download.os.replace
+
+                def fail_sidecar_replace(source, destination):
+                    if destination == str(sidecar):
+                        raise OSError("injected sidecar failure")
+                    return real_replace(source, destination)
+
+                download.SCRATCH = str(scratch)
+                download.EPUB_DIR = str(epub_dir)
+                download.CRAWL_DELAY = 0
+                download.fetch = successful_fetch
+                with mock.patch.object(download.os, "replace", fail_sidecar_replace):
+                    with contextlib.redirect_stdout(io.StringIO()):
+                        with self.assertRaisesRegex(OSError, "injected sidecar failure"):
+                            download.main()
+
+                if had_prior:
+                    self.assertEqual(epub.read_bytes(), old_epub)
+                    self.assertEqual(sidecar.read_text(encoding="utf-8"), old_sidecar)
+                else:
+                    self.assertFalse(epub.exists())
+                    self.assertFalse(sidecar.exists())
+                self.assertFalse(Path(str(epub) + ".rollback").exists())
+                self.assertFalse(Path(str(sidecar) + ".tmp").exists())
+
 
 class DiscoveryPagingTests(unittest.TestCase):
     def test_paging_orders_by_id_and_refuses_a_page_that_repeats_one(self):

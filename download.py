@@ -9,7 +9,7 @@ in advance:
     useful metadata (registerId, fileName, sizeInBytes, isAuthorised).
 Large raw transfers also drop mid-stream, so those get a resumed retry.
 """
-import base64, binascii, json, os, subprocess, time, zipfile
+import base64, binascii, json, os, shutil, subprocess, time, zipfile
 
 from corpus_paths import child, corpus_root, register_id
 
@@ -186,27 +186,43 @@ def main():
                            reason="current_version_has_no_document")
                 label = "NO_EPUB"
             else:
+                rollback = dst + ".rollback"
+                if os.path.exists(rollback):
+                    os.remove(rollback)
+                had_prior = os.path.exists(dst)
+                if had_prior:
+                    shutil.copy2(dst, rollback)
                 try:
-                    _ok, _code, _ctype, sz, meta = fetch(url, dst)
-                except DownloadError as error:
-                    line = "%3d/%3d %-12s ERROR    %s" % (
-                        i, len(acts), rid, error)
-                    print(line, flush=True)
-                    log.write(line + "\n")
-                    log.flush()
+                    try:
+                        _ok, _code, _ctype, sz, meta = fetch(url, dst)
+                    except DownloadError as error:
+                        line = "%3d/%3d %-12s ERROR    %s" % (
+                            i, len(acts), rid, error)
+                        print(line, flush=True)
+                        log.write(line + "\n")
+                        log.flush()
+                        raise
+                    if meta:
+                        rec["compilationRegisterId"] = meta.get("registerId")
+                        rec["isAuthorised"] = meta.get("isAuthorised")
+                    ok_n += 1
+                    total_bytes += sz
+                    rec.update(epub=os.path.basename(dst), bytes=sz, status="ok")
+                    write_json_atomic(side, {
+                        "versionStart": d,
+                        "compilationNumber": a.get("compilationNumber"),
+                        "compilationRegisterId": rec.get("compilationRegisterId"),
+                        "bytes": sz,
+                    })
+                except BaseException:
+                    if had_prior and os.path.exists(rollback):
+                        os.replace(rollback, dst)
+                    elif not had_prior and os.path.exists(dst):
+                        os.remove(dst)
                     raise
-                if meta:
-                    rec["compilationRegisterId"] = meta.get("registerId")
-                    rec["isAuthorised"] = meta.get("isAuthorised")
-                ok_n += 1
-                total_bytes += sz
-                rec.update(epub=os.path.basename(dst), bytes=sz, status="ok")
-                write_json_atomic(side, {
-                    "versionStart": d,
-                    "compilationNumber": a.get("compilationNumber"),
-                    "compilationRegisterId": rec.get("compilationRegisterId"),
-                    "bytes": sz,
-                })
+                else:
+                    if os.path.exists(rollback):
+                        os.remove(rollback)
                 label = "OK"
             manifest.append(rec)
 
