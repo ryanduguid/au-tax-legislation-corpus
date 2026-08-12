@@ -8,7 +8,7 @@ title that was removed.
 import collections, glob, json, os, sys
 
 from corpus_paths import child, corpus_root, register_id
-from pii_patterns import REGNO, person_names
+from pii_patterns import has_private_person_registration_pair
 
 DIST = child(corpus_root(__file__), "dist")
 
@@ -69,8 +69,7 @@ def main():
                 kind_counts[kind] += 1
                 if r.get("section"):
                     section_rows += 1
-                names = person_names(t)
-                if len(names) >= 3 and len(set(REGNO.findall(t))) >= 3:
+                if has_private_person_registration_pair(t):
                     hot[rid] += 1
     check("every JSONL row parses", bad == 0, "%s rows, %d malformed" % (f"{rows:,}", bad))
     check("each JSONL row matches its title directory", rid_mismatch == 0,
