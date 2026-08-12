@@ -1691,6 +1691,71 @@ class PreSectionTextTests(unittest.TestCase):
         self.assertIn("Decision flowchart", retrievable)
 
 
+class BareModeFallbackTests(unittest.TestCase):
+    """The bare-mode pass must still run when the only rows the structural pass
+    produced are emit's fallback rows."""
+
+    REGISTER_ID = "F2024L00659"
+
+    @staticmethod
+    def epub_bytes():
+        """An instrument from a plain Word file: no structural classes, no
+        CharSectno span, headings as bare numbered paragraphs. Only the
+        bare-mode pass can find its sections."""
+        body = ["<p>This determination is made under section 30-35.</p>"]
+        for n, title in ((1, "Name"), (2, "Commencement"), (3, "Definitions")):
+            body.append("<p>%d %s</p>" % (n, title))
+            body.append("<p>Operative text for paragraph %d.</p>" % n)
+        payload = io.BytesIO()
+        with zipfile.ZipFile(payload, "w") as archive:
+            archive.writestr("document_1.xhtml",
+                             "<html><body>%s</body></html>" % "".join(body))
+        return payload.getvalue()
+
+    def _fixture(self, tmp_path):
+        build = tmp_path / "build"
+        build.mkdir()
+        for name in ("extract.py", "corpus_paths.py"):
+            shutil.copy2(REPO / name, build / name)
+        epub = tmp_path / "epub" / ("%s.epub" % self.REGISTER_ID)
+        epub.parent.mkdir(parents=True)
+        epub.write_bytes(self.epub_bytes())
+        manifest = [{"id": self.REGISTER_ID, "name": "Demo Notice of Intention",
+                     "epub": epub.name, "versionStart": "2024-01-01",
+                     "compilationNumber": "1",
+                     "collection": "LegislativeInstrument",
+                     "sourceUrl": "https://example.test/%s" % self.REGISTER_ID}]
+        (build / "manifest_raw.json").write_text(json.dumps(manifest),
+                                                 encoding="utf-8")
+        return build
+
+    def test_an_emit_fallback_row_does_not_suppress_the_bare_pass(self):
+        """The gate before the bare pass asked whether any row carried text.
+        Once pre-section text opened a row of its own, that answer became yes
+        for a document with no sections at all, so the pass that would have
+        found them never ran. The check below it then discarded the same row
+        as not evidence of structure, and the document fell through to
+        whole_act: 294 titles lost their sections this way, F2024L00659 going
+        from 183 rows to 1. Both places must treat the row the same."""
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            build = self._fixture(tmp_path)
+            extract = load_module("extract_bare_fallback", build / "extract.py")
+            with contextlib.redirect_stdout(io.StringIO()):
+                extract.main(None)
+            rows = [json.loads(l) for l in
+                    (tmp_path / "markdown" / self.REGISTER_ID / "sections.jsonl")
+                    .read_text(encoding="utf-8").splitlines() if l.strip()]
+
+            self.assertNotEqual([r["granularity"] for r in rows], ["whole_act"],
+                                "the bare pass found sections; do not ship one blob")
+            self.assertEqual(sorted(r["section"] for r in rows if r["section"]),
+                             ["1", "2", "3"])
+            retrievable = "\n".join(r["text"] for r in rows)
+            self.assertIn("This determination is made under section 30-35.",
+                          retrievable, "pre-section text must still be retrievable")
+
+
 class ExtractManifestWriteTests(unittest.TestCase):
     def test_a_failed_manifest_dump_leaves_the_previous_one_intact(self):
         """download.py and retry13.py both stage and rename so neither can
