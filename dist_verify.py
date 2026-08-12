@@ -33,13 +33,27 @@ def main():
     by_id = {register_id(t["register_id"]): t for t in titles}
     listed = set(by_id)
     markdown_root = child(DIST, "markdown")
-    present = {register_id(os.path.basename(d)) for d in glob.glob(os.path.join(markdown_root, "*"))}
+    # register_id() refuses a name that is not a Federal Register identifier,
+    # which is what keeps a crafted directory name out of every path built
+    # below. Calling it straight inside a set comprehension also turned an
+    # ordinary stray - a .DS_Store, a hand-copied notes.md, an editor's backup
+    # directory - into a ValueError out of main(), so the operator got a
+    # traceback instead of a verdict on a distribution about to be published.
+    # Collect the refusals instead and report them as the failure they are.
+    present, stray = set(), []
+    for entry in sorted(glob.glob(os.path.join(markdown_root, "*"))):
+        name = os.path.basename(entry)
+        try:
+            present.add(register_id(name))
+        except ValueError:
+            stray.append(name)
     removed = {register_id(e["register_id"]) for e in src.get("excluded_titles", [])}
 
     check("every listed title has a directory", listed <= present,
           "missing %d" % len(listed - present))
-    check("no directory beyond what is listed", present <= listed,
-          "extra %d" % len(present - listed))
+    check("no directory beyond what is listed", present <= listed and not stray,
+          "extra %d%s" % (len(present - listed),
+                          (", not a register id: " + ", ".join(stray[:5])) if stray else ""))
     check("no removed title present", not (removed & present))
 
     rows = bad = section_rows = rid_mismatch = 0
@@ -47,7 +61,13 @@ def main():
     kind_counts = collections.Counter()
     rows_by_coll, words_by_coll = collections.Counter(), collections.Counter()
     for candidate in glob.glob(os.path.join(markdown_root, "*", "sections.jsonl")):
-        rid = register_id(os.path.basename(os.path.dirname(candidate)))
+        try:
+            rid = register_id(os.path.basename(os.path.dirname(candidate)))
+        except ValueError:
+            # Already reported by the stray check above. Its rows are not part
+            # of the distribution's own counts, and its name must not reach
+            # child(), so skip it rather than stopping the whole run.
+            continue
         p = child(markdown_root, rid, "sections.jsonl")
         with open(p, encoding="utf-8") as f:
             for l in f:
