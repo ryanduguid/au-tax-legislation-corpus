@@ -45,3 +45,13 @@ def person_names(text):
     """The set of NAME matches in *text* that survive the statutory filter."""
     return {m.group(0) for m in NAME.finditer(text)
             if not is_statutory(m.group(0))}
+
+
+def private_person_registration_details(text):
+    """Names and 8-digit registration numbers that make a row private-person data."""
+    return person_names(text), set(REGNO.findall(text))
+
+
+def has_private_person_registration_pair(text):
+    names, registration_numbers = private_person_registration_details(text)
+    return bool(names and registration_numbers)

@@ -14,7 +14,7 @@ a statute.
 import glob, json, os
 
 from corpus_paths import child, corpus_root, register_id
-from pii_patterns import REGNO, person_names
+from pii_patterns import private_person_registration_details
 
 ROOT = corpus_root(__file__)
 
@@ -34,8 +34,8 @@ def main():
         hot = []
         for i, r in enumerate(rows):
             t = r.get("text") or ""
-            regs = len(set(REGNO.findall(t)))
-            names = person_names(t)
+            names, registration_numbers = private_person_registration_details(t)
+            regs = len(registration_numbers)
             # A disciplinary table has many of both. A signature block has one
             # name and no registration number.
             if regs >= 3 and len(names) >= 3:
