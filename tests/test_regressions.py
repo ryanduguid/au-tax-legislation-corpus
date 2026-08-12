@@ -764,6 +764,13 @@ class FinalizePiiSummaryTests(unittest.TestCase):
 
 
 class Retry13MergeTests(unittest.TestCase):
+    def test_probe13_is_safe_to_import(self):
+        with mock.patch("subprocess.run") as run:
+            module = load_module("probe13_import_safety", REPO / "probe13.py")
+
+        run.assert_not_called()
+        self.assertTrue(callable(module.main))
+
     def test_recoveries_are_merged_into_the_raw_manifest_in_place(self):
         """The documented pipeline has no manual patch step: retry13.py itself
         must fold successful recoveries into manifest_raw.json, keep
@@ -1048,6 +1055,40 @@ class StalenessBucketTests(unittest.TestCase):
             self.assertIn("SUPERSEDED, re-download these", out)
             self.assertIn("no compilation published: 0", out)
 
+    def test_a_failed_current_lookup_is_not_inferred_from_history(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            base = Path(tmp)
+            self._corpus(base)
+            module = load_module("check_current_transport_failure", base / "check_current.py")
+            module.time.sleep = lambda _seconds: None
+            responses = [None, {"value": [{"titleId": "F2020L01498"}]}]
+            calls = []
+
+            def response(_url):
+                calls.append(_url)
+                return responses.pop(0)
+
+            module.curl_json = response
+            buffer = io.StringIO()
+            with mock.patch.object(module.sys, "argv", ["check_current.py"]):
+                with contextlib.redirect_stdout(buffer):
+                    module.main()
+
+            out = buffer.getvalue()
+            self.assertEqual(len(calls), 1)
+            self.assertIn("no longer in force: 0", out)
+            self.assertIn("lookup failed: 1", out)
+
+    def test_a_wrong_title_response_is_a_lookup_failure(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            base = Path(tmp)
+            self._corpus(base)
+            out = self._run(base, {"value": [{
+                "titleId": "F9999L99999", "start": "2026-07-01T00:00:00Z",
+                "compilationNumber": "5", "registerId": "F2026C00099"}]})
+            self.assertIn("no longer in force: 0", out)
+            self.assertIn("lookup failed: 1", out)
+
 
 class GeneratedReadmeTests(unittest.TestCase):
     def test_the_corpus_readme_states_no_staleness_counts_it_never_observed(self):
@@ -1144,6 +1185,14 @@ class PiiNameGateTests(unittest.TestCase):
             set())
         self.assertEqual(
             patterns.person_names("Deputy Commissioner of Taxation"), set())
+
+    def test_one_name_and_one_registration_number_trigger_the_distribution_gate(self):
+        patterns = load_module("pii_patterns_low_density", REPO / "pii_patterns.py")
+
+        self.assertTrue(patterns.has_private_person_registration_pair(
+            "| Smith, John | 12345678 | s 30-15 |"))
+        self.assertFalse(patterns.has_private_person_registration_pair(
+            "Deputy Commissioner of Taxation referred to section 12345678."))
 
     def test_pii_scan_flags_a_register_written_in_capitals(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -1381,6 +1430,19 @@ class DistributionTests(unittest.TestCase):
             row = json.loads(clean_rows)
             rows.write_text(
                 json.dumps(dict(row, text=PiiNameGateTests.ALL_CAPS_ROW)) + "\n",
+                encoding="utf-8")
+            code, out = self._verify(verify)
+            self.assertEqual(code, 1)
+            self.assertEqual(self._status(out, "no row names private individuals"), "FAIL")
+            rows.write_text(clean_rows, encoding="utf-8")
+
+            # One person and one registration number is enough to make a
+            # machine-readable row searchable at scale. The diagnostic second
+            # pass has always reported this lower threshold; distribution must
+            # enforce the same predicate.
+            row = json.loads(clean_rows)
+            rows.write_text(
+                json.dumps(dict(row, text="| Smith, John | 12345678 | s 30-15 |")) + "\n",
                 encoding="utf-8")
             code, out = self._verify(verify)
             self.assertEqual(code, 1)

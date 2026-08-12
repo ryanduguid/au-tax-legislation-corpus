@@ -1,6 +1,9 @@
 import json, os, subprocess, time, urllib.parse
+
 API = "https://api.prod.legislation.gov.au/v1"
 SCRATCH = os.path.dirname(os.path.abspath(__file__))
+
+
 def curl_json(url, tries=3):
     dst = os.path.join(SCRATCH, "_p13.json")
     for _ in range(tries):
@@ -15,24 +18,36 @@ def curl_json(url, tries=3):
         time.sleep(6)
     return None
 
-with open(os.path.join(SCRATCH, "manifest_raw.json"), encoding="utf-8") as source:
-    m = json.load(source)
-bad = [a for a in m if not a.get("epub")]
-out = []
-for a in bad:
-    rid = a["id"]
-    d = curl_json("%s/versions?$top=60&$orderby=start&$filter=%s&$select=titleId,start,end,isCurrent,compilationNumber,registerId"
-                  % (API, urllib.parse.quote("titleId eq '%s'" % rid)))
-    vs = (d or {}).get("value") or []
-    withdoc = [v for v in vs if v.get("registerId")]
-    cur = [v for v in vs if v.get("isCurrent")]
-    latest = max(withdoc, key=lambda v: v["start"]) if withdoc else None
-    out.append({"id": rid, "name": a["name"], "n_versions": len(vs),
-                "current_has_doc": bool(cur and cur[0].get("registerId")),
-                "latest_doc": latest})
-    print("%-12s vers=%-3d cur_doc=%-5s latest=%s %s" % (
-        rid, len(vs), bool(cur and cur[0].get("registerId")),
-        (latest or {}).get("registerId"), (latest or {}).get("start","")[:10]))
-    time.sleep(1.5)
-with open(os.path.join(SCRATCH, "probe13.json"), "w", encoding="utf-8") as destination:
-    json.dump(out, destination, indent=1)
+
+def main():
+    with open(os.path.join(SCRATCH, "manifest_raw.json"), encoding="utf-8") as source:
+        manifest = json.load(source)
+    missing = [item for item in manifest if not item.get("epub")]
+    output = []
+    for item in missing:
+        rid = item["id"]
+        response = curl_json(
+            "%s/versions?$top=60&$orderby=start&$filter=%s&$select=titleId,start,end,isCurrent,compilationNumber,registerId"
+            % (API, urllib.parse.quote("titleId eq '%s'" % rid))
+        )
+        versions = (response or {}).get("value") or []
+        with_document = [version for version in versions if version.get("registerId")]
+        current = [version for version in versions if version.get("isCurrent")]
+        latest = max(with_document, key=lambda version: version["start"]) if with_document else None
+        output.append({
+            "id": rid,
+            "name": item["name"],
+            "n_versions": len(versions),
+            "current_has_doc": bool(current and current[0].get("registerId")),
+            "latest_doc": latest,
+        })
+        print("%-12s vers=%-3d cur_doc=%-5s latest=%s %s" % (
+            rid, len(versions), bool(current and current[0].get("registerId")),
+            (latest or {}).get("registerId"), (latest or {}).get("start", "")[:10]))
+        time.sleep(1.5)
+    with open(os.path.join(SCRATCH, "probe13.json"), "w", encoding="utf-8") as destination:
+        json.dump(output, destination, indent=1)
+
+
+if __name__ == "__main__":
+    main()
