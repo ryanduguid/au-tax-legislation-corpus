@@ -774,8 +774,8 @@ class Retry13MergeTests(unittest.TestCase):
     def test_recoveries_are_merged_into_the_raw_manifest_in_place(self):
         """The documented pipeline has no manual patch step: retry13.py itself
         must fold successful recoveries into manifest_raw.json, keep
-        retry13_patch.json as the audit record, and leave failed retries and
-        untouched titles exactly as the download stage wrote them."""
+        retry13_patch.json as the audit record, and leave untouched titles
+        exactly as the download stage wrote them."""
         retry13 = load_module("retry13_regression", REPO / "retry13.py")
         with tempfile.TemporaryDirectory() as tmp:
             scratch = Path(tmp)
@@ -800,32 +800,23 @@ class Retry13MergeTests(unittest.TestCase):
             (scratch / "probe13.json").write_text(json.dumps([
                 {"id": "F2020L01498", "name": "Recoverable Instrument",
                  "latest_doc": dict(latest)},
-                {"id": "F2021L00002", "name": "Unrecoverable Instrument",
-                 "latest_doc": dict(latest)},
             ]), encoding="utf-8")
 
-            class FakeDownload:
-                CRAWL_DELAY = 0
-
-                @staticmethod
-                def fetch(url, dst):
-                    if "F2020L01498" in url:
-                        Path(dst).write_bytes(b"PK-fake-epub")
-                        return True, "200", "application/epub+zip", 12, {
-                            "registerId": "F2025C00010", "isAuthorised": True}
-                    return False, "404", "text/html", 0, None
+            def successful_fetch(_url, dst):
+                Path(dst).write_bytes(b"PK-fake-epub")
+                return True, "200", "application/epub+zip", 12, {
+                    "registerId": "F2025C00010", "isAuthorised": True}
 
             retry13.SCRATCH = str(scratch)
             retry13.EPUB_DIR = str(epub_dir)
-            retry13.dl = FakeDownload
-            retry13.time.sleep = lambda _seconds: None
-            with contextlib.redirect_stdout(io.StringIO()):
-                retry13.main()
+            with mock.patch.object(retry13.dl, "fetch", successful_fetch), \
+                    mock.patch.object(retry13.dl, "CRAWL_DELAY", 0):
+                with contextlib.redirect_stdout(io.StringIO()):
+                    retry13.main()
 
             patches = json.loads(
                 (scratch / "retry13_patch.json").read_text(encoding="utf-8"))
-            self.assertEqual({p["id"] for p in patches},
-                             {"F2020L01498", "F2021L00002"})
+            self.assertEqual({p["id"] for p in patches}, {"F2020L01498"})
 
             merged = {a["id"]: a for a in json.loads(
                 (scratch / "manifest_raw.json").read_text(encoding="utf-8"))}
@@ -836,7 +827,7 @@ class Retry13MergeTests(unittest.TestCase):
             self.assertIs(recovered["version_is_current"], False)
             self.assertEqual(recovered["current_version_start"], "2026-03-01")
             self.assertEqual(recovered["name"], "Recoverable Instrument")
-            # A failed retry must not overwrite the original record.
+            # A title without a probe recovery stays exactly as downloaded.
             self.assertEqual(merged["F2021L00002"]["status"], "no_epub")
             self.assertIsNone(merged["F2021L00002"]["epub"])
             self.assertNotIn("version_is_current", merged["F2021L00002"])
@@ -844,10 +835,63 @@ class Retry13MergeTests(unittest.TestCase):
 
 
 class Retry13ManifestWriteTests(unittest.TestCase):
-    def test_a_failed_manifest_write_leaves_the_download_record_intact(self):
-        """manifest_raw.json is the only record of the download crawl, and both
-        writers replace it in place, so neither may truncate it.  See
-        DownloadManifestWriteTests for the download.py half."""
+    def test_a_later_retry_failure_restores_every_earlier_change(self):
+        retry13 = load_module("retry13_later_failure", REPO / "retry13.py")
+        with tempfile.TemporaryDirectory() as tmp:
+            scratch = Path(tmp)
+            epub_dir = scratch / "corpus" / "epub"
+            epub_dir.mkdir(parents=True)
+            ids = ("F2020L01498", "F2021L00002")
+            manifest = [
+                {"id": rid, "name": "Recoverable Instrument %d" % index,
+                 "epub": None, "bytes": 0, "status": "no_epub",
+                 "versionStart": "2026-03-0%d" % index}
+                for index, rid in enumerate(ids, 1)
+            ]
+            manifest_path = scratch / "manifest_raw.json"
+            manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+            old_manifest = manifest_path.read_text(encoding="utf-8")
+            patch_path = scratch / "retry13_patch.json"
+            patch_path.write_text('[{"prior":true}]', encoding="utf-8")
+            old_patch = patch_path.read_text(encoding="utf-8")
+            (scratch / "probe13.json").write_text(json.dumps([
+                {"id": rid, "name": "Recoverable Instrument %d" % index,
+                 "latest_doc": {"start": "2025-06-30T00:00:00",
+                                "compilationNumber": str(index),
+                                "registerId": "F2025C0000%d" % index}}
+                for index, rid in enumerate(ids, 1)
+            ]), encoding="utf-8")
+
+            first_epub = epub_dir / (ids[0] + ".epub")
+            first_sidecar = epub_dir / (ids[0] + ".epub.meta.json")
+            first_epub.write_bytes(b"prior EPUB")
+            first_sidecar.write_text('{"prior":true}', encoding="utf-8")
+
+            def fail_second(_url, dst):
+                Path(dst).write_bytes(b"replacement EPUB")
+                if ids[1] in dst:
+                    Path(dst + ".part").write_bytes(b"blocked response")
+                    raise RuntimeError("HTTP 403 after 1 attempt")
+                return True, "200", "application/epub+zip", 16, None
+
+            retry13.SCRATCH = str(scratch)
+            retry13.EPUB_DIR = str(epub_dir)
+            with mock.patch.object(retry13.dl, "fetch", fail_second), \
+                    mock.patch.object(retry13.dl, "CRAWL_DELAY", 0):
+                with contextlib.redirect_stdout(io.StringIO()):
+                    with self.assertRaisesRegex(RuntimeError, "HTTP 403"):
+                        retry13.main()
+
+            self.assertEqual(manifest_path.read_text(encoding="utf-8"), old_manifest)
+            self.assertEqual(patch_path.read_text(encoding="utf-8"), old_patch)
+            self.assertEqual(first_epub.read_bytes(), b"prior EPUB")
+            self.assertEqual(first_sidecar.read_text(encoding="utf-8"),
+                             '{"prior":true}')
+            self.assertFalse((epub_dir / (ids[1] + ".epub")).exists())
+            self.assertFalse((epub_dir / (ids[1] + ".epub.part")).exists())
+            self.assertEqual(list(scratch.rglob("*.rollback")), [])
+
+    def test_a_failed_manifest_write_restores_the_entire_retry_graph(self):
         retry13 = load_module("retry13_atomic", REPO / "retry13.py")
         with tempfile.TemporaryDirectory() as tmp:
             scratch = Path(tmp)
@@ -865,39 +909,48 @@ class Retry13ManifestWriteTests(unittest.TestCase):
             manifest_path = scratch / "manifest_raw.json"
             manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
             original = manifest_path.read_text(encoding="utf-8")
+            patch_path = scratch / "retry13_patch.json"
+            patch_path.write_text('[{"prior":true}]', encoding="utf-8")
+            original_patch = patch_path.read_text(encoding="utf-8")
             (scratch / "probe13.json").write_text(json.dumps([
                 {"id": "F2020L01498", "name": "Recoverable Instrument",
                  "latest_doc": {"start": "2025-06-30T00:00:00", "compilationNumber": "4",
                                 "registerId": "F2025C00010"}}]), encoding="utf-8")
 
-            class FakeDownload:
-                CRAWL_DELAY = 0
+            epub = epub_dir / "F2020L01498.epub"
+            sidecar = epub_dir / "F2020L01498.epub.meta.json"
+            epub.write_bytes(b"prior EPUB")
+            sidecar.write_text('{"prior":true}', encoding="utf-8")
 
-                @staticmethod
-                def fetch(url, dst):
-                    Path(dst).write_bytes(b"PK-fake-epub")
-                    return True, "200", "application/epub+zip", 12, {
-                        "registerId": "F2025C00010", "isAuthorised": True}
+            def successful_fetch(_url, dst):
+                Path(dst).write_bytes(b"replacement EPUB")
+                return True, "200", "application/epub+zip", 16, {
+                    "registerId": "F2025C00010", "isAuthorised": True}
 
-            real_dump = retry13.json.dump
+            real_replace = retry13.dl.os.replace
 
-            def exploding_dump(obj, fp, **kwargs):
-                if os.path.basename(getattr(fp, "name", "")).startswith("manifest_raw.json"):
-                    fp.write('[{"id": "F2020')
+            def fail_manifest_replace(source, destination):
+                if (source == str(manifest_path) + ".tmp"
+                        and destination == str(manifest_path)):
                     raise OSError("no space left on device")
-                return real_dump(obj, fp, **kwargs)
+                return real_replace(source, destination)
 
             retry13.SCRATCH = str(scratch)
             retry13.EPUB_DIR = str(epub_dir)
-            retry13.dl = FakeDownload
-            retry13.time.sleep = lambda _seconds: None
-            with mock.patch.object(retry13.json, "dump", exploding_dump):
+            with mock.patch.object(retry13.dl, "fetch", successful_fetch), \
+                    mock.patch.object(retry13.dl, "CRAWL_DELAY", 0), \
+                    mock.patch.object(retry13.dl.os, "replace", fail_manifest_replace):
                 with contextlib.redirect_stdout(io.StringIO()):
                     with self.assertRaises(OSError):
                         retry13.main()
 
             self.assertEqual(manifest_path.read_text(encoding="utf-8"), original)
+            self.assertEqual(patch_path.read_text(encoding="utf-8"), original_patch)
+            self.assertEqual(epub.read_bytes(), b"prior EPUB")
+            self.assertEqual(sidecar.read_text(encoding="utf-8"),
+                             '{"prior":true}')
             self.assertFalse((scratch / "manifest_raw.json.tmp").exists())
+            self.assertEqual(list(scratch.rglob("*.rollback")), [])
 
 
 class DownloadManifestWriteTests(unittest.TestCase):
@@ -1272,6 +1325,37 @@ class DownloadValidationTests(unittest.TestCase):
                     self.assertFalse(Path(bad_dst).exists())
                     self.assertFalse(Path(bad_dst + ".part").exists())
             self.assertEqual(Path(dst).read_bytes(), valid_before_failure)
+
+    def test_a_failed_envelope_cannot_taint_a_later_raw_epub(self):
+        download = load_module("download_retry_metadata", REPO / "download.py")
+        payload = io.BytesIO()
+        with zipfile.ZipFile(payload, "w") as archive:
+            archive.writestr("document_1.xhtml", "<html>valid retry</html>")
+        envelope = json.dumps({
+            "bytes": download.base64.b64encode(b"not a ZIP").decode("ascii"),
+            "registerId": "STALE-REGISTER-ID",
+            "isAuthorised": True,
+        }).encode("utf-8")
+        responses = [
+            (envelope, "application/json"),
+            (payload.getvalue(), "application/epub+zip"),
+        ]
+
+        def fake_run(args, **_kwargs):
+            body, content_type = responses.pop(0)
+            Path(args[args.index("-o") + 1]).write_bytes(body)
+            return mock.Mock(stdout="200|%s" % content_type, returncode=0)
+
+        with tempfile.TemporaryDirectory() as tmp, \
+                mock.patch.object(download.subprocess, "run", fake_run), \
+                mock.patch.object(download.time, "sleep"):
+            dst = str(Path(tmp) / "retry.epub")
+            ok, _code, _ctype, _size, meta = download.fetch(
+                "https://example.test/x", dst, tries=2)
+
+        self.assertTrue(ok)
+        self.assertIsNone(meta)
+        self.assertEqual(responses, [])
 
     def test_only_a_null_compilation_register_id_is_no_epub(self):
         """A current version with no registerId is the API's no-edition case;

@@ -44,10 +44,10 @@ def write_json_atomic(path, value, **kwargs):
         raise
 
 
-def snapshot_pair(dst, side):
-    """Back up one EPUB/sidecar pair for whole-run rollback."""
+def snapshot_paths(*paths):
+    """Back up a group of paths for whole-run rollback."""
     snapshot = []
-    for path in (dst, side):
+    for path in paths:
         backup = path + ".rollback"
         if os.path.exists(backup):
             raise RuntimeError("unfinished rollback file: %s" % backup)
@@ -64,8 +64,13 @@ def snapshot_pair(dst, side):
     return snapshot
 
 
+def snapshot_pair(dst, side):
+    """Back up one EPUB/sidecar pair for whole-run rollback."""
+    return snapshot_paths(dst, side)
+
+
 def rollback_snapshots(snapshots):
-    """Restore every pair changed since the prior manifest was read."""
+    """Restore every path changed since the prior manifest was read."""
     for snapshot in reversed(snapshots):
         for path, backup, existed in reversed(snapshot):
             if existed:
@@ -141,9 +146,9 @@ def fetch(url, dst, tries=3):
     if os.path.exists(part):
         os.remove(part)
     code = ctype = ""
-    meta = None
     problem = "no response"
     for attempt in range(tries):
+        meta = None
         args = ["curl", "-sL", "--max-time", "600", "--retry", "2",
                 "--retry-all-errors", "--retry-delay", "5",
                 "-w", "%{http_code}|%{content_type}", "-o", part]
