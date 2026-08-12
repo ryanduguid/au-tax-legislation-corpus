@@ -74,20 +74,32 @@ prints a progress line every 25 titles.
 - **Any filter containing `isPrincipal` returns 400.** It is applied in Python.
 - **The download endpoint answers in two shapes**: raw EPUB bytes, or a JSON
   envelope with the file base64 in a `bytes` field. Sniff the first byte.
+- **An HTTP or invalid-content response is not evidence that an EPUB is
+  absent.** The download stage stops on transport errors, HTTP errors and
+  non-EPUB bodies instead of recording them as `no_epub`. Responses are staged
+  in `.part`; only a validated archive replaces the `.epub`. The failure log
+  records bounded status and content-type metadata, never the response body.
+  Both `download.py` and `retry13.py` restore every changed EPUB and sidecar to
+  the graph referenced by the prior manifest; retry audit, sidecar and manifest
+  writes are staged and atomically replaced. A process or power loss while that
+  run-level journal is open can still leave changed files and `.rollback`
+  evidence beside the prior manifest. Fully crash-atomic cross-file publication
+  would require versioned filenames plus a separately committed pointer.
 - **`/latest/` is not a download alias.** It returns the SPA shell as
   `text/html`. Resolve the version date first.
 - **The current version can have no document.** `versions?$filter=isCurrent eq
   true` happily returns a version whose `registerId` is null: the Register knows
   an amendment commenced but has not published the compilation. Every document
   path built from that date answers 404, which reads as a broken download rather
-  than a missing document. Thirteen titles were in this state, the Family Law
-  (Superannuation) Regulations 2025 among them. `retry13.py` falls back to the
+  than a missing document. Titles can enter or leave this state as compilations
+  are published. `retry13.py` falls back to the
   most recent version that does have a `registerId` and marks the result
   `version_is_current: false`, in the front matter, on every JSONL row, and in
   `sources.json`. Substituting an older compilation silently would misreport the
   corpus as current. `check_current.py` reports these in their own bucket: it
   used to file them under "SUPERSEDED, re-download these", which sends you at a
-  URL that answers 404. The tell is a current version with a null `registerId`.
+  URL that answers 404. An explicit null `registerId` from this API response is
+  the only condition the download stage records as `no_epub`.
 - **Acts use two EPUB templates.** Modern Acts use `ActHead1`-`ActHead5`; Acts
   predating it carry no structural headings and mark sections only with a
   `CharSectno` span. Some use `<h1>`-`<h6>` instead of `<p>`.
