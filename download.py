@@ -29,6 +29,21 @@ def diagnostic(value, limit=80):
     return " ".join(text.split())[:limit] or "?"
 
 
+def write_json_atomic(path, value, **kwargs):
+    """Write JSON beside its target, then atomically replace the target."""
+    tmp = path + ".tmp"
+    try:
+        with open(tmp, "w", encoding="utf-8") as f:
+            json.dump(value, f, **kwargs)
+            f.flush()
+            os.fsync(f.fileno())
+        os.replace(tmp, path)
+    except BaseException:
+        if os.path.exists(tmp):
+            os.remove(tmp)
+        raise
+
+
 def valid_zip(path):
     try:
         with zipfile.ZipFile(path) as archive:
@@ -155,9 +170,13 @@ def main():
                     ok_n += 1
                     total_bytes += sz
                     continue
-            for p in (dst, side):
-                if os.path.exists(p):
-                    os.remove(p)
+            if no_document:
+                # Stale prior-version files are deliberately left unreferenced:
+                # deleting them here would break the previous manifest if this
+                # run failed before publishing its replacement.
+                for p in (dst + ".part", side + ".tmp"):
+                    if os.path.exists(p):
+                        os.remove(p)
 
             rec = dict(a, sourceUrl=url)
             if no_document:
@@ -182,11 +201,12 @@ def main():
                 ok_n += 1
                 total_bytes += sz
                 rec.update(epub=os.path.basename(dst), bytes=sz, status="ok")
-                with open(side, "w", encoding="utf-8") as f:
-                    json.dump({"versionStart": d,
-                               "compilationNumber": a.get("compilationNumber"),
-                               "compilationRegisterId": rec.get("compilationRegisterId"),
-                               "bytes": sz}, f)
+                write_json_atomic(side, {
+                    "versionStart": d,
+                    "compilationNumber": a.get("compilationNumber"),
+                    "compilationRegisterId": rec.get("compilationRegisterId"),
+                    "bytes": sz,
+                })
                 label = "OK"
             manifest.append(rec)
 
@@ -208,17 +228,7 @@ def main():
         # Windows as well as POSIX. retry13.py rewrites this same file the same
         # way.
         target = os.path.join(SCRATCH, "manifest_raw.json")
-        tmp = target + ".tmp"
-        try:
-            with open(tmp, "w", encoding="utf-8") as f:
-                json.dump(manifest, f, indent=1)
-                f.flush()
-                os.fsync(f.fileno())
-            os.replace(tmp, target)
-        except BaseException:
-            if os.path.exists(tmp):
-                os.remove(tmp)
-            raise
+        write_json_atomic(target, manifest, indent=1)
 
         s = "\nDONE ok=%d no_epub=%d total=%.1f MB" % (ok_n, fail_n, total_bytes / 1e6)
         print(s)

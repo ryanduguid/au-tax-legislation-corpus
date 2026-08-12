@@ -1005,6 +1005,48 @@ class DownloadManifestWriteTests(unittest.TestCase):
                 self.assertEqual(len(logged.splitlines()), 1)
                 self.assertLessEqual(len(logged), 180)
 
+    def test_a_failed_upgrade_preserves_the_prior_epub_and_sidecar(self):
+        download = load_module("download_upgrade_failure", REPO / "download.py")
+        with tempfile.TemporaryDirectory() as tmp:
+            scratch = Path(tmp)
+            epub_dir = scratch / "corpus" / "epub"
+            epub_dir.mkdir(parents=True)
+            (scratch / "acts_resolved.json").write_text(json.dumps([{
+                "id": "F2020L01498", "name": "Upgraded Instrument",
+                "versionStart": "2026-03-01", "compilationNumber": "5",
+                "compilationRegisterId": "F2026C00001",
+            }]), encoding="utf-8")
+            manifest_path = scratch / "manifest_raw.json"
+            old_manifest = '[{"id":"F2020L01498","epub":"F2020L01498.epub"}]'
+            manifest_path.write_text(old_manifest, encoding="utf-8")
+
+            payload = io.BytesIO()
+            with zipfile.ZipFile(payload, "w") as archive:
+                archive.writestr("document_1.xhtml", "<html>old version</html>")
+            epub = epub_dir / "F2020L01498.epub"
+            sidecar = epub_dir / "F2020L01498.epub.meta.json"
+            old_epub = payload.getvalue()
+            old_sidecar = '{"versionStart":"2025-06-30","bytes":123}'
+            epub.write_bytes(old_epub)
+            sidecar.write_text(old_sidecar, encoding="utf-8")
+
+            def blocked(args, **kwargs):
+                Path(args[args.index("-o") + 1]).write_bytes(b"<html>blocked</html>")
+                return mock.Mock(stdout="403|text/html", returncode=0)
+
+            download.SCRATCH = str(scratch)
+            download.EPUB_DIR = str(epub_dir)
+            download.time.sleep = lambda _seconds: None
+            with mock.patch.object(download.subprocess, "run", blocked):
+                with contextlib.redirect_stdout(io.StringIO()):
+                    with self.assertRaisesRegex(download.DownloadError, "HTTP 403"):
+                        download.main()
+
+            self.assertEqual(manifest_path.read_text(encoding="utf-8"), old_manifest)
+            self.assertEqual(epub.read_bytes(), old_epub)
+            self.assertEqual(sidecar.read_text(encoding="utf-8"), old_sidecar)
+            self.assertFalse(Path(str(epub) + ".part").exists())
+
 
 class DiscoveryPagingTests(unittest.TestCase):
     def test_paging_orders_by_id_and_refuses_a_page_that_repeats_one(self):
@@ -1119,6 +1161,10 @@ class DownloadValidationTests(unittest.TestCase):
             download.EPUB_DIR = str(epub_dir)
             download.CRAWL_DELAY = 0
             download.fetch = mock.Mock(side_effect=AssertionError("must not fetch"))
+            stale_epub = epub_dir / "F2020L01498.epub"
+            stale_sidecar = epub_dir / "F2020L01498.epub.meta.json"
+            stale_epub.write_bytes(b"stale prior-version bytes")
+            stale_sidecar.write_text('{"versionStart":"2025-06-30"}', encoding="utf-8")
 
             with contextlib.redirect_stdout(io.StringIO()):
                 download.main()
@@ -1128,6 +1174,9 @@ class DownloadValidationTests(unittest.TestCase):
                 (scratch / "manifest_raw.json").read_text(encoding="utf-8"))[0]
             self.assertEqual(record["status"], "no_epub")
             self.assertEqual(record["reason"], "current_version_has_no_document")
+            self.assertEqual(stale_epub.read_bytes(), b"stale prior-version bytes")
+            self.assertEqual(stale_sidecar.read_text(encoding="utf-8"),
+                             '{"versionStart":"2025-06-30"}')
 
             del record["compilationRegisterId"]
             (scratch / "acts_resolved.json").write_text(
