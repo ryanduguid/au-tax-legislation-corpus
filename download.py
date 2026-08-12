@@ -19,6 +19,16 @@ EPUB_DIR = child(ROOT, "epub")
 CRAWL_DELAY = 10
 
 
+class DownloadError(RuntimeError):
+    """The Register did not return a usable document."""
+
+
+def diagnostic(value, limit=80):
+    """Collapse and bound untrusted response metadata for logs."""
+    text = "".join(c if c.isprintable() else " " for c in str(value))
+    return " ".join(text.split())[:limit] or "?"
+
+
 def valid_zip(path):
     try:
         with zipfile.ZipFile(path) as archive:
@@ -59,32 +69,48 @@ def decode_envelope(path):
 
 
 def fetch(url, dst, tries=3):
-    """Returns (ok, http_code, content_type, bytes, envelope_meta)."""
+    """Return download metadata, or raise if the response is unusable."""
+    part = dst + ".part"
+    if os.path.exists(part):
+        os.remove(part)
     code = ctype = ""
     meta = None
+    problem = "no response"
     for attempt in range(tries):
         args = ["curl", "-sL", "--max-time", "600", "--retry", "2",
                 "--retry-all-errors", "--retry-delay", "5",
-                "-w", "%{http_code}|%{content_type}", "-o", dst]
+                "-w", "%{http_code}|%{content_type}", "-o", part]
         # Resume only makes sense for a truncated raw transfer.
-        if attempt > 0 and os.path.exists(dst) and sniff(dst) == b"P":
+        if attempt > 0 and os.path.exists(part) and sniff(part) == b"P":
             args[1:1] = ["-C", "-"]
         p = subprocess.run(args + [url], capture_output=True, text=True)
         out = (p.stdout or "").strip().split("|")
-        code = out[0] if out else "?"
-        ctype = out[1] if len(out) > 1 else "?"
+        code = diagnostic(out[0] if out else "?", 10)
+        ctype = diagnostic(out[1] if len(out) > 1 else "?")
 
-        if os.path.exists(dst):
-            if sniff(dst) == b"{":
-                m = decode_envelope(dst)
+        if p.returncode:
+            problem = "curl exit %s" % p.returncode
+        elif not code.isdigit() or not 200 <= int(code) < 300:
+            problem = "HTTP %s" % code
+        elif os.path.exists(part):
+            if sniff(part) == b"{":
+                m = decode_envelope(part)
                 if m and not m.get("_no_bytes"):
                     meta = m
-                elif m and m.get("_no_bytes"):
-                    return False, code, "json/no-bytes", 0, m
-            if valid_zip(dst):
-                return True, code, ctype, os.path.getsize(dst), meta
-        time.sleep(5)
-    return False, code, ctype, (os.path.getsize(dst) if os.path.exists(dst) else 0), meta
+            if valid_zip(part):
+                size = os.path.getsize(part)
+                os.replace(part, dst)
+                return True, code, ctype, size, meta
+            problem = "invalid EPUB response"
+        else:
+            problem = "missing response body"
+        if attempt + 1 < tries:
+            time.sleep(5)
+    size = os.path.getsize(part) if os.path.exists(part) else 0
+    if os.path.exists(part):
+        os.remove(part)
+    raise DownloadError("%s after %d attempt%s (content-type %s, %d bytes)" % (
+        problem, tries, "" if tries == 1 else "s", ctype, size))
 
 
 def main():
@@ -99,12 +125,16 @@ def main():
             rid, d = register_id(a["id"]), a["versionStart"]
             dst = child(EPUB_DIR, "%s.epub" % rid)
             url = "https://www.legislation.gov.au/%s/%s/%s/text/original/epub" % (rid, d, d)
+            if "compilationRegisterId" not in a:
+                raise ValueError("%s: missing compilationRegisterId" % rid)
+            no_document = a["compilationRegisterId"] is None
 
             # A cached file is only valid for the version it was fetched under.
             # Without this check a re-run stamps the newly resolved compilation
             # number onto stale bytes.
             side = child(EPUB_DIR, "%s.epub.meta.json" % rid)
-            if os.path.exists(dst) and valid_zip(dst) and os.path.exists(side):
+            if (not no_document and os.path.exists(dst) and valid_zip(dst)
+                    and os.path.exists(side)):
                 try:
                     with open(side, encoding="utf-8") as f:
                         prev = json.load(f)
@@ -122,12 +152,26 @@ def main():
                 if os.path.exists(p):
                     os.remove(p)
 
-            ok, code, ctype, sz, meta = fetch(url, dst)
             rec = dict(a, sourceUrl=url)
-            if meta:
-                rec["compilationRegisterId"] = meta.get("registerId")
-                rec["isAuthorised"] = meta.get("isAuthorised")
-            if ok:
+            if no_document:
+                fail_n += 1
+                sz = 0
+                rec.update(epub=None, bytes=0, status="no_epub",
+                           reason="current_version_has_no_document")
+                label = "NO_EPUB"
+            else:
+                try:
+                    _ok, _code, _ctype, sz, meta = fetch(url, dst)
+                except DownloadError as error:
+                    line = "%3d/%3d %-12s ERROR    %s" % (
+                        i, len(acts), rid, error)
+                    print(line, flush=True)
+                    log.write(line + "\n")
+                    log.flush()
+                    raise
+                if meta:
+                    rec["compilationRegisterId"] = meta.get("registerId")
+                    rec["isAuthorised"] = meta.get("isAuthorised")
                 ok_n += 1
                 total_bytes += sz
                 rec.update(epub=os.path.basename(dst), bytes=sz, status="ok")
@@ -136,16 +180,11 @@ def main():
                                "compilationNumber": a.get("compilationNumber"),
                                "compilationRegisterId": rec.get("compilationRegisterId"),
                                "bytes": sz}, f)
-            else:
-                fail_n += 1
-                if os.path.exists(dst):
-                    os.remove(dst)
-                rec.update(epub=None, bytes=0, status="no_epub",
-                           httpCode=code, contentType=ctype)
+                label = "OK"
             manifest.append(rec)
 
             line = "%3d/%3d %-12s %-8s %9d  %s" % (
-                i, len(acts), rid, "OK" if ok else "NO_EPUB", sz, a["name"][:58])
+                i, len(acts), rid, label, sz, a["name"][:58])
             print(line, flush=True)
             log.write(line + "\n")
             log.flush()

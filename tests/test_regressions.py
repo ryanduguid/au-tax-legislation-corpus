@@ -914,7 +914,8 @@ class DownloadManifestWriteTests(unittest.TestCase):
             epub_dir.mkdir(parents=True)
             (scratch / "acts_resolved.json").write_text(json.dumps([
                 {"id": "F2020L01498", "name": "Recoverable Instrument",
-                 "versionStart": "2026-03-01", "compilationNumber": "4"}]),
+                 "versionStart": "2026-03-01", "compilationNumber": "4",
+                 "compilationRegisterId": "F2026C00001"}]),
                 encoding="utf-8")
 
             previous = [
@@ -955,6 +956,47 @@ class DownloadManifestWriteTests(unittest.TestCase):
             self.assertEqual(manifest_path.read_text(encoding="utf-8"), original)
             self.assertFalse((scratch / "manifest_raw.json.tmp").exists())
 
+    def test_a_response_error_is_logged_then_aborts_before_manifest_replacement(self):
+        download = load_module("download_response_failure", REPO / "download.py")
+        with tempfile.TemporaryDirectory() as tmp:
+            scratch = Path(tmp)
+            epub_dir = scratch / "corpus" / "epub"
+            epub_dir.mkdir(parents=True)
+            (scratch / "acts_resolved.json").write_text(json.dumps([{
+                "id": "F2020L01498", "name": "Blocked Instrument",
+                "versionStart": "2026-03-01", "compilationNumber": "4",
+                "compilationRegisterId": "F2026C00001",
+            }]), encoding="utf-8")
+            manifest_path = scratch / "manifest_raw.json"
+            original = '[{"id": "previous-crawl"}]'
+            manifest_path.write_text(original, encoding="utf-8")
+
+            def blocked(args, **kwargs):
+                Path(args[args.index("-o") + 1]).write_bytes(
+                    b"<html>BODY_MUST_NOT_REACH_LOG</html>")
+                return mock.Mock(stdout="403|text/html\r\nX-Untrusted: value",
+                                 returncode=0)
+
+            download.SCRATCH = str(scratch)
+            download.EPUB_DIR = str(epub_dir)
+            download.CRAWL_DELAY = 0
+            download.time.sleep = lambda _seconds: None
+            with mock.patch.object(download.subprocess, "run", blocked):
+                with contextlib.redirect_stdout(io.StringIO()):
+                    with self.assertRaisesRegex(download.DownloadError,
+                                                "HTTP 403"):
+                        download.main()
+
+            self.assertEqual(manifest_path.read_text(encoding="utf-8"), original)
+            self.assertFalse((epub_dir / "F2020L01498.epub").exists())
+            self.assertFalse((epub_dir / "F2020L01498.epub.part").exists())
+            logged = (scratch / "download_log.txt").read_text(encoding="utf-8")
+            self.assertIn("HTTP 403", logged)
+            self.assertIn("text/html X-Untrusted: value", logged)
+            self.assertNotIn("BODY_MUST_NOT_REACH_LOG", logged)
+            self.assertEqual(len(logged.splitlines()), 1)
+            self.assertLessEqual(len(logged), 180)
+
 
 class DiscoveryPagingTests(unittest.TestCase):
     def test_paging_orders_by_id_and_refuses_a_page_that_repeats_one(self):
@@ -982,31 +1024,101 @@ class DiscoveryPagingTests(unittest.TestCase):
 
 
 class DownloadValidationTests(unittest.TestCase):
-    def _fetch(self, download, dst, body):
+    def _fetch(self, download, dst, body, code="200", content_type="text/html",
+               returncode=0):
         def fake_run(args, **kwargs):
-            Path(dst).write_bytes(body)
-            return mock.Mock(stdout="200|text/html")
+            output = Path(args[args.index("-o") + 1])
+            self.assertNotEqual(output, Path(dst))
+            output.write_bytes(body)
+            return mock.Mock(stdout="%s|%s" % (code, content_type),
+                             returncode=returncode)
 
         with mock.patch.object(download.subprocess, "run", fake_run):
             return download.fetch("https://example.test/x", dst, tries=1)
 
-    def test_fetch_refuses_a_body_that_is_not_a_zip(self):
-        """The Register answers some paths with an HTML error page, and a saved
-        error page is indistinguishable from an EPUB by filename alone."""
+    def test_fetch_fails_closed_for_http_and_content_errors(self):
+        """Access blocks and server errors must not become missing editions."""
         download = load_module("download_fetch_validation", REPO / "download.py")
         download.time.sleep = lambda _seconds: None
         with tempfile.TemporaryDirectory() as tmp:
             dst = str(Path(tmp) / "C2004A00001.epub")
-            ok, _code, _ctype, _size, _meta = self._fetch(
-                download, dst, b"<html><body>Not found</body></html>")
-            self.assertFalse(ok)
+            for code in ("403", "404", "429", "503"):
+                with self.subTest(code=code):
+                    with self.assertRaisesRegex(download.DownloadError,
+                                                "HTTP %s" % code):
+                        self._fetch(download, dst, b"<html>blocked</html>", code=code)
+                    self.assertFalse(Path(dst).exists())
+
+            with self.assertRaisesRegex(download.DownloadError,
+                                        "invalid EPUB response"):
+                self._fetch(download, dst, b"<html>not an EPUB</html>")
+            self.assertFalse(Path(dst).exists())
+            with self.assertRaisesRegex(download.DownloadError,
+                                        "curl exit 28"):
+                self._fetch(download, dst, b"", code="000", returncode=28)
+            self.assertFalse(Path(dst).exists())
 
             payload = io.BytesIO()
             with zipfile.ZipFile(payload, "w") as archive:
                 archive.writestr("document_1.xhtml", "<html><body><p>Act</p></body></html>")
-            ok, _code, _ctype, size, _meta = self._fetch(download, dst, payload.getvalue())
+            ok, _code, _ctype, size, _meta = self._fetch(
+                download, dst, payload.getvalue(),
+                content_type="application/epub+zip")
             self.assertTrue(ok)
             self.assertEqual(size, os.path.getsize(dst))
+
+            envelope = json.dumps({
+                "bytes": download.base64.b64encode(payload.getvalue()).decode("ascii"),
+                "registerId": "C2026C00001", "isAuthorised": True,
+            }).encode("utf-8")
+            ok, _code, _ctype, size, meta = self._fetch(
+                download, dst, envelope, content_type="application/json")
+            self.assertTrue(ok)
+            self.assertEqual(meta["registerId"], "C2026C00001")
+            self.assertEqual(size, os.path.getsize(dst))
+            valid_before_failure = Path(dst).read_bytes()
+
+            with self.assertRaisesRegex(download.DownloadError,
+                                        "invalid EPUB response"):
+                self._fetch(download, dst, b'{"bytes": null}',
+                            content_type="application/json")
+            self.assertEqual(Path(dst).read_bytes(), valid_before_failure)
+            self.assertFalse(Path(dst + ".part").exists())
+
+    def test_only_a_null_compilation_register_id_is_no_epub(self):
+        """A current version with no registerId is the API's no-edition case;
+        it needs no document request and stays eligible for retry13.py."""
+        download = load_module("download_no_document", REPO / "download.py")
+        with tempfile.TemporaryDirectory() as tmp:
+            scratch = Path(tmp)
+            epub_dir = scratch / "corpus" / "epub"
+            epub_dir.mkdir(parents=True)
+            (scratch / "acts_resolved.json").write_text(json.dumps([{
+                "id": "F2020L01498", "name": "Unpublished current version",
+                "versionStart": "2026-03-01", "compilationNumber": "5",
+                "compilationRegisterId": None,
+            }]), encoding="utf-8")
+            download.SCRATCH = str(scratch)
+            download.EPUB_DIR = str(epub_dir)
+            download.CRAWL_DELAY = 0
+            download.fetch = mock.Mock(side_effect=AssertionError("must not fetch"))
+
+            with contextlib.redirect_stdout(io.StringIO()):
+                download.main()
+
+            download.fetch.assert_not_called()
+            record = json.loads(
+                (scratch / "manifest_raw.json").read_text(encoding="utf-8"))[0]
+            self.assertEqual(record["status"], "no_epub")
+            self.assertEqual(record["reason"], "current_version_has_no_document")
+
+            del record["compilationRegisterId"]
+            (scratch / "acts_resolved.json").write_text(
+                json.dumps([record]), encoding="utf-8")
+            with contextlib.redirect_stdout(io.StringIO()):
+                with self.assertRaisesRegex(ValueError,
+                                            "missing compilationRegisterId"):
+                    download.main()
 
 
 class StalenessBucketTests(unittest.TestCase):

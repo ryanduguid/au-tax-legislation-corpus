@@ -74,6 +74,11 @@ prints a progress line every 25 titles.
 - **Any filter containing `isPrincipal` returns 400.** It is applied in Python.
 - **The download endpoint answers in two shapes**: raw EPUB bytes, or a JSON
   envelope with the file base64 in a `bytes` field. Sniff the first byte.
+- **An HTTP or invalid-content response is not evidence that an EPUB is
+  absent.** The download stage stops on transport errors, HTTP errors and
+  non-EPUB bodies instead of recording them as `no_epub`. Responses are staged
+  in `.part`; only a validated archive replaces the `.epub`. The failure log
+  records bounded status and content-type metadata, never the response body.
 - **`/latest/` is not a download alias.** It returns the SPA shell as
   `text/html`. Resolve the version date first.
 - **The current version can have no document.** `versions?$filter=isCurrent eq
@@ -87,7 +92,8 @@ prints a progress line every 25 titles.
   `sources.json`. Substituting an older compilation silently would misreport the
   corpus as current. `check_current.py` reports these in their own bucket: it
   used to file them under "SUPERSEDED, re-download these", which sends you at a
-  URL that answers 404. The tell is a current version with a null `registerId`.
+  URL that answers 404. An explicit null `registerId` from this API response is
+  the only condition the download stage records as `no_epub`.
 - **Acts use two EPUB templates.** Modern Acts use `ActHead1`-`ActHead5`; Acts
   predating it carry no structural headings and mark sections only with a
   `CharSectno` span. Some use `<h1>`-`<h6>` instead of `<p>`.

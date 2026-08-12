@@ -115,9 +115,13 @@ real defect. The short version:
   re-reads the previous response and hands one Act another Act's compilation.
 - **The download endpoint answers in two shapes**, raw EPUB bytes or a JSON
   envelope with the file base64 inside. Sniff the first byte.
+- **HTTP errors and non-EPUB responses stop the download stage.** They are not
+  evidence that a document is absent and must not be counted as `no_epub`.
+  Only a validated staged download is moved to an `.epub` path.
 - **The current version can have no document.** The Register records that an
   amendment commenced before publishing the compilation, so the URL 404s. That
-  is not a broken download, and 13 titles are in that state.
+  is not a broken download. Only an explicit null `registerId` on the current
+  version is recorded as `no_epub`; 13 titles were in that state in this build.
 - **Acts use two Word templates; instruments use dozens.** Deciding the template
   from the markup fails, because cosmetic classes look structural. Run the
   structural pass, and only when it finds nothing at all re-run with the
