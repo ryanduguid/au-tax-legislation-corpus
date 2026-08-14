@@ -1737,6 +1737,13 @@ class DistributionTests(unittest.TestCase):
     PUBLIC_NAME = "Public Tax Act"
     PRIVATE_NAME = "Private Disciplinary Register"
 
+    def _managed_publish_paths(self, target):
+        target = Path(target)
+        return sorted([
+            *target.parent.glob(".%s.stage-*" % target.name),
+            *target.parent.glob(".%s.backup-*" % target.name),
+        ])
+
     def _write_fixture(self, base):
         root = base / "corpus"
         build = base / "build"
@@ -2105,6 +2112,143 @@ class DistributionTests(unittest.TestCase):
             self.assertTrue(marker.is_file())
             self.assertEqual(marker.read_text(encoding="utf-8"), "keep me")
             self.assertNotIn(contact, str(raised.exception))
+
+    def test_mid_build_failure_preserves_the_prior_distribution(self):
+        dist = load_module("dist_atomic_mid_build", REPO / "dist.py")
+        with tempfile.TemporaryDirectory() as tmp:
+            root, build = self._write_fixture(Path(tmp))
+            dist.ROOT = str(root)
+            dist.HERE = str(build)
+            dist.DIST = str(root / "dist")
+
+            existing = Path(dist.DIST)
+            existing.mkdir()
+            marker = existing / "last-publishable-build.txt"
+            marker.write_text("keep me", encoding="utf-8")
+
+            with mock.patch.object(
+                    dist.shutil, "copytree",
+                    side_effect=RuntimeError("injected mid-build failure")):
+                with self.assertRaisesRegex(RuntimeError, "injected mid-build"):
+                    dist.main()
+
+            self.assertEqual(marker.read_text(encoding="utf-8"), "keep me")
+            self.assertEqual(self._managed_publish_paths(existing), [])
+
+    def test_failed_staging_validation_preserves_the_prior_distribution(self):
+        dist = load_module("dist_atomic_validation", REPO / "dist.py")
+        with tempfile.TemporaryDirectory() as tmp:
+            root, build = self._write_fixture(Path(tmp))
+            dist.ROOT = str(root)
+            dist.HERE = str(build)
+            dist.DIST = str(root / "dist")
+
+            existing = Path(dist.DIST)
+            existing.mkdir()
+            marker = existing / "last-publishable-build.txt"
+            marker.write_text("keep me", encoding="utf-8")
+
+            with mock.patch.object(
+                    dist, "verify_distribution", return_value=["injected check"]
+                    ) as verify:
+                with contextlib.redirect_stdout(io.StringIO()):
+                    with self.assertRaisesRegex(RuntimeError, "injected check"):
+                        dist.main()
+
+            staged = Path(verify.call_args.args[0])
+            self.assertEqual(staged.parent, existing.parent)
+            self.assertNotEqual(staged, existing)
+            self.assertEqual(marker.read_text(encoding="utf-8"), "keep me")
+            self.assertEqual(self._managed_publish_paths(existing), [])
+
+    def test_first_promotion_rename_failure_leaves_old_dist_untouched(self):
+        dist = load_module("dist_atomic_first_rename", REPO / "dist.py")
+        with tempfile.TemporaryDirectory() as tmp:
+            root, build = self._write_fixture(Path(tmp))
+            dist.ROOT = str(root)
+            dist.HERE = str(build)
+            dist.DIST = str(root / "dist")
+
+            existing = Path(dist.DIST)
+            existing.mkdir()
+            marker = existing / "last-publishable-build.txt"
+            marker.write_text("keep me", encoding="utf-8")
+
+            with mock.patch.object(
+                    dist.os, "rename",
+                    side_effect=PermissionError("injected first rename failure")
+                    ) as rename:
+                with contextlib.redirect_stdout(io.StringIO()):
+                    with self.assertRaisesRegex(PermissionError, "first rename"):
+                        dist.main()
+
+            self.assertEqual(rename.call_count, 1)
+            self.assertEqual(marker.read_text(encoding="utf-8"), "keep me")
+            self.assertEqual(self._managed_publish_paths(existing), [])
+
+    def test_second_promotion_rename_failure_rolls_back_old_dist(self):
+        dist = load_module("dist_atomic_second_rename", REPO / "dist.py")
+        with tempfile.TemporaryDirectory() as tmp:
+            root, build = self._write_fixture(Path(tmp))
+            dist.ROOT = str(root)
+            dist.HERE = str(build)
+            dist.DIST = str(root / "dist")
+
+            existing = Path(dist.DIST)
+            existing.mkdir()
+            marker = existing / "last-publishable-build.txt"
+            marker.write_text("keep me", encoding="utf-8")
+
+            real_rename = os.rename
+            calls = []
+
+            def fail_second_rename(source, destination):
+                calls.append((source, destination))
+                if len(calls) == 2:
+                    raise PermissionError("injected second rename failure")
+                return real_rename(source, destination)
+
+            with mock.patch.object(dist.os, "rename", side_effect=fail_second_rename):
+                with contextlib.redirect_stdout(io.StringIO()):
+                    with self.assertRaisesRegex(PermissionError, "second rename"):
+                        dist.main()
+
+            self.assertEqual(len(calls), 3)
+            self.assertEqual(marker.read_text(encoding="utf-8"), "keep me")
+            self.assertEqual(self._managed_publish_paths(existing), [])
+
+    def test_successful_promotion_removes_stage_and_backup(self):
+        dist = load_module("dist_atomic_success", REPO / "dist.py")
+        with tempfile.TemporaryDirectory() as tmp:
+            root, build = self._write_fixture(Path(tmp))
+            dist.ROOT = str(root)
+            dist.HERE = str(build)
+            dist.DIST = str(root / "dist")
+
+            existing = Path(dist.DIST)
+            existing.mkdir()
+            marker = existing / "last-publishable-build.txt"
+            marker.write_text("replace me", encoding="utf-8")
+
+            with contextlib.redirect_stdout(io.StringIO()):
+                dist.main()
+
+            self.assertFalse(marker.exists())
+            self.assertTrue(
+                (existing / "markdown" / self.PUBLIC_ID / "sections.jsonl").is_file())
+            self.assertEqual(self._managed_publish_paths(existing), [])
+
+    def test_managed_cleanup_refuses_a_path_outside_the_dist_siblings(self):
+        dist = load_module("dist_atomic_path_boundary", REPO / "dist.py")
+        with tempfile.TemporaryDirectory() as tmp:
+            target = Path(tmp) / "corpus" / "dist"
+            target.parent.mkdir()
+            unrelated = Path(tmp) / ".dist.stage-unrelated"
+            unrelated.mkdir()
+
+            with self.assertRaisesRegex(ValueError, "validated sibling"):
+                dist._remove_managed_tree(target, unrelated, "stage")
+            self.assertTrue(unrelated.is_dir())
 
     def test_readme_count_replacement_is_precise_and_linear(self):
         dist = load_module("dist_count_regression", REPO / "dist.py")
