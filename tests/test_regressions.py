@@ -1553,8 +1553,7 @@ class ShippedIntermediateTests(unittest.TestCase):
 
 
 class PiiNameGateTests(unittest.TestCase):
-    """The person-name gate shared by pii_scan.py, pii_scan2.py and
-    dist_verify.py through pii_patterns.py."""
+    """PII gates shared by the scans, distribution builder and verifier."""
 
     # A disciplinary-register row in the all-caps style the old
     # Capitalised-lowercase pair could not see: three surnames the old pattern
@@ -1591,6 +1590,47 @@ class PiiNameGateTests(unittest.TestCase):
             "| Smith, John | 12345678 | s 30-15 |"))
         self.assertFalse(patterns.has_private_person_registration_pair(
             "Deputy Commissioner of Taxation referred to section 12345678."))
+
+    def test_contact_fingerprints_are_normalised_and_tfn_shaped(self):
+        patterns = load_module("pii_patterns_contacts", REPO / "pii_patterns.py")
+        first = list(patterns.contact_fingerprints(
+            "Email Privacy.Review@Example.Test or phone (02) 1234 5678. "
+            "Tax file number: 123 456 789."))
+        second = list(patterns.contact_fingerprints(
+            "email privacy.review@example.test or phone 02 1234 5678. "
+            "tax file number 123456789."))
+        self.assertEqual(first, second)
+        self.assertEqual([kind for kind, _ in first], ["email", "phone", "tfn"])
+        self.assertEqual(list(patterns.contact_fingerprints(
+            "The expression tax file number 7/subsection 2 is a heading.")), [])
+
+    def test_contact_allowlist_is_bound_to_kind_digest_and_title(self):
+        patterns = load_module("pii_patterns_policy", REPO / "pii_patterns.py")
+        rid = "C2004A00001"
+        contact = "privacy-review@example.test"
+        kind, digest = next(patterns.contact_fingerprints(contact))
+        approved = {(kind, digest, rid)}
+        self.assertFalse(patterns.unapproved_contact_fingerprints(
+            contact.upper(), rid, approved))
+        self.assertTrue(patterns.unapproved_contact_fingerprints(
+            contact, "F2026N00001", approved))
+
+    def test_contact_allowlist_rejects_malformed_and_duplicate_entries(self):
+        patterns = load_module("pii_patterns_policy_schema", REPO / "pii_patterns.py")
+        valid = {
+            "kind": "email", "sha256": "0" * 64,
+            "register_id": "C2004A00001", "reason": "official contact",
+        }
+        with tempfile.TemporaryDirectory() as tmp:
+            policy = Path(tmp) / "policy.json"
+            for document in (
+                {"schema_version": 2, "entries": []},
+                {"schema_version": 1, "entries": [dict(valid, raw="not allowed")]},
+                {"schema_version": 1, "entries": [valid, valid]},
+            ):
+                policy.write_text(json.dumps(document), encoding="utf-8")
+                with self.assertRaises(ValueError):
+                    patterns.load_contact_allowlist(policy)
 
     def test_pii_scan_flags_a_register_written_in_capitals(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -1634,7 +1674,8 @@ class PiiNameGateTests(unittest.TestCase):
             base = Path(tmp)
             build = base / "build"
             build.mkdir()
-            for name in ("pii_scan2.py", "pii_patterns.py", "corpus_paths.py"):
+            for name in ("pii_scan2.py", "pii_patterns.py", "corpus_paths.py",
+                         "pii_contact_allowlist.json"):
                 shutil.copy2(REPO / name, build / name)
             (build / "pii_flagged.json").write_text("[]\n", encoding="utf-8")
 
@@ -1650,15 +1691,44 @@ class PiiNameGateTests(unittest.TestCase):
             scan = load_module("pii_scan2_redaction", build / "pii_scan2.py")
             output = io.StringIO()
             with contextlib.redirect_stdout(output):
-                scan.main()
+                result = scan.main()
 
             logged = output.getvalue()
+            self.assertEqual(result, 1)
             self.assertNotIn(contact, logged)
             self.assertIn(
                 hashlib.sha256(contact.encode("utf-8")).hexdigest()[:16],
                 logged,
             )
             self.assertIn(f"{rid}:0001:-", logged)
+
+    def test_second_scan_accepts_only_a_title_bound_organisational_contact(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            base = Path(tmp)
+            build = base / "build"
+            build.mkdir()
+            for name in ("pii_scan2.py", "pii_patterns.py", "corpus_paths.py"):
+                shutil.copy2(REPO / name, build / name)
+            (build / "pii_flagged.json").write_text("[]\n", encoding="utf-8")
+
+            contact = "OFFICIAL@example.test"
+            rid = "C2004A00001"
+            digest = hashlib.sha256(contact.casefold().encode("utf-8")).hexdigest()
+            policy = {"schema_version": 1, "entries": [{
+                "kind": "email", "sha256": digest, "register_id": rid,
+                "reason": "synthetic organisational contact",
+            }]}
+            (build / "pii_contact_allowlist.json").write_text(
+                json.dumps(policy), encoding="utf-8")
+            folder = base / "markdown" / rid
+            folder.mkdir(parents=True)
+            (folder / "sections.jsonl").write_text(
+                json.dumps({"row_id": f"{rid}:0001:-", "text": contact}) + "\n",
+                encoding="utf-8")
+
+            scan = load_module("pii_scan2_approved", build / "pii_scan2.py")
+            with contextlib.redirect_stdout(io.StringIO()):
+                self.assertEqual(scan.main(), 0)
 
 
 class DistributionTests(unittest.TestCase):
@@ -1851,6 +1921,8 @@ class DistributionTests(unittest.TestCase):
             code, out = self._verify(verify)
             self.assertEqual(code, 0)
             self.assertEqual(self._status(out, "no row names private individuals"), "PASS")
+            self.assertEqual(self._status(
+                out, "no unapproved contact identifiers"), "PASS")
 
             # A distributed title that names disciplined agents with their
             # registration numbers: the one thing dist.py exists to remove.
@@ -1863,6 +1935,20 @@ class DistributionTests(unittest.TestCase):
             code, out = self._verify(verify)
             self.assertEqual(code, 1)
             self.assertEqual(self._status(out, "no row names private individuals"), "FAIL")
+            rows.write_text(clean_rows, encoding="utf-8")
+
+            # Organisational contacts already present in the source corpus are
+            # explicitly approved by hash and title. A new identifier must not
+            # enter the redistributable dataset merely because it is public.
+            row = json.loads(clean_rows)
+            contact = "new-contact@example.test"
+            rows.write_text(
+                json.dumps(dict(row, text=contact)) + "\n", encoding="utf-8")
+            code, out = self._verify(verify)
+            self.assertEqual(code, 1)
+            self.assertEqual(self._status(
+                out, "no unapproved contact identifiers"), "FAIL")
+            self.assertNotIn(contact, out)
             rows.write_text(clean_rows, encoding="utf-8")
 
             # One person and one registration number is enough to make a
@@ -1990,6 +2076,35 @@ class DistributionTests(unittest.TestCase):
             dist.DIST = str(root / "dist")
             with self.assertRaisesRegex(ValueError, "symbolic link"):
                 dist.main()
+
+    def test_contact_preflight_preserves_the_existing_distribution(self):
+        dist = load_module("dist_contact_preflight", REPO / "dist.py")
+        with tempfile.TemporaryDirectory() as tmp:
+            root, build = self._write_fixture(Path(tmp))
+            policy = build / "pii_contact_allowlist.json"
+            policy.write_text(json.dumps({"schema_version": 1, "entries": []}),
+                              encoding="utf-8")
+            dist.ROOT = str(root)
+            dist.HERE = str(build)
+            dist.DIST = str(root / "dist")
+            dist.CONTACT_ALLOWLIST = str(policy)
+
+            existing = Path(dist.DIST)
+            existing.mkdir()
+            marker = existing / "last-publishable-build.txt"
+            marker.write_text("keep me", encoding="utf-8")
+            rows = root / "markdown" / self.PUBLIC_ID / "sections.jsonl"
+            row = json.loads(rows.read_text(encoding="utf-8"))
+            contact = "new-contact@example.test"
+            rows.write_text(json.dumps(dict(row, text=contact)) + "\n",
+                            encoding="utf-8")
+
+            with self.assertRaisesRegex(RuntimeError,
+                                        "unapproved contact identifiers") as raised:
+                dist.main()
+            self.assertTrue(marker.is_file())
+            self.assertEqual(marker.read_text(encoding="utf-8"), "keep me")
+            self.assertNotIn(contact, str(raised.exception))
 
     def test_readme_count_replacement_is_precise_and_linear(self):
         dist = load_module("dist_count_regression", REPO / "dist.py")

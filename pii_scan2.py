@@ -13,28 +13,26 @@ number, so the phone pattern requires the conventional grouping.
 """
 import collections
 import glob
-import hashlib
 import json
 import os
-import re
+import sys
 
 from corpus_paths import child, corpus_root, register_id
-from pii_patterns import private_person_registration_details
+from pii_patterns import (contact_fingerprints, load_contact_allowlist,
+                          private_person_registration_details)
 
 ROOT = corpus_root(__file__)
 with open(os.path.join(os.path.dirname(os.path.abspath(__file__)),
                        "pii_flagged.json"), encoding="utf-8") as source:
     KNOWN = {item["register_id"] for item in json.load(source)}
 
-EMAIL = re.compile(r"\b[\w.+-]+@[\w-]+\.[\w.]{2,}\b")
-# Australian formats: 02 1234 5678, (02) 1234 5678, 0412 345 678, 1300 123 456.
-PHONE = re.compile(r"(?<!\d)(?:\(0\d\)\s?\d{4}\s?\d{4}|0[2-8]\s\d{4}\s\d{4}|"
-                   r"04\d{2}\s\d{3}\s\d{3}|1[38]00\s\d{3}\s\d{3})(?!\d)")
-TFN = re.compile(r"\btax file number\s*:?\s*\d", re.I)
+ALLOWLIST = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                         "pii_contact_allowlist.json")
 
 
 def main():
-    weak, contacts = [], collections.Counter()
+    approved = load_contact_allowlist(ALLOWLIST)
+    weak, contacts, unapproved = [], collections.Counter(), collections.Counter()
     ex = collections.defaultdict(list)
     markdown_root = child(ROOT, "markdown")
     for candidate in sorted(glob.glob(os.path.join(markdown_root, "*", "sections.jsonl"))):
@@ -46,16 +44,16 @@ def main():
                     continue
                 row = json.loads(line)
                 text = row.get("text") or ""
-                for label, pattern in (("email", EMAIL), ("phone", PHONE), ("tfn", TFN)):
-                    for match in pattern.findall(text):
-                        match = str(match)
-                        contacts[label] += 1
+                for label, digest in contact_fingerprints(text):
+                    contacts[label] += 1
+                    key = (label, digest, rid)
+                    if key not in approved:
+                        unapproved[label] += 1
                         if len(ex[label]) < 5:
                             # Scanner output commonly lands in CI and audit logs.  Keep
                             # enough information to find and compare a match without
                             # copying the contact identifier into those logs.
-                            digest = hashlib.sha256(match.encode("utf-8")).hexdigest()[:16]
-                            ex[label].append((rid, row.get("row_id"), digest))
+                            ex[label].append((rid, row.get("row_id"), digest[:16]))
                 if rid in KNOWN:
                     continue
                 names, regs = private_person_registration_details(text)
@@ -68,9 +66,11 @@ def main():
         print("   %-12s %-26s names=%d nums=%d" % w)
     print()
     print("contact details across the whole corpus:", dict(contacts) or "none")
+    print("unapproved contact details:", dict(unapproved) or "none")
     for k, v in ex.items():
         print("   %-6s register_id, row_id, sha256[:16]: %s" % (k, v[:3]))
+    return 1 if weak or unapproved else 0
 
 
 if __name__ == "__main__":
-    main()
+    sys.exit(main())
