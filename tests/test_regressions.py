@@ -1909,6 +1909,61 @@ class DistributionTests(unittest.TestCase):
             code, _out = self._verify(verify)
             self.assertEqual(code, 0)
 
+    def test_a_stray_entry_under_markdown_is_reported_not_raised(self):
+        """The verifier is the last gate before a distribution is published,
+        so anything it cannot explain has to come back as a named FAIL.
+
+        register_id() rejects a name that is not a Federal Register
+        identifier, which is what keeps a crafted directory name out of a
+        path.  Calling it inside the set comprehension that builds `present`
+        meant an ordinary stray - a .DS_Store, a hand-copied notes.md, an
+        editor's backup directory - raised ValueError out of main() instead.
+        The operator saw a traceback rather than a verdict, and nothing in the
+        output said which entry caused it or whether any other check had
+        passed.  Reject the name, keep it out of every path, and report it."""
+        dist = load_module("dist_stray", REPO / "dist.py")
+        verify = load_module("dist_verify_stray", REPO / "dist_verify.py")
+        with tempfile.TemporaryDirectory() as tmp:
+            root, build = self._write_fixture(Path(tmp))
+            dist.ROOT = str(root)
+            dist.HERE = str(build)
+            dist.DIST = str(root / "dist")
+            with contextlib.redirect_stdout(io.StringIO()):
+                dist.main()
+            output = Path(dist.DIST)
+            verify.DIST = str(output)
+
+            code, out = self._verify(verify)
+            self.assertEqual(code, 0)
+            self.assertEqual(
+                self._status(out, "no directory beyond what is listed"), "PASS")
+
+            # A loose file, and a directory carrying a sections.jsonl so the
+            # per-row pass has to survive it too.
+            stray_file = output / "markdown" / "notes.md"
+            stray_file.write_text("scratch\n", encoding="utf-8")
+            stray_dir = output / "markdown" / "draft-backup"
+            stray_dir.mkdir()
+            (stray_dir / "sections.jsonl").write_text(
+                json.dumps({"register_id": "draft-backup", "text": "x"}) + "\n",
+                encoding="utf-8")
+
+            code, out = self._verify(verify)
+            self.assertEqual(code, 1)
+            self.assertEqual(
+                self._status(out, "no directory beyond what is listed"), "FAIL")
+            self.assertIn("notes.md", out)
+            self.assertIn("draft-backup", out)
+            # The rest of the run still happens: a stray entry must not cost
+            # the operator every other answer the verifier had.
+            self.assertEqual(
+                self._status(out, "no row names private individuals"), "PASS")
+
+            stray_file.unlink()
+            shutil.rmtree(stray_dir)
+            code, _out = self._verify(verify)
+            self.assertEqual(code, 0)
+
     def test_distribution_rejects_nested_symlinks_before_copying(self):
         dist = load_module("dist_symlink_regression", REPO / "dist.py")
         with tempfile.TemporaryDirectory() as tmp:
