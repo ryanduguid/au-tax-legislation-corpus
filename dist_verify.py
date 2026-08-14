@@ -8,9 +8,13 @@ title that was removed.
 import collections, json, os, sys
 
 from corpus_paths import child, corpus_root, register_id
-from pii_patterns import has_private_person_registration_pair
+from pii_patterns import (has_private_person_registration_pair,
+                          load_contact_allowlist,
+                          unapproved_contact_fingerprints)
 
 DIST = child(corpus_root(__file__), "dist")
+HERE = os.path.dirname(os.path.abspath(__file__))
+CONTACT_ALLOWLIST = os.path.join(HERE, "pii_contact_allowlist.json")
 
 fails = []
 
@@ -26,6 +30,7 @@ def main():
     # Keep this verifier reusable from a regression test process as well as the
     # command line; a previous failing call must not poison a later call.
     fails.clear()
+    approved_contacts = load_contact_allowlist(CONTACT_ALLOWLIST)
 
     with open(child(DIST, "sources.json"), encoding="utf-8") as f:
         src = json.load(f)
@@ -72,6 +77,7 @@ def main():
 
     rows = bad = section_rows = rid_mismatch = 0
     hot = collections.Counter()
+    contact_hot = collections.Counter()
     kind_counts = collections.Counter()
     rows_by_coll, words_by_coll = collections.Counter(), collections.Counter()
     unsafe_row_paths = []
@@ -108,12 +114,17 @@ def main():
                     section_rows += 1
                 if has_private_person_registration_pair(t):
                     hot[rid] += 1
+                for kind, digest, _ in unapproved_contact_fingerprints(
+                        t, rid, approved_contacts):
+                    contact_hot[(rid, kind, digest[:16])] += 1
     check("every JSONL row parses", bad == 0, "%s rows, %d malformed" % (f"{rows:,}", bad))
     check("each JSONL row matches its title directory", rid_mismatch == 0,
           "%d mismatched register ids" % rid_mismatch)
     check("row files stay inside real title directories", not unsafe_row_paths,
           ", ".join(unsafe_row_paths[:5]))
     check("no row names private individuals", not hot, str(dict(hot))[:60])
+    check("no unapproved contact identifiers", not contact_hot,
+          str(dict(contact_hot))[:120])
 
     counts = src.get("counts") or {}
     expected_by_coll = {

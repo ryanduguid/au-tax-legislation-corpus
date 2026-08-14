@@ -22,10 +22,45 @@ omission is visible and reversible from the primary source.
 import collections, json, os, re, shutil
 
 from corpus_paths import child, corpus_root, register_id, reject_symlinks
+from pii_patterns import load_contact_allowlist, unapproved_contact_fingerprints
 
 ROOT = corpus_root(__file__)
 DIST = child(ROOT, "dist")
 HERE = os.path.dirname(os.path.abspath(__file__))
+CONTACT_ALLOWLIST = os.path.join(HERE, "pii_contact_allowlist.json")
+
+
+def reject_unapproved_contacts(titles, approved):
+    """Fail before replacing ``dist/`` if a source contact is not approved.
+
+    Diagnostics include only the public Register id and a truncated digest.
+    The matched identifier never reaches logs or the checked-in policy file.
+    """
+    total, examples = 0, []
+    for title in titles:
+        rid = register_id(title["register_id"])
+        directory = child(ROOT, "markdown", rid)
+        if not os.path.isdir(directory):
+            raise RuntimeError("listed title %s has no markdown directory" % rid)
+        sections = child(directory, "sections.jsonl")
+        if not os.path.isfile(sections):
+            raise RuntimeError("listed title %s has no sections.jsonl" % rid)
+        reject_symlinks(directory)
+        with open(sections, encoding="utf-8") as source:
+            for line in source:
+                if not line.strip():
+                    continue
+                row = json.loads(line)
+                for kind, digest, _ in unapproved_contact_fingerprints(
+                        row.get("text") or "", rid, approved):
+                    total += 1
+                    if len(examples) < 8:
+                        examples.append("%s:%s:%s" % (rid, kind, digest[:16]))
+    if total:
+        raise RuntimeError(
+            "unapproved contact identifiers: %d (%s)" %
+            (total, ", ".join(examples))
+        )
 
 
 def render_rates_markdown(records):
@@ -166,6 +201,7 @@ def replace_readme_collection_counts(text, acts, instruments):
 
 
 def main():
+    approved_contacts = load_contact_allowlist(CONTACT_ALLOWLIST)
     with open(os.path.join(HERE, "pii_flagged.json"), encoding="utf-8") as f:
         flagged = json.load(f)
     drop = {register_id(f["register_id"]): f for f in flagged}
@@ -186,6 +222,11 @@ def main():
         title["epub_included"] = False
         titles.append(title)
 
+    # This gate runs before the existing distribution is removed. A newly
+    # introduced email, phone number or TFN therefore cannot leave a partial
+    # replacement behind or rely on a previously committed scan result.
+    reject_unapproved_contacts(titles, approved_contacts)
+
     if os.path.exists(DIST):
         shutil.rmtree(DIST)
     os.makedirs(child(DIST, "markdown"))
@@ -205,12 +246,21 @@ def main():
             raise RuntimeError("listed title %s has no sections.jsonl" % rid)
         reject_symlinks(d)
         shutil.copytree(d, child(DIST, "markdown", rid))
-        with open(sections, encoding="utf-8") as f:
+        copied_sections = child(DIST, "markdown", rid, "sections.jsonl")
+        with open(copied_sections, encoding="utf-8") as f:
             for l in f:
                 if not l.strip():
                     continue
                 row = json.loads(l)
                 text = row.get("text") or ""
+                unexpected = unapproved_contact_fingerprints(
+                    text, rid, approved_contacts)
+                if unexpected:
+                    kind, digest, _ = sorted(unexpected)[0]
+                    raise RuntimeError(
+                        "copied title contains an unapproved contact identifier: "
+                        "%s:%s:%s" % (rid, kind, digest[:16])
+                    )
                 coll = row.get("collection") or title.get("collection") or "unknown"
                 kept_rows += 1
                 kept_words += len(text.split())
