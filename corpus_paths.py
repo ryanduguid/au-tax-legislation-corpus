@@ -13,12 +13,24 @@ from __future__ import annotations
 
 import os
 import re
+import stat
 from pathlib import Path
 from typing import Union
 
 
 _REGISTER_ID = re.compile(r"[A-Z]\d{4}[A-Z]\d{5}\Z")
 PathPart = Union[str, os.PathLike[str]]
+
+
+def is_reparse_point(path: PathPart) -> bool:
+    """Return whether *path* is any Windows reparse point.
+
+    ``islink`` and ``isjunction`` cover the common cases.  The attribute check
+    also catches other reparse-point types before a recursive copy or removal
+    treats them as ordinary contained files or directories.
+    """
+    attributes = getattr(os.lstat(os.fspath(path)), "st_file_attributes", 0)
+    return bool(attributes & getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0x400))
 
 
 def corpus_root(script_file: PathPart) -> str:
@@ -49,13 +61,16 @@ def child(root: PathPart, *parts: PathPart) -> str:
 
 
 def reject_symlinks(directory: PathPart) -> None:
-    """Reject a tree containing links or junctions before a recursive copy."""
+    """Reject a tree containing links or reparse points before recursive use."""
     is_junction = getattr(os.path, "isjunction", lambda _path: False)
     root = os.fspath(directory)
-    if os.path.islink(root) or is_junction(root):
-        raise ValueError("corpus tree contains a symbolic link or junction")
+    if os.path.islink(root) or is_junction(root) or is_reparse_point(root):
+        raise ValueError(
+            "corpus tree contains a symbolic link, junction or reparse point")
     for current, directories, files in os.walk(root, followlinks=False):
         for name in [*directories, *files]:
             candidate = os.path.join(current, name)
-            if os.path.islink(candidate) or is_junction(candidate):
-                raise ValueError("corpus tree contains a symbolic link or junction")
+            if (os.path.islink(candidate) or is_junction(candidate)
+                    or is_reparse_point(candidate)):
+                raise ValueError(
+                    "corpus tree contains a symbolic link, junction or reparse point")
