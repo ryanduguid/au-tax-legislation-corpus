@@ -20,6 +20,8 @@ sha256sum --check SHA256SUMS
 gh attestation verify au-tax-legislation-corpus-builder-0.1.1.zip -R ryanduguid/au-tax-legislation-corpus
 gh attestation verify au-tax-legislation-corpus-builder-0.1.1.zip -R ryanduguid/au-tax-legislation-corpus --predicate-type https://spdx.dev/Document/v2.3
 gh release view v0.1.1 -R ryanduguid/au-tax-legislation-corpus --json isImmutable
+gh release verify v0.1.1 -R ryanduguid/au-tax-legislation-corpus
+gh release verify-asset v0.1.1 au-tax-legislation-corpus-builder-0.1.1.zip -R ryanduguid/au-tax-legislation-corpus
 ```
 
 If any gate fails, inspect it before touching the tag or draft. Never move a published tag.
