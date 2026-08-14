@@ -1,0 +1,41 @@
+{
+  "schema_version": 1,
+  "entries": [
+    {
+      "kind": "email",
+      "sha256": "a45e2bf73e5f428c82e2dcefb8a6a9d60a6e4437eba4e1be763afe683cab3279",
+      "register_id": "F2015L01601",
+      "reason": "Official AASB organisational contact published in the instrument"
+    },
+    {
+      "kind": "phone",
+      "sha256": "4f85e9b13eac876f00b410946ead0e5a9ce58633084927e918dd09d57eeef01a",
+      "register_id": "F2015L01601",
+      "reason": "Official AASB organisational contact published in the instrument"
+    },
+    {
+      "kind": "email",
+      "sha256": "52e57473fe99611deeb565e0b92c71e8bfd25050d1e72c9bc6dc2fcba4039a27",
+      "register_id": "F2023N00184",
+      "reason": "Official DCCEEW organisational contact published in the instrument"
+    },
+    {
+      "kind": "phone",
+      "sha256": "17f9143717e995b221b4c18ecf91cc666947fa68b87c0c9a55370c32ceae6872",
+      "register_id": "F2023N00184",
+      "reason": "Official DCCEEW organisational contact published in the instrument"
+    },
+    {
+      "kind": "email",
+      "sha256": "a45e2bf73e5f428c82e2dcefb8a6a9d60a6e4437eba4e1be763afe683cab3279",
+      "register_id": "F2024L00075",
+      "reason": "Official AASB organisational contact published in the instrument"
+    },
+    {
+      "kind": "phone",
+      "sha256": "4f85e9b13eac876f00b410946ead0e5a9ce58633084927e918dd09d57eeef01a",
+      "register_id": "F2024L00075",
+      "reason": "Official AASB organisational contact published in the instrument"
+    }
+  ]
+}
