@@ -21,10 +21,11 @@ omission is visible and reversible from the primary source.
 """
 import collections, json, os, re, shutil, uuid
 
-from corpus_paths import child, corpus_root, register_id, reject_symlinks
+from corpus_paths import (child, corpus_root, is_reparse_point, register_id,
+                          reject_symlinks)
 from dist_verify import verify_distribution
 from pii_patterns import (load_contact_allowlist,
-                          unapproved_contact_fingerprints_in_file)
+                          privacy_findings_in_file)
 
 ROOT = corpus_root(__file__)
 DIST = child(ROOT, "dist")
@@ -42,8 +43,10 @@ def _validated_distribution_target(path):
         raise ValueError("distribution target parent does not exist")
     is_junction = getattr(os.path, "isjunction", lambda _path: False)
     if os.path.lexists(target):
-        if os.path.islink(target) or is_junction(target):
-            raise ValueError("distribution target must not be a link or junction")
+        if (os.path.islink(target) or is_junction(target)
+                or is_reparse_point(target)):
+            raise ValueError(
+                "distribution target must not be a link or reparse point")
         if not os.path.isdir(target):
             raise ValueError("distribution target must be a directory")
     return target
@@ -94,6 +97,7 @@ def _remove_managed_tree(target, candidate, kind):
         return
     is_junction = getattr(os.path, "isjunction", lambda _path: False)
     if (os.path.islink(candidate) or is_junction(candidate)
+            or is_reparse_point(candidate)
             or not os.path.isdir(candidate)):
         raise ValueError("refusing to remove a non-directory managed path")
     reject_symlinks(candidate)
@@ -111,7 +115,7 @@ def _promote_distribution(staging, target):
     staging = _validated_managed_sibling(target, staging, "stage")
     is_junction = getattr(os.path, "isjunction", lambda _path: False)
     if (not os.path.isdir(staging) or os.path.islink(staging)
-            or is_junction(staging)):
+            or is_junction(staging) or is_reparse_point(staging)):
         raise ValueError("distribution stage must be a real directory")
 
     backup = None
@@ -132,7 +136,7 @@ def _promote_distribution(staging, target):
                 )
             backup = _validated_managed_sibling(target, backup, "backup")
             if (not os.path.isdir(backup) or os.path.islink(backup)
-                    or is_junction(backup)):
+                    or is_junction(backup) or is_reparse_point(backup)):
                 raise RuntimeError("distribution backup is unsafe to restore")
             os.rename(backup, target)
             backup = None
@@ -142,41 +146,72 @@ def _promote_distribution(staging, target):
         _remove_managed_tree(target, backup, "backup")
 
 
-def _title_files(directory):
-    """Yield every contained regular file in a link-free title tree."""
+def _title_tree(directory):
+    """Return contained regular files and nested directories in a safe tree."""
     reject_symlinks(directory)
+    contained_files, nested_directories = [], []
     for current, directories, files in os.walk(directory, followlinks=False):
         directories.sort()
+        for name in directories:
+            candidate = os.path.join(current, name)
+            relative = os.path.relpath(candidate, directory)
+            nested_directories.append(relative)
         for name in sorted(files):
             candidate = os.path.join(current, name)
             relative = os.path.relpath(candidate, directory)
             contained = child(directory, relative)
             if not os.path.isfile(contained):
                 raise RuntimeError("title tree contains a non-regular file")
-            yield contained
+            contained_files.append(contained)
+    return contained_files, nested_directories
 
 
-def _unapproved_title_contacts(directory, rid, approved):
-    """Return safe fingerprints found anywhere in a published title tree."""
-    matches = set()
+def _expected_title_files(rid, title):
+    """Return declared outputs and whether their manifest paths are exact."""
+    expected = {"sections.jsonl", rid + ".md"}
+    metadata_ok = (
+        title.get("markdown") == "markdown/%s/%s.md" % (rid, rid)
+        and title.get("sections_jsonl") == "markdown/%s/sections.jsonl" % rid
+    )
+    if title.get("endnotes"):
+        expected.add("endnotes.md")
+        metadata_ok = (metadata_ok and title.get("endnotes") ==
+                       "markdown/%s/endnotes.md" % rid)
+    else:
+        metadata_ok = metadata_ok and title.get("endnotes") in {None, False}
+    return expected, metadata_ok
+
+
+def _title_privacy_findings(directory, rid, title, approved):
+    """Return safe privacy findings from the exact declared title outputs."""
+    private_files, matches = 0, set()
     try:
-        for path in _title_files(directory):
-            matches.update(unapproved_contact_fingerprints_in_file(
-                path, rid, approved))
-    except UnicodeError as error:
+        files, nested_directories = _title_tree(directory)
+        relative_files = {os.path.relpath(path, directory) for path in files}
+        expected_files, metadata_ok = _expected_title_files(rid, title)
+        if (nested_directories or relative_files != expected_files
+                or not metadata_ok):
+            raise RuntimeError(
+                "listed title %s has an unexpected file inventory" % rid)
+        for path in files:
+            has_private_pair, unexpected = privacy_findings_in_file(
+                path, rid, approved)
+            private_files += int(has_private_pair)
+            matches.update(unexpected)
+    except (OSError, UnicodeError) as error:
         raise RuntimeError(
-            "listed title %s contains a non-UTF-8 redistributed file" % rid
+            "listed title %s contains an unreadable or non-text file" % rid
         ) from error
-    return matches
+    return private_files, matches
 
 
 def reject_unapproved_contacts(titles, approved):
-    """Fail before replacing ``dist/`` if a source contact is not approved.
+    """Fail before replacing ``dist/`` on any unapproved privacy finding.
 
     Diagnostics include only the public Register id and a truncated digest.
     The matched identifier never reaches logs or the checked-in policy file.
     """
-    total, examples = 0, []
+    total, examples, private_titles = 0, [], []
     for title in titles:
         rid = register_id(title["register_id"])
         directory = child(ROOT, "markdown", rid)
@@ -185,11 +220,18 @@ def reject_unapproved_contacts(titles, approved):
         sections = child(directory, "sections.jsonl")
         if not os.path.isfile(sections):
             raise RuntimeError("listed title %s has no sections.jsonl" % rid)
-        for kind, digest, _ in sorted(
-                _unapproved_title_contacts(directory, rid, approved)):
+        private_files, unexpected = _title_privacy_findings(
+            directory, rid, title, approved)
+        if private_files:
+            private_titles.append(rid)
+        for kind, digest, _ in sorted(unexpected):
             total += 1
             if len(examples) < 8:
                 examples.append("%s:%s:%s" % (rid, kind, digest[:16]))
+    if private_titles:
+        raise RuntimeError(
+            "private-person registration pairs in redistributed title files: "
+            "%d (%s)" % (len(private_titles), ", ".join(private_titles[:8])))
     if total:
         raise RuntimeError(
             "unapproved contact identifiers: %d (%s)" %
@@ -378,9 +420,16 @@ def _build_distribution(staging):
             raise RuntimeError("listed title %s has no sections.jsonl" % rid)
         reject_symlinks(d)
         copied = child(staging, "markdown", rid)
-        shutil.copytree(d, copied)
-        unexpected = _unapproved_title_contacts(
-            copied, rid, approved_contacts)
+        # Preserve a link introduced after the source preflight as a link so
+        # the copied-tree gate rejects it; following it here could materialise
+        # bytes from outside the declared title directory.
+        shutil.copytree(d, copied, symlinks=True)
+        private_files, unexpected = _title_privacy_findings(
+            copied, rid, title, approved_contacts)
+        if private_files:
+            raise RuntimeError(
+                "copied title contains private-person registration details: %s"
+                % rid)
         if unexpected:
             kind, digest, _ = sorted(unexpected)[0]
             raise RuntimeError(

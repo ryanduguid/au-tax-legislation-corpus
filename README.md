@@ -195,10 +195,11 @@ a review reason.
 
 The scan, `dist.py` preflight and `dist_verify.py` all fail on a new or moved
 contact identifier, and their diagnostics contain only Register ids and
-truncated fingerprints. The publication gates inspect every UTF-8 file copied
-under a title, covering the human-readable Markdown and endnotes as well as
-`sections.jsonl`; an unreadable file fails validation instead of being treated
-as contact-free.
+truncated fingerprints. The publication gates require each title's exact
+declared Markdown/JSONL file inventory and inspect every file in it, covering
+the human-readable Markdown and endnotes as well as `sections.jsonl`. A private
+name beside a registration number in any representation fails, as does an
+unreadable file, binary control data, a nested path or an unexpected file.
 
 For that validated source snapshot, `dist.py` writes `dist/`: 934 titles, 21,728
 rows, 6,068,848 words and 109,492,029 bytes, with a `REMOVED.md` listing every
