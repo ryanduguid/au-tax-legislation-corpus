@@ -16,28 +16,32 @@ DIST = child(corpus_root(__file__), "dist")
 HERE = os.path.dirname(os.path.abspath(__file__))
 CONTACT_ALLOWLIST = os.path.join(HERE, "pii_contact_allowlist.json")
 
-fails = []
+def verify_distribution(distribution=None, contact_allowlist=None):
+    """Validate one distribution tree and return the failed check labels.
 
+    The command-line wrapper converts this result to an exit status. Keeping
+    the validation itself free of ``sys.exit`` lets ``dist.py`` validate a
+    staging tree before it becomes the published ``dist/`` directory.
+    """
+    dist_root = os.fspath(distribution) if distribution is not None else DIST
+    policy = (os.fspath(contact_allowlist) if contact_allowlist is not None
+              else CONTACT_ALLOWLIST)
+    fails = []
 
-def check(label, ok, detail=""):
-    print("  %-52s %s%s" % (label, "PASS" if ok else "FAIL",
-                            ("  " + detail) if detail else ""))
-    if not ok:
-        fails.append(label)
+    def check(label, ok, detail=""):
+        print("  %-52s %s%s" % (label, "PASS" if ok else "FAIL",
+                                ("  " + detail) if detail else ""))
+        if not ok:
+            fails.append(label)
 
+    approved_contacts = load_contact_allowlist(policy)
 
-def main():
-    # Keep this verifier reusable from a regression test process as well as the
-    # command line; a previous failing call must not poison a later call.
-    fails.clear()
-    approved_contacts = load_contact_allowlist(CONTACT_ALLOWLIST)
-
-    with open(child(DIST, "sources.json"), encoding="utf-8") as f:
+    with open(child(dist_root, "sources.json"), encoding="utf-8") as f:
         src = json.load(f)
     titles = src["titles"]
     by_id = {register_id(t["register_id"]): t for t in titles}
     listed = set(by_id)
-    markdown_root = child(DIST, "markdown")
+    markdown_root = child(dist_root, "markdown")
     # register_id() refuses a name that is not a Federal Register identifier,
     # which is what keeps a crafted directory name out of every path built
     # below. Calling it straight inside a set comprehension also turned an
@@ -153,27 +157,27 @@ def main():
           all(t.get("epub") is None and t.get("epub_included") is False for t in titles))
 
     exts = collections.Counter(os.path.splitext(f)[1].lower()
-                               for r, _, fs in os.walk(DIST) for f in fs)
+                               for r, _, fs in os.walk(dist_root) for f in fs)
     check("no image files", not any(e in exts for e in
                                     (".png", ".jpg", ".jpeg", ".gif", ".svg", ".epub")),
           str(dict(exts)))
 
-    with open(child(DIST, "INDEX.md"), encoding="utf-8") as f:
+    with open(child(dist_root, "INDEX.md"), encoding="utf-8") as f:
         idx = f.read()
     check("INDEX links no removed title", not any(r in idx for r in removed))
     check("INDEX headline matches actual rows", f"{rows:,}" in idx)
-    with open(child(DIST, "README.md"), encoding="utf-8") as f:
+    with open(child(dist_root, "README.md"), encoding="utf-8") as f:
         rd = f.read()
     check("README states the real title count", "%d in-force principal" % len(titles) in rd)
     check("README does not promise EPUB files", "epub/<register_id>.epub" not in rd)
     check("README does not claim rows naming people",
           "titles name people" not in rd and "disciplined agents" not in rd)
-    with open(child(DIST, "REMOVED.md"), encoding="utf-8") as f:
+    with open(child(dist_root, "REMOVED.md"), encoding="utf-8") as f:
         removed_md = f.read()
     check("REMOVED.md lists every exclusion", all(r in removed_md for r in removed))
 
     rt, rates_bad = [], 0
-    with open(child(DIST, "rates", "rates.jsonl"), encoding="utf-8") as f:
+    with open(child(dist_root, "rates", "rates.jsonl"), encoding="utf-8") as f:
         for l in f:
             if not l.strip():
                 continue
@@ -186,7 +190,7 @@ def main():
            not [r for r in rt if r["register_id"] in removed])
     check("every rates entry cites a present title",
            not [r for r in rt if r["register_id"] not in present])
-    with open(child(DIST, "rates", "RATES.md"), encoding="utf-8") as f:
+    with open(child(dist_root, "rates", "RATES.md"), encoding="utf-8") as f:
         rates_md = f.read()
     rate_headline = "%s entries across %s titles." % (
         f"{len(rt):,}", f"{len({r.get('register_id') for r in rt if r.get('register_id')}):,}")
@@ -196,11 +200,15 @@ def main():
                   for e in src.get("excluded_titles", [])))
 
     size = sum(os.path.getsize(os.path.join(r, f))
-               for r, _, fs in os.walk(DIST) for f in fs)
+               for r, _, fs in os.walk(dist_root) for f in fs)
     print("\n%s titles | %s rows | %.1f MB | %d removed"
           % (f"{len(titles):,}", f"{rows:,}", size / 1e6, len(removed)))
     print("RESULT:", "all checks passed" if not fails else "FAILED: %s" % fails)
-    sys.exit(1 if fails else 0)
+    return fails
+
+
+def main():
+    sys.exit(1 if verify_distribution() else 0)
 
 
 if __name__ == "__main__":

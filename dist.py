@@ -19,15 +19,126 @@ would preserve nothing and risk missing a name.
 Everything dropped is listed in REMOVED.md with its Register link, so the
 omission is visible and reversible from the primary source.
 """
-import collections, json, os, re, shutil
+import collections, json, os, re, shutil, uuid
 
 from corpus_paths import child, corpus_root, register_id, reject_symlinks
+from dist_verify import verify_distribution
 from pii_patterns import load_contact_allowlist, unapproved_contact_fingerprints
 
 ROOT = corpus_root(__file__)
 DIST = child(ROOT, "dist")
 HERE = os.path.dirname(os.path.abspath(__file__))
 CONTACT_ALLOWLIST = os.path.join(HERE, "pii_contact_allowlist.json")
+
+
+def _validated_distribution_target(path):
+    """Return an absolute, non-link directory target with a real parent."""
+    target = os.path.abspath(os.fspath(path))
+    parent, name = os.path.split(target)
+    if not name or target == parent:
+        raise ValueError("distribution target must be a named child directory")
+    if not os.path.isdir(parent):
+        raise ValueError("distribution target parent does not exist")
+    is_junction = getattr(os.path, "isjunction", lambda _path: False)
+    if os.path.lexists(target):
+        if os.path.islink(target) or is_junction(target):
+            raise ValueError("distribution target must not be a link or junction")
+        if not os.path.isdir(target):
+            raise ValueError("distribution target must be a directory")
+    return target
+
+
+def _validated_managed_sibling(target, candidate, kind):
+    """Validate one private stage/backup path beside ``target``.
+
+    These are the only computed paths the publisher may remove. Rechecking the
+    parent and a narrow generated-name prefix immediately before each use keeps
+    cleanup from expanding beyond the intended distribution directory.
+    """
+    target = _validated_distribution_target(target)
+    if kind not in {"stage", "backup"}:
+        raise ValueError("unknown managed distribution path kind")
+    candidate = os.path.abspath(os.fspath(candidate))
+    parent, target_name = os.path.split(target)
+    candidate_parent, candidate_name = os.path.split(candidate)
+    expected_prefix = ".%s.%s-" % (target_name, kind)
+    suffix = (candidate_name[len(expected_prefix):]
+              if candidate_name.startswith(expected_prefix) else "")
+    if (os.path.normcase(candidate_parent) != os.path.normcase(parent)
+            or not re.fullmatch(r"[0-9a-f]{32}", suffix)):
+        raise ValueError("managed distribution path is not a validated sibling")
+    if (os.path.normcase(os.path.realpath(candidate_parent)) !=
+            os.path.normcase(os.path.realpath(parent))):
+        raise ValueError("managed distribution path resolves outside its parent")
+    return candidate
+
+
+def _new_managed_sibling(target, kind):
+    """Return a unique, absent stage or backup path beside ``target``."""
+    target = _validated_distribution_target(target)
+    parent, target_name = os.path.split(target)
+    for _attempt in range(100):
+        candidate = os.path.join(
+            parent, ".%s.%s-%s" % (target_name, kind, uuid.uuid4().hex))
+        candidate = _validated_managed_sibling(target, candidate, kind)
+        if not os.path.lexists(candidate):
+            return candidate
+    raise RuntimeError("could not allocate a unique distribution %s path" % kind)
+
+
+def _remove_managed_tree(target, candidate, kind):
+    """Remove only a validated stage/backup directory, never a link or file."""
+    candidate = _validated_managed_sibling(target, candidate, kind)
+    if not os.path.lexists(candidate):
+        return
+    is_junction = getattr(os.path, "isjunction", lambda _path: False)
+    if (os.path.islink(candidate) or is_junction(candidate)
+            or not os.path.isdir(candidate)):
+        raise ValueError("refusing to remove a non-directory managed path")
+    reject_symlinks(candidate)
+    shutil.rmtree(candidate)
+
+
+def _promote_distribution(staging, target):
+    """Promote a validated stage without replacing a non-empty directory.
+
+    Windows cannot atomically replace an existing non-empty directory. Move
+    the old tree aside first, move the complete stage into place, and restore
+    the old tree if that second rename fails.
+    """
+    target = _validated_distribution_target(target)
+    staging = _validated_managed_sibling(target, staging, "stage")
+    is_junction = getattr(os.path, "isjunction", lambda _path: False)
+    if (not os.path.isdir(staging) or os.path.islink(staging)
+            or is_junction(staging)):
+        raise ValueError("distribution stage must be a real directory")
+
+    backup = None
+    if os.path.lexists(target):
+        backup = _new_managed_sibling(target, "backup")
+        os.rename(target, backup)
+
+    try:
+        # The destination is absent here, so this never relies on platform-
+        # specific replacement behaviour for non-empty directories.
+        os.rename(staging, target)
+    except BaseException:
+        if backup is not None:
+            if os.path.lexists(target):
+                raise RuntimeError(
+                    "distribution promotion failed after creating its target; "
+                    "automatic rollback is unsafe"
+                )
+            backup = _validated_managed_sibling(target, backup, "backup")
+            if (not os.path.isdir(backup) or os.path.islink(backup)
+                    or is_junction(backup)):
+                raise RuntimeError("distribution backup is unsafe to restore")
+            os.rename(backup, target)
+            backup = None
+        raise
+
+    if backup is not None:
+        _remove_managed_tree(target, backup, "backup")
 
 
 def reject_unapproved_contacts(titles, approved):
@@ -200,7 +311,7 @@ def replace_readme_collection_counts(text, acts, instruments):
             cursor = marker_at + 1
 
 
-def main():
+def _build_distribution(staging):
     approved_contacts = load_contact_allowlist(CONTACT_ALLOWLIST)
     with open(os.path.join(HERE, "pii_flagged.json"), encoding="utf-8") as f:
         flagged = json.load(f)
@@ -222,15 +333,13 @@ def main():
         title["epub_included"] = False
         titles.append(title)
 
-    # This gate runs before the existing distribution is removed. A newly
-    # introduced email, phone number or TFN therefore cannot leave a partial
-    # replacement behind or rely on a previously committed scan result.
+    # This gate runs against the source before any output is copied. A newly
+    # introduced email, phone number or TFN therefore cannot rely on a
+    # previously committed scan result.
     reject_unapproved_contacts(titles, approved_contacts)
 
-    if os.path.exists(DIST):
-        shutil.rmtree(DIST)
-    os.makedirs(child(DIST, "markdown"))
-    os.makedirs(child(DIST, "rates"))
+    os.makedirs(child(staging, "markdown"))
+    os.makedirs(child(staging, "rates"))
 
     kept_rows = kept_words = section_rows = 0
     kind_counts = collections.Counter()
@@ -245,8 +354,8 @@ def main():
         if not os.path.isfile(sections):
             raise RuntimeError("listed title %s has no sections.jsonl" % rid)
         reject_symlinks(d)
-        shutil.copytree(d, child(DIST, "markdown", rid))
-        copied_sections = child(DIST, "markdown", rid, "sections.jsonl")
+        shutil.copytree(d, child(staging, "markdown", rid))
+        copied_sections = child(staging, "markdown", rid, "sections.jsonl")
         with open(copied_sections, encoding="utf-8") as f:
             for l in f:
                 if not l.strip():
@@ -285,10 +394,10 @@ def main():
                 rdropped += 1
                 continue
             rate_records.append(record)
-    with open(child(DIST, "rates", "rates.jsonl"), "w", encoding="utf-8") as f:
+    with open(child(staging, "rates", "rates.jsonl"), "w", encoding="utf-8") as f:
         for record in rate_records:
             f.write(json.dumps(record, ensure_ascii=False) + "\n")
-    with open(child(DIST, "rates", "RATES.md"), "w", encoding="utf-8") as f:
+    with open(child(staging, "rates", "RATES.md"), "w", encoding="utf-8") as f:
         f.write(render_rates_markdown(rate_records))
 
     # sources.json, minus the dropped titles, with every nested count rebuilt
@@ -335,11 +444,11 @@ def main():
     out["excluded_titles"] = [
         {"register_id": r, "name": drop[r]["name"],
          "reason": "names private individuals; see REMOVED.md"} for r in sorted(drop)]
-    with open(child(DIST, "sources.json"), "w", encoding="utf-8") as f:
+    with open(child(staging, "sources.json"), "w", encoding="utf-8") as f:
         json.dump(out, f, indent=1, ensure_ascii=False)
 
     shutil.copy(child(ROOT, "LICENCE-NOTICE.md"),
-                child(DIST, "LICENCE-NOTICE.md"))
+                child(staging, "LICENCE-NOTICE.md"))
 
     # INDEX.md and README.md are generated against the full corpus, so copying
     # them ships a contents page linking to removed titles and a headline count
@@ -378,7 +487,7 @@ def main():
                      txt, count=1, flags=re.M)
         txt = re.sub(r"^## %s \(\d+\)$" % re.escape(lab),
                      "## %s (%d)" % (lab, stats[key]), txt, count=1, flags=re.M)
-    with open(child(DIST, "INDEX.md"), "w", encoding="utf-8") as f:
+    with open(child(staging, "INDEX.md"), "w", encoding="utf-8") as f:
         f.write(txt)
 
     with open(child(ROOT, "README.md"), encoding="utf-8") as f:
@@ -420,7 +529,7 @@ def main():
           "name private individuals are not included. See REMOVED.md for what was "
           "dropped and why, and run the pipeline yourself for the full corpus.\n\n"
           % len(drop) + rd)
-    with open(child(DIST, "README.md"), "w", encoding="utf-8") as f:
+    with open(child(staging, "README.md"), "w", encoding="utf-8") as f:
         f.write(rd)
     print("INDEX.md: dropped %d lines referencing removed titles" % dropped_lines)
 
@@ -473,14 +582,33 @@ def main():
         "the agencies' own sites), "
         "which are left in place." % (f"{len(src['titles']):,}", len(drop)),
     ]
-    with open(child(DIST, "REMOVED.md"), "w", encoding="utf-8") as f:
+    with open(child(staging, "REMOVED.md"), "w", encoding="utf-8") as f:
         f.write("\n".join(lines) + "\n")
 
     size = sum(os.path.getsize(os.path.join(r, f))
-               for r, _, fs in os.walk(DIST) for f in fs)
+               for r, _, fs in os.walk(staging) for f in fs)
     print("titles %d (dropped %d) | rows %s | words %s | rates %d (dropped %d) | %.1f MB"
           % (len(titles), len(drop), f"{kept_rows:,}", f"{kept_words:,}",
              len(rate_records), rdropped, size / 1e6))
+
+
+def main():
+    """Build, validate and publish ``dist/`` without exposing partial output."""
+    target = _validated_distribution_target(DIST)
+    staging = _new_managed_sibling(target, "stage")
+    os.mkdir(staging)
+    try:
+        _build_distribution(staging)
+        failures = verify_distribution(staging, CONTACT_ALLOWLIST)
+        if failures:
+            raise RuntimeError(
+                "staged distribution failed validation: %s" % ", ".join(failures))
+        _promote_distribution(staging, target)
+    finally:
+        # A successful promotion consumes the staging path. Every pre-publish
+        # failure leaves it beside dist, where this exact-prefix guard permits
+        # cleanup without broadening the deletion target.
+        _remove_managed_tree(target, staging, "stage")
 
 
 if __name__ == "__main__":
