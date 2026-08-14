@@ -6,6 +6,7 @@ not call the Register API or require a built corpus.
 import ast
 import contextlib
 import datetime
+import hashlib
 import importlib.util
 import io
 import json
@@ -1627,6 +1628,37 @@ class PiiNameGateTests(unittest.TestCase):
                 (build / "pii_flagged.json").read_text(encoding="utf-8"))
             self.assertEqual([f["register_id"] for f in flagged], ["F2026N00001"])
             self.assertGreaterEqual(flagged[0]["names_est"], 3)
+
+    def test_second_scan_does_not_copy_contact_identifiers_into_logs(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            base = Path(tmp)
+            build = base / "build"
+            build.mkdir()
+            for name in ("pii_scan2.py", "pii_patterns.py", "corpus_paths.py"):
+                shutil.copy2(REPO / name, build / name)
+            (build / "pii_flagged.json").write_text("[]\n", encoding="utf-8")
+
+            contact = "privacy-review@example.test"
+            rid = "C2004A00001"
+            folder = base / "markdown" / rid
+            folder.mkdir(parents=True)
+            (folder / "sections.jsonl").write_text(
+                json.dumps({"row_id": f"{rid}:0001:-", "text": contact}) + "\n",
+                encoding="utf-8",
+            )
+
+            scan = load_module("pii_scan2_redaction", build / "pii_scan2.py")
+            output = io.StringIO()
+            with contextlib.redirect_stdout(output):
+                scan.main()
+
+            logged = output.getvalue()
+            self.assertNotIn(contact, logged)
+            self.assertIn(
+                hashlib.sha256(contact.encode("utf-8")).hexdigest()[:16],
+                logged,
+            )
+            self.assertIn(f"{rid}:0001:-", logged)
 
 
 class DistributionTests(unittest.TestCase):
