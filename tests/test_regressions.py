@@ -1411,7 +1411,7 @@ class StalenessBucketTests(unittest.TestCase):
     def _run(self, base, response):
         module = load_module("check_current_buckets", base / "check_current.py")
         module.time.sleep = lambda _seconds: None
-        module.curl_json = lambda _url: response
+        module.curl_json = response if callable(response) else lambda _url: response
         buffer = io.StringIO()
         with mock.patch.object(module.sys, "argv", ["check_current.py"]):
             with contextlib.redirect_stdout(buffer):
@@ -1486,6 +1486,33 @@ class StalenessBucketTests(unittest.TestCase):
                 "compilationNumber": "5", "registerId": "F2026C00099"}]})
             self.assertIn("no longer in force: 0", out)
             self.assertIn("lookup failed: 1", out)
+
+    def test_a_title_with_history_but_no_current_version_is_no_longer_in_force(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            base = Path(tmp)
+            self._corpus(base)
+            responses = iter([
+                {"value": []},
+                {"value": [{"titleId": "F2020L01498"}]},
+            ])
+            out = self._run(base, lambda _url: next(responses))
+            self.assertIn("no longer in force: 1", out)
+            self.assertIn("NO LONGER IN FORCE", out)
+            self.assertIn("lookup failed: 0", out)
+
+    def test_an_unchanged_current_version_stays_out_of_action_buckets(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            base = Path(tmp)
+            self._corpus(base)
+            out = self._run(base, {"value": [{
+                "titleId": "F2020L01498", "start": "2025-06-30T00:00:00Z",
+                "compilationNumber": "4", "registerId": "F2025C00042",
+            }]})
+            self.assertIn("unchanged: 1", out)
+            self.assertIn("superseded: 0", out)
+            self.assertIn("no compilation published: 0", out)
+            self.assertIn("no longer in force: 0", out)
+            self.assertIn("lookup failed: 0", out)
 
 
 class GeneratedReadmeTests(unittest.TestCase):
@@ -1870,6 +1897,16 @@ class DistributionTests(unittest.TestCase):
             self.assertIn("markdown/<register_id>/<register_id>.md", dist_readme)
             self.assertIn("REMOVED.md", dist_readme)
 
+            policy = json.loads(
+                (REPO / "pii_contact_allowlist.json").read_text(encoding="utf-8"))
+            unique_contacts = len({
+                (entry["kind"], entry["sha256"]) for entry in policy["entries"]
+            })
+            removed_md = (output / "REMOVED.md").read_text(encoding="utf-8")
+            self.assertIn(
+                "%d unique organisational identifiers" % unique_contacts,
+                removed_md)
+
             verify.DIST = str(output)
             with contextlib.redirect_stdout(io.StringIO()):
                 with self.assertRaises(SystemExit) as result:
@@ -1930,6 +1967,10 @@ class DistributionTests(unittest.TestCase):
             self.assertEqual(self._status(out, "no row names private individuals"), "PASS")
             self.assertEqual(self._status(
                 out, "no unapproved contact identifiers"), "PASS")
+            self.assertEqual(self._status(
+                out, "title files stay inside real link-free directories"), "PASS")
+            self.assertEqual(self._status(
+                out, "all distributed title files are UTF-8 text"), "PASS")
 
             # A distributed title that names disciplined agents with their
             # registration numbers: the one thing dist.py exists to remove.
@@ -1958,6 +1999,18 @@ class DistributionTests(unittest.TestCase):
             self.assertNotIn(contact, out)
             rows.write_text(clean_rows, encoding="utf-8")
 
+            # The human-readable title and endnotes are redistributed too.
+            # Their privacy result must not be inferred from sections.jsonl.
+            markdown = output / "markdown" / self.PUBLIC_ID / (self.PUBLIC_ID + ".md")
+            clean_markdown = markdown.read_text(encoding="utf-8")
+            markdown.write_text(clean_markdown + "\n" + contact + "\n", encoding="utf-8")
+            code, out = self._verify(verify)
+            self.assertEqual(code, 1)
+            self.assertEqual(self._status(
+                out, "no unapproved contact identifiers"), "FAIL")
+            self.assertNotIn(contact, out)
+            markdown.write_text(clean_markdown, encoding="utf-8")
+
             # One person and one registration number is enough to make a
             # machine-readable row searchable at scale. The diagnostic second
             # pass has always reported this lower threshold; distribution must
@@ -1985,6 +2038,8 @@ class DistributionTests(unittest.TestCase):
             code, out = self._verify(verify)
             self.assertEqual(code, 1)
             self.assertEqual(self._status(out, "no image files"), "FAIL")
+            self.assertEqual(self._status(
+                out, "all distributed title files are UTF-8 text"), "FAIL")
             planted.unlink()
 
             # A README that still offers files this distribution does not ship.
@@ -2050,10 +2105,10 @@ class DistributionTests(unittest.TestCase):
             self.assertEqual(code, 1)
             self.assertEqual(
                 self._status(out, "no directory beyond what is listed"), "FAIL")
-            self.assertIn(".DS_Store", out)
-            self.assertIn("F2026N00001", out)
-            self.assertIn("notes.md", out)
-            self.assertIn("draft-backup", out)
+            self.assertIn(".DS_Store [file]", out)
+            self.assertIn("F2026N00001 [file]", out)
+            self.assertIn("notes.md [file]", out)
+            self.assertIn("draft-backup [directory]", out)
             # The rest of the run still happens: a stray entry must not cost
             # the operator every other answer the verifier had.
             self.assertEqual(
@@ -2065,6 +2120,87 @@ class DistributionTests(unittest.TestCase):
             shutil.rmtree(stray_dir)
             code, _out = self._verify(verify)
             self.assertEqual(code, 0)
+
+    def test_top_level_title_symlink_is_a_named_failure(self):
+        dist = load_module("dist_verify_symlink_fixture", REPO / "dist.py")
+        verify = load_module("dist_verify_top_symlink", REPO / "dist_verify.py")
+        with tempfile.TemporaryDirectory() as tmp:
+            root, build = self._write_fixture(Path(tmp))
+            dist.ROOT = str(root)
+            dist.HERE = str(build)
+            dist.DIST = str(root / "dist")
+            with contextlib.redirect_stdout(io.StringIO()):
+                dist.main()
+            output = Path(dist.DIST)
+            verify.DIST = str(output)
+
+            outside = Path(tmp) / "outside-title"
+            outside.mkdir()
+            link = output / "markdown" / "F2026N00001"
+            try:
+                link.symlink_to(outside, target_is_directory=True)
+            except OSError:
+                self.skipTest("symbolic links are unavailable on this platform")
+            code, out = self._verify(verify)
+            self.assertEqual(code, 1)
+            self.assertEqual(
+                self._status(out, "no directory beyond what is listed"), "FAIL")
+            self.assertIn("F2026N00001 [symlink]", out)
+
+    def test_top_level_title_junction_is_a_named_failure(self):
+        dist = load_module("dist_verify_junction_fixture", REPO / "dist.py")
+        verify = load_module("dist_verify_top_junction", REPO / "dist_verify.py")
+        with tempfile.TemporaryDirectory() as tmp:
+            root, build = self._write_fixture(Path(tmp))
+            dist.ROOT = str(root)
+            dist.HERE = str(build)
+            dist.DIST = str(root / "dist")
+            with contextlib.redirect_stdout(io.StringIO()):
+                dist.main()
+            output = Path(dist.DIST)
+            verify.DIST = str(output)
+
+            junction = output / "markdown" / "F2026N00002"
+            junction.mkdir()
+            real_isjunction = getattr(os.path, "isjunction", lambda _path: False)
+
+            def classify(candidate):
+                return (os.path.normcase(os.fspath(candidate)) ==
+                        os.path.normcase(os.fspath(junction))) or real_isjunction(candidate)
+
+            with mock.patch.object(
+                    verify.os.path, "isjunction", side_effect=classify, create=True):
+                code, out = self._verify(verify)
+            self.assertEqual(code, 1)
+            self.assertEqual(
+                self._status(out, "no directory beyond what is listed"), "FAIL")
+            self.assertIn("F2026N00002 [junction]", out)
+
+    def test_nested_title_link_is_a_named_containment_failure(self):
+        dist = load_module("dist_verify_nested_link_fixture", REPO / "dist.py")
+        verify = load_module("dist_verify_nested_link", REPO / "dist_verify.py")
+        with tempfile.TemporaryDirectory() as tmp:
+            root, build = self._write_fixture(Path(tmp))
+            dist.ROOT = str(root)
+            dist.HERE = str(build)
+            dist.DIST = str(root / "dist")
+            with contextlib.redirect_stdout(io.StringIO()):
+                dist.main()
+            output = Path(dist.DIST)
+            verify.DIST = str(output)
+            rows = output / "markdown" / self.PUBLIC_ID / "sections.jsonl"
+            real_islink = os.path.islink
+
+            def classify(candidate):
+                return (os.path.normcase(os.fspath(candidate)) ==
+                        os.path.normcase(os.fspath(rows))) or real_islink(candidate)
+
+            with mock.patch.object(verify.os.path, "islink", side_effect=classify):
+                code, out = self._verify(verify)
+            self.assertEqual(code, 1)
+            self.assertEqual(self._status(
+                out, "title files stay inside real link-free directories"), "FAIL")
+            self.assertIn(self.PUBLIC_ID, out)
 
     def test_distribution_rejects_nested_symlinks_before_copying(self):
         dist = load_module("dist_symlink_regression", REPO / "dist.py")
@@ -2112,6 +2248,35 @@ class DistributionTests(unittest.TestCase):
             self.assertTrue(marker.is_file())
             self.assertEqual(marker.read_text(encoding="utf-8"), "keep me")
             self.assertNotIn(contact, str(raised.exception))
+
+    def test_contact_preflight_covers_markdown_and_endnotes(self):
+        contact = "markdown-only-contact@example.test"
+        for relative in (self.PUBLIC_ID + ".md", "endnotes.md"):
+            with self.subTest(relative=relative), tempfile.TemporaryDirectory() as tmp:
+                dist = load_module(
+                    "dist_contact_%s" % relative.replace(".", "_"), REPO / "dist.py")
+                root, build = self._write_fixture(Path(tmp))
+                policy = build / "pii_contact_allowlist.json"
+                policy.write_text(json.dumps({"schema_version": 1, "entries": []}),
+                                  encoding="utf-8")
+                dist.ROOT = str(root)
+                dist.HERE = str(build)
+                dist.DIST = str(root / "dist")
+                dist.CONTACT_ALLOWLIST = str(policy)
+
+                existing = Path(dist.DIST)
+                existing.mkdir()
+                marker = existing / "last-publishable-build.txt"
+                marker.write_text("keep me", encoding="utf-8")
+                title_file = root / "markdown" / self.PUBLIC_ID / relative
+                title_file.write_text(contact + "\n", encoding="utf-8")
+
+                with self.assertRaisesRegex(
+                        RuntimeError, "unapproved contact identifiers") as raised:
+                    dist.main()
+                self.assertEqual(marker.read_text(encoding="utf-8"), "keep me")
+                self.assertEqual(self._managed_publish_paths(existing), [])
+                self.assertNotIn(contact, str(raised.exception))
 
     def test_mid_build_failure_preserves_the_prior_distribution(self):
         dist = load_module("dist_atomic_mid_build", REPO / "dist.py")

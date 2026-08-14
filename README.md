@@ -181,18 +181,30 @@ registration numbers, because a bare name test flags the whole corpus:
 legislation names Ministers, Commissioners and litigants constantly, and the
 registration number is what separates a disciplinary register from a statute.
 `pii_scan2.py` re-runs at a lower threshold and sweeps for emails, phone numbers
-and eight- or nine-digit tax file numbers. The full scan finds ten occurrences
-of four unique organisational contacts across three titles: two government
-email addresses and two government landlines. They are approved by a
-title-bound SHA-256 fingerprint in `pii_contact_allowlist.json`; the policy does
-not store the identifiers themselves. The scan, `dist.py` preflight and
-`dist_verify.py` all fail on a new or moved contact identifier, and their
-diagnostics contain only Register ids and truncated fingerprints.
+and eight- or nine-digit tax file numbers. On the source snapshot retrieved
+2026-08-04, the JSONL scan finds ten occurrences of four unique organisational
+contacts across three titles: two government email addresses and two government
+landlines. They are approved by a title-bound SHA-256 fingerprint in
+`pii_contact_allowlist.json`; the policy does not store the identifiers
+themselves. An allowlist entry is reserved for a manually reviewed
+organisational contact published in that primary instrument; personal contacts
+and TFNs are never allowlisted. Pattern false positives are fixed in
+`pii_patterns.py` with a regression test rather than approved as data. Every
+exception is bound to the identifier kind, digest and Register id and must carry
+a review reason.
 
-`dist.py` then writes `dist/`: 934 titles, 21,596 rows, 5,722,156 words, 106 MB,
-with a `REMOVED.md` listing every exclusion and its Register link so the
-omission is visible and reversible. `dist_verify.py` checks the result against
-its own claims and exits non-zero if any check fails.
+The scan, `dist.py` preflight and `dist_verify.py` all fail on a new or moved
+contact identifier, and their diagnostics contain only Register ids and
+truncated fingerprints. The publication gates inspect every UTF-8 file copied
+under a title, covering the human-readable Markdown and endnotes as well as
+`sections.jsonl`; an unreadable file fails validation instead of being treated
+as contact-free.
+
+For that validated source snapshot, `dist.py` writes `dist/`: 934 titles, 21,728
+rows, 6,068,848 words and 109,492,029 bytes, with a `REMOVED.md` listing every
+exclusion and its Register link so the omission is visible and reversible.
+`dist_verify.py` checks the result against its own claims and exits non-zero if
+any check fails.
 
 ## Licence
 

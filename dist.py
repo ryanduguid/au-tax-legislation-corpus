@@ -23,7 +23,8 @@ import collections, json, os, re, shutil, uuid
 
 from corpus_paths import child, corpus_root, register_id, reject_symlinks
 from dist_verify import verify_distribution
-from pii_patterns import load_contact_allowlist, unapproved_contact_fingerprints
+from pii_patterns import (load_contact_allowlist,
+                          unapproved_contact_fingerprints_in_file)
 
 ROOT = corpus_root(__file__)
 DIST = child(ROOT, "dist")
@@ -141,6 +142,34 @@ def _promote_distribution(staging, target):
         _remove_managed_tree(target, backup, "backup")
 
 
+def _title_files(directory):
+    """Yield every contained regular file in a link-free title tree."""
+    reject_symlinks(directory)
+    for current, directories, files in os.walk(directory, followlinks=False):
+        directories.sort()
+        for name in sorted(files):
+            candidate = os.path.join(current, name)
+            relative = os.path.relpath(candidate, directory)
+            contained = child(directory, relative)
+            if not os.path.isfile(contained):
+                raise RuntimeError("title tree contains a non-regular file")
+            yield contained
+
+
+def _unapproved_title_contacts(directory, rid, approved):
+    """Return safe fingerprints found anywhere in a published title tree."""
+    matches = set()
+    try:
+        for path in _title_files(directory):
+            matches.update(unapproved_contact_fingerprints_in_file(
+                path, rid, approved))
+    except UnicodeError as error:
+        raise RuntimeError(
+            "listed title %s contains a non-UTF-8 redistributed file" % rid
+        ) from error
+    return matches
+
+
 def reject_unapproved_contacts(titles, approved):
     """Fail before replacing ``dist/`` if a source contact is not approved.
 
@@ -156,17 +185,11 @@ def reject_unapproved_contacts(titles, approved):
         sections = child(directory, "sections.jsonl")
         if not os.path.isfile(sections):
             raise RuntimeError("listed title %s has no sections.jsonl" % rid)
-        reject_symlinks(directory)
-        with open(sections, encoding="utf-8") as source:
-            for line in source:
-                if not line.strip():
-                    continue
-                row = json.loads(line)
-                for kind, digest, _ in unapproved_contact_fingerprints(
-                        row.get("text") or "", rid, approved):
-                    total += 1
-                    if len(examples) < 8:
-                        examples.append("%s:%s:%s" % (rid, kind, digest[:16]))
+        for kind, digest, _ in sorted(
+                _unapproved_title_contacts(directory, rid, approved)):
+            total += 1
+            if len(examples) < 8:
+                examples.append("%s:%s:%s" % (rid, kind, digest[:16]))
     if total:
         raise RuntimeError(
             "unapproved contact identifiers: %d (%s)" %
@@ -354,7 +377,16 @@ def _build_distribution(staging):
         if not os.path.isfile(sections):
             raise RuntimeError("listed title %s has no sections.jsonl" % rid)
         reject_symlinks(d)
-        shutil.copytree(d, child(staging, "markdown", rid))
+        copied = child(staging, "markdown", rid)
+        shutil.copytree(d, copied)
+        unexpected = _unapproved_title_contacts(
+            copied, rid, approved_contacts)
+        if unexpected:
+            kind, digest, _ = sorted(unexpected)[0]
+            raise RuntimeError(
+                "copied title contains an unapproved contact identifier: "
+                "%s:%s:%s" % (rid, kind, digest[:16])
+            )
         copied_sections = child(staging, "markdown", rid, "sections.jsonl")
         with open(copied_sections, encoding="utf-8") as f:
             for l in f:
@@ -362,14 +394,6 @@ def _build_distribution(staging):
                     continue
                 row = json.loads(l)
                 text = row.get("text") or ""
-                unexpected = unapproved_contact_fingerprints(
-                    text, rid, approved_contacts)
-                if unexpected:
-                    kind, digest, _ = sorted(unexpected)[0]
-                    raise RuntimeError(
-                        "copied title contains an unapproved contact identifier: "
-                        "%s:%s:%s" % (rid, kind, digest[:16])
-                    )
                 coll = row.get("collection") or title.get("collection") or "unknown"
                 kept_rows += 1
                 kept_words += len(text.split())
@@ -577,10 +601,11 @@ def _build_distribution(staging):
         "%s titles was tested for personal names appearing alongside agent "
         "registration numbers; these %d were what came back, and a second pass at a "
         "lower threshold found nothing outside them. The only contact details "
-        "anywhere in the corpus are five organisational addresses "
-        "(two agency inboxes and three switchboard numbers, all published on "
-        "the agencies' own sites), "
-        "which are left in place." % (f"{len(src['titles']):,}", len(drop)),
+        "the second pass approved are %d unique organisational identifiers. "
+        "Each is bound to a reviewed Register title in the hashed allowlist; "
+        "a new or moved contact fails publication." % (
+            f"{len(src['titles']):,}", len(drop),
+            len({(kind, digest) for kind, digest, _rid in approved_contacts})),
     ]
     with open(child(staging, "REMOVED.md"), "w", encoding="utf-8") as f:
         f.write("\n".join(lines) + "\n")

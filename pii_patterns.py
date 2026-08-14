@@ -129,3 +129,17 @@ def unapproved_contact_fingerprints(text, register_id, approved):
         for kind, digest in contact_fingerprints(text)
         if (kind, digest, register_id) not in approved
     }
+
+
+def unapproved_contact_fingerprints_in_file(path, register_id, approved):
+    """Return safe fingerprints from one redistributed UTF-8 text file.
+
+    A title ships both human-readable Markdown and machine-readable JSONL.
+    Checking only the JSONL leaves the other published representation outside
+    the privacy gate, even though a future extraction change could make those
+    representations differ.  Callers deliberately let decoding and I/O errors
+    fail closed rather than treating an unreadable file as contact-free.
+    """
+    with open(path, encoding="utf-8") as source:
+        return unapproved_contact_fingerprints(
+            source.read(), register_id, approved)

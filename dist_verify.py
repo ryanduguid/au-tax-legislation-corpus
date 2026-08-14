@@ -7,14 +7,45 @@ title that was removed.
 """
 import collections, json, os, sys
 
-from corpus_paths import child, corpus_root, register_id
+from corpus_paths import child, corpus_root, register_id, reject_symlinks
 from pii_patterns import (has_private_person_registration_pair,
                           load_contact_allowlist,
-                          unapproved_contact_fingerprints)
+                          unapproved_contact_fingerprints_in_file)
 
 DIST = child(corpus_root(__file__), "dist")
 HERE = os.path.dirname(os.path.abspath(__file__))
 CONTACT_ALLOWLIST = os.path.join(HERE, "pii_contact_allowlist.json")
+
+
+def _entry_kind(entry, is_junction):
+    """Classify an untrusted directory entry without following links."""
+    try:
+        if entry.is_symlink():
+            return "symlink"
+        if is_junction(entry.path):
+            return "junction"
+        if entry.is_dir(follow_symlinks=False):
+            return "directory"
+        if entry.is_file(follow_symlinks=False):
+            return "file"
+    except OSError:
+        return "unreadable"
+    return "other"
+
+
+def _title_files(directory):
+    """Yield every contained regular file in a link-free title tree."""
+    reject_symlinks(directory)
+    for current, directories, files in os.walk(directory, followlinks=False):
+        directories.sort()
+        for name in sorted(files):
+            candidate = os.path.join(current, name)
+            relative = os.path.relpath(candidate, directory)
+            contained = child(directory, relative)
+            if not os.path.isfile(contained):
+                raise ValueError("title tree contains a non-regular file")
+            yield contained
+
 
 def verify_distribution(distribution=None, contact_allowlist=None):
     """Validate one distribution tree and return the failed check labels.
@@ -59,24 +90,26 @@ def verify_distribution(distribution=None, contact_allowlist=None):
         entries = sorted(iterator, key=lambda entry: entry.name)
     for entry in entries:
         name = entry.name
+        kind = _entry_kind(entry, is_junction)
         try:
             rid = register_id(name)
         except ValueError:
-            stray.append(name)
+            stray.append("%s [%s]" % (name, kind))
             continue
-        if (entry.is_symlink() or is_junction(entry.path)
-                or not entry.is_dir(follow_symlinks=False)):
-            stray.append(name)
+        if kind != "directory":
+            stray.append("%s [%s]" % (name, kind))
             continue
         present.add(rid)
     removed = {register_id(e["register_id"]) for e in src.get("excluded_titles", [])}
 
     check("every listed title has a directory", listed <= present,
           "missing %d" % len(listed - present))
-    check("no directory beyond what is listed", present <= listed and not stray,
-          "extra %d%s" % (len(present - listed),
-                          (", not a title directory: " + ", ".join(stray[:5]))
-                          if stray else ""))
+    unexpected = (["%s [directory]" % rid for rid in sorted(present - listed)]
+                  + stray)
+    check("no directory beyond what is listed", not unexpected,
+          "unexpected %d%s" % (
+              len(unexpected),
+              (": " + ", ".join(unexpected[:5])) if unexpected else ""))
     check("no removed title present", not (removed & present))
 
     rows = bad = section_rows = rid_mismatch = 0
@@ -84,16 +117,25 @@ def verify_distribution(distribution=None, contact_allowlist=None):
     contact_hot = collections.Counter()
     kind_counts = collections.Counter()
     rows_by_coll, words_by_coll = collections.Counter(), collections.Counter()
-    unsafe_row_paths = []
+    unsafe_row_paths = set()
+    unreadable_title_files = set()
     for rid in sorted(present):
+        title_directory = os.path.join(markdown_root, rid)
         try:
+            title_files = list(_title_files(title_directory))
             p = child(markdown_root, rid, "sections.jsonl")
-        except ValueError:
-            unsafe_row_paths.append(rid)
+        except (OSError, ValueError):
+            unsafe_row_paths.add(rid)
             continue
-        if os.path.islink(p) or is_junction(p):
-            unsafe_row_paths.append(rid)
-            continue
+        for title_file in title_files:
+            try:
+                unexpected_contacts = unapproved_contact_fingerprints_in_file(
+                    title_file, rid, approved_contacts)
+            except (OSError, UnicodeError):
+                unreadable_title_files.add(rid)
+                continue
+            for kind, digest, _ in unexpected_contacts:
+                contact_hot[(rid, kind, digest[:16])] += 1
         if not os.path.isfile(p):
             continue
         with open(p, encoding="utf-8") as f:
@@ -118,14 +160,13 @@ def verify_distribution(distribution=None, contact_allowlist=None):
                     section_rows += 1
                 if has_private_person_registration_pair(t):
                     hot[rid] += 1
-                for kind, digest, _ in unapproved_contact_fingerprints(
-                        t, rid, approved_contacts):
-                    contact_hot[(rid, kind, digest[:16])] += 1
     check("every JSONL row parses", bad == 0, "%s rows, %d malformed" % (f"{rows:,}", bad))
     check("each JSONL row matches its title directory", rid_mismatch == 0,
           "%d mismatched register ids" % rid_mismatch)
-    check("row files stay inside real title directories", not unsafe_row_paths,
-          ", ".join(unsafe_row_paths[:5]))
+    check("title files stay inside real link-free directories", not unsafe_row_paths,
+          ", ".join(sorted(unsafe_row_paths)[:5]))
+    check("all distributed title files are UTF-8 text", not unreadable_title_files,
+          ", ".join(sorted(unreadable_title_files)[:5]))
     check("no row names private individuals", not hot, str(dict(hot))[:60])
     check("no unapproved contact identifiers", not contact_hot,
           str(dict(contact_hot))[:120])
