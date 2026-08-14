@@ -58,13 +58,16 @@ jobs:
           python -m unittest discover -s tests -v
 
       - name: Build deterministic builder archives
+        env:
+          TZ: UTC
         shell: bash
         run: |
           set -euo pipefail
           version="$(tr -d '[:space:]' < VERSION)"
-          mkdir dist
-          git archive --format=zip --prefix="au-tax-legislation-corpus-builder-$version/" --output="dist/au-tax-legislation-corpus-builder-$version.zip" "$GITHUB_SHA"
-          git archive --format=tar.gz --prefix="au-tax-legislation-corpus-builder-$version/" --output="dist/au-tax-legislation-corpus-builder-$version.tar.gz" "$GITHUB_SHA"
+          python tools/build_release_archives.py \
+            --commit "$GITHUB_SHA" \
+            --prefix "au-tax-legislation-corpus-builder-$version/" \
+            --output-base "dist/au-tax-legislation-corpus-builder-$version"
 
       - name: Generate SPDX SBOM for the builder ZIP
         uses: anchore/sbom-action@e22c389904149dbc22b58101806040fa8d37a610 # v0.24.0
