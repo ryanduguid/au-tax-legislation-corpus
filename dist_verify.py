@@ -5,7 +5,7 @@ build script that made it: no personal names, no image bytes, every row parses,
 every title listed in sources.json is actually present, and nothing links to a
 title that was removed.
 """
-import collections, glob, json, os, sys
+import collections, json, os, sys
 
 from corpus_paths import child, corpus_root, register_id
 from pii_patterns import has_private_person_registration_pair
@@ -41,34 +41,51 @@ def main():
     # traceback instead of a verdict on a distribution about to be published.
     # Collect the refusals instead and report them as the failure they are.
     present, stray = set(), []
-    for entry in sorted(glob.glob(os.path.join(markdown_root, "*"))):
-        name = os.path.basename(entry)
+    is_junction = getattr(os.path, "isjunction", lambda _path: False)
+    # glob("*") omits dotfiles, so the first version of this check claimed it
+    # covered .DS_Store while silently passing one. scandir inventories every
+    # top-level entry and lets the gate distinguish real title directories
+    # from files, symlinks and Windows junctions.
+    with os.scandir(markdown_root) as iterator:
+        entries = sorted(iterator, key=lambda entry: entry.name)
+    for entry in entries:
+        name = entry.name
         try:
-            present.add(register_id(name))
+            rid = register_id(name)
         except ValueError:
             stray.append(name)
+            continue
+        if (entry.is_symlink() or is_junction(entry.path)
+                or not entry.is_dir(follow_symlinks=False)):
+            stray.append(name)
+            continue
+        present.add(rid)
     removed = {register_id(e["register_id"]) for e in src.get("excluded_titles", [])}
 
     check("every listed title has a directory", listed <= present,
           "missing %d" % len(listed - present))
     check("no directory beyond what is listed", present <= listed and not stray,
           "extra %d%s" % (len(present - listed),
-                          (", not a register id: " + ", ".join(stray[:5])) if stray else ""))
+                          (", not a title directory: " + ", ".join(stray[:5]))
+                          if stray else ""))
     check("no removed title present", not (removed & present))
 
     rows = bad = section_rows = rid_mismatch = 0
     hot = collections.Counter()
     kind_counts = collections.Counter()
     rows_by_coll, words_by_coll = collections.Counter(), collections.Counter()
-    for candidate in glob.glob(os.path.join(markdown_root, "*", "sections.jsonl")):
+    unsafe_row_paths = []
+    for rid in sorted(present):
         try:
-            rid = register_id(os.path.basename(os.path.dirname(candidate)))
+            p = child(markdown_root, rid, "sections.jsonl")
         except ValueError:
-            # Already reported by the stray check above. Its rows are not part
-            # of the distribution's own counts, and its name must not reach
-            # child(), so skip it rather than stopping the whole run.
+            unsafe_row_paths.append(rid)
             continue
-        p = child(markdown_root, rid, "sections.jsonl")
+        if os.path.islink(p) or is_junction(p):
+            unsafe_row_paths.append(rid)
+            continue
+        if not os.path.isfile(p):
+            continue
         with open(p, encoding="utf-8") as f:
             for l in f:
                 if not l.strip():
@@ -94,6 +111,8 @@ def main():
     check("every JSONL row parses", bad == 0, "%s rows, %d malformed" % (f"{rows:,}", bad))
     check("each JSONL row matches its title directory", rid_mismatch == 0,
           "%d mismatched register ids" % rid_mismatch)
+    check("row files stay inside real title directories", not unsafe_row_paths,
+          ", ".join(unsafe_row_paths[:5]))
     check("no row names private individuals", not hot, str(dict(hot))[:60])
 
     counts = src.get("counts") or {}
