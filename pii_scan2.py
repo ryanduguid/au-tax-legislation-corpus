@@ -11,7 +11,12 @@ separately for emails, phone numbers and tax file numbers anywhere in the
 corpus. A statute quoting "1 300 000 000" as a dollar figure is not a phone
 number, so the phone pattern requires the conventional grouping.
 """
-import collections, glob, json, os, re
+import collections
+import glob
+import hashlib
+import json
+import os
+import re
 
 from corpus_paths import child, corpus_root, register_id
 from pii_patterns import private_person_registration_details
@@ -43,9 +48,14 @@ def main():
                 text = row.get("text") or ""
                 for label, pattern in (("email", EMAIL), ("phone", PHONE), ("tfn", TFN)):
                     for match in pattern.findall(text):
+                        match = str(match)
                         contacts[label] += 1
                         if len(ex[label]) < 5:
-                            ex[label].append((rid, str(match)[:44]))
+                            # Scanner output commonly lands in CI and audit logs.  Keep
+                            # enough information to find and compare a match without
+                            # copying the contact identifier into those logs.
+                            digest = hashlib.sha256(match.encode("utf-8")).hexdigest()[:16]
+                            ex[label].append((rid, row.get("row_id"), digest))
                 if rid in KNOWN:
                     continue
                 names, regs = private_person_registration_details(text)
@@ -59,7 +69,7 @@ def main():
     print()
     print("contact details across the whole corpus:", dict(contacts) or "none")
     for k, v in ex.items():
-        print("   %-6s %s" % (k, v[:3]))
+        print("   %-6s register_id, row_id, sha256[:16]: %s" % (k, v[:3]))
 
 
 if __name__ == "__main__":
