@@ -107,7 +107,10 @@ def load_contact_allowlist(path):
         digest = entry["sha256"]
         rid = entry["register_id"]
         reason = entry["reason"]
-        if kind not in {"email", "phone", "tfn"}:
+        # A tax file number is never an organisational-contact exception.  It
+        # must remain a hard publication failure even if a future policy edit
+        # has the right hash and title shape.
+        if kind not in {"email", "phone"}:
             raise ValueError("invalid contact allowlist kind")
         if not isinstance(digest, str) or not _SHA256.fullmatch(digest):
             raise ValueError("invalid contact allowlist digest")
@@ -115,6 +118,8 @@ def load_contact_allowlist(path):
             raise ValueError("invalid contact allowlist register id")
         if not isinstance(reason, str) or not reason.strip():
             raise ValueError("invalid contact allowlist reason")
+        if any(contact_fingerprints(reason)):
+            raise ValueError("contact allowlist reason contains a raw identifier")
         key = (kind, digest, rid)
         if key in approved:
             raise ValueError("duplicate contact allowlist entry")
@@ -127,5 +132,37 @@ def unapproved_contact_fingerprints(text, register_id, approved):
     return {
         (kind, digest, register_id)
         for kind, digest in contact_fingerprints(text)
-        if (kind, digest, register_id) not in approved
+        if kind == "tfn" or (kind, digest, register_id) not in approved
     }
+
+
+def unapproved_contact_fingerprints_in_file(path, register_id, approved):
+    """Return safe fingerprints from one redistributed UTF-8 text file.
+
+    A title ships both human-readable Markdown and machine-readable JSONL.
+    Checking only the JSONL leaves the other published representation outside
+    the privacy gate, even though a future extraction change could make those
+    representations differ.  Callers deliberately let decoding and I/O errors
+    fail closed rather than treating an unreadable file as contact-free.
+    """
+    _private_pair, unexpected = privacy_findings_in_file(
+        path, register_id, approved)
+    return unexpected
+
+
+def privacy_findings_in_file(path, register_id, approved):
+    """Return both privacy predicates for one validated UTF-8 text file.
+
+    Strict UTF-8 decoding rejects ordinary binary files.  Some binary payloads
+    contain only decodable bytes, so C0/C1 controls that cannot occur in the
+    generated Markdown or JSONL are rejected as well.  Tabs, line endings and
+    form feeds remain valid source text.
+    """
+    with open(path, encoding="utf-8") as source:
+        text = source.read()
+    if any(((ord(character) < 32 and character not in "\t\n\r\f")
+            or 127 <= ord(character) <= 159)
+           for character in text):
+        raise UnicodeError("redistributed file contains binary control bytes")
+    return (has_private_person_registration_pair(text),
+            unapproved_contact_fingerprints(text, register_id, approved))
