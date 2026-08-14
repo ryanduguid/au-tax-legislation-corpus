@@ -1938,8 +1938,13 @@ class DistributionTests(unittest.TestCase):
             self.assertEqual(
                 self._status(out, "no directory beyond what is listed"), "PASS")
 
-            # A loose file, and a directory carrying a sections.jsonl so the
-            # per-row pass has to survive it too.
+            # A hidden file, a loose file and a directory carrying a
+            # sections.jsonl so the complete inventory and per-row pass both
+            # have to survive them.
+            hidden_file = output / "markdown" / ".DS_Store"
+            hidden_file.write_text("metadata\n", encoding="utf-8")
+            register_shaped_file = output / "markdown" / "F2026N00001"
+            register_shaped_file.write_text("not a title directory\n", encoding="utf-8")
             stray_file = output / "markdown" / "notes.md"
             stray_file.write_text("scratch\n", encoding="utf-8")
             stray_dir = output / "markdown" / "draft-backup"
@@ -1952,6 +1957,8 @@ class DistributionTests(unittest.TestCase):
             self.assertEqual(code, 1)
             self.assertEqual(
                 self._status(out, "no directory beyond what is listed"), "FAIL")
+            self.assertIn(".DS_Store", out)
+            self.assertIn("F2026N00001", out)
             self.assertIn("notes.md", out)
             self.assertIn("draft-backup", out)
             # The rest of the run still happens: a stray entry must not cost
@@ -1959,6 +1966,8 @@ class DistributionTests(unittest.TestCase):
             self.assertEqual(
                 self._status(out, "no row names private individuals"), "PASS")
 
+            hidden_file.unlink()
+            register_shaped_file.unlink()
             stray_file.unlink()
             shutil.rmtree(stray_dir)
             code, _out = self._verify(verify)
