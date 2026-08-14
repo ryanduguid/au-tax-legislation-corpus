@@ -181,8 +181,13 @@ registration numbers, because a bare name test flags the whole corpus:
 legislation names Ministers, Commissioners and litigants constantly, and the
 registration number is what separates a disciplinary register from a statute.
 `pii_scan2.py` re-runs at a lower threshold and sweeps for emails, phone numbers
-and tax file numbers; it found nothing outside those twelve, and the only
-contact details anywhere are five organisational addresses.
+and eight- or nine-digit tax file numbers. The full scan finds ten occurrences
+of four unique organisational contacts across three titles: two government
+email addresses and two government landlines. They are approved by a
+title-bound SHA-256 fingerprint in `pii_contact_allowlist.json`; the policy does
+not store the identifiers themselves. The scan, `dist.py` preflight and
+`dist_verify.py` all fail on a new or moved contact identifier, and their
+diagnostics contain only Register ids and truncated fingerprints.
 
 `dist.py` then writes `dist/`: 934 titles, 21,596 rows, 5,722,156 words, 106 MB,
 with a `REMOVED.md` listing every exclusion and its Register link so the
