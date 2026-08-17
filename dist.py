@@ -10,8 +10,8 @@ Two things in the full corpus should not travel in a published dataset:
                  mentions with agent registration numbers and the provision
                  breached
 
-The markdown and JSONL carry no image bytes at all — extract.py never emitted
-them — so nothing needs stripping there. The 12 titles are dropped whole rather
+The markdown and JSONL carry no image bytes at all (extract.py never emitted
+them), so nothing needs stripping there. The 12 titles are dropped whole rather
 than redacted: once the name tables go, the only rows left are the Board
 secretary's signature block and a figure placeholder, so a partial redaction
 would preserve nothing and risk missing a name.
@@ -542,7 +542,7 @@ def _build_distribution(staging):
 
     # Rewrite the counts from what dist actually holds. String-matching the
     # original numbers is what let "946 titles ... 21,784 rows" survive into a
-    # file describing 934 and 21,596 — the summary line has to be rebuilt, not
+    # file describing 934 and 21,596. The summary line has to be rebuilt, not
     # patched.
     txt = re.sub(
         r"^[\d,]+ titles \([\d,]+ Acts, [\d,]+ instruments\), [\d,]+ retrieval rows, [\d,]+ words\.$",
