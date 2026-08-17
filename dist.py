@@ -343,7 +343,7 @@ def replace_readme_collection_counts(text, acts, instruments):
     README.md is source-controlled but still treated as input by the build.
     Scanning decimal runs directly keeps the replacement linear for malformed,
     arbitrarily long digit strings while preserving the former whole-phrase
-    replacement behavior.
+    replacement behaviour.
     """
     marker = " Acts and "
     suffix = " legislative and notifiable"
