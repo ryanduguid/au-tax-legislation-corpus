@@ -1425,7 +1425,7 @@ class StalenessBucketTests(unittest.TestCase):
                         "collection": "LegislativeInstrument",
                         "compilation_number": "4", "compilation_date": "2025-06-30"}],
         }), encoding="utf-8")
-        for name in ("check_current.py", "corpus_paths.py"):
+        for name in ("check_current.py", "corpus_paths.py", "curl_fetch.py"):
             shutil.copy2(REPO / name, base / name)
 
     def test_a_current_version_with_no_document_is_its_own_bucket(self):
@@ -2737,16 +2737,16 @@ class PathBoundaryTests(unittest.TestCase):
             base = Path(tmp)
             checkout = base / "checkout"
             checkout.mkdir()
-            shutil.copy2(REPO / "check_current.py", checkout / "check_current.py")
-            shutil.copy2(REPO / "corpus_paths.py", checkout / "corpus_paths.py")
+            for name in ("check_current.py", "corpus_paths.py", "curl_fetch.py"):
+                shutil.copy2(REPO / name, checkout / name)
             checkout_module = load_module("check_current_checkout", checkout / "check_current.py")
             self.assertEqual(Path(checkout_module.ROOT), checkout / "corpus")
 
             deployed = base / "deployed"
             deployed.mkdir()
             (deployed / "sources.json").write_text("{}", encoding="utf-8")
-            shutil.copy2(REPO / "check_current.py", deployed / "check_current.py")
-            shutil.copy2(REPO / "corpus_paths.py", deployed / "corpus_paths.py")
+            for name in ("check_current.py", "corpus_paths.py", "curl_fetch.py"):
+                shutil.copy2(REPO / name, deployed / name)
             deployed_module = load_module("check_current_deployed", deployed / "check_current.py")
             self.assertEqual(Path(deployed_module.ROOT), deployed)
 
