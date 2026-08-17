@@ -2781,10 +2781,6 @@ class RateParsingTests(unittest.TestCase):
         self.assertLess(time.perf_counter() - started, 2.0)
 
 
-if __name__ == "__main__":
-    unittest.main()
-
-
 class PreSectionTextTests(unittest.TestCase):
     """Text ahead of the first section, and across a volume seam."""
 
@@ -2997,3 +2993,7 @@ class DistTableBlockParagraphTests(unittest.TestCase):
         dist = self._dist()
         result = dist.replace_readme_table_block_paragraph(self.SAMPLE, 2)
         self.assertEqual(result.count(dist.TABLE_BLOCK_LEAD), 1)
+
+
+if __name__ == "__main__":
+    unittest.main()
