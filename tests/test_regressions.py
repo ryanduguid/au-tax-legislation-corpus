@@ -764,6 +764,62 @@ class FinalizePiiSummaryTests(unittest.TestCase):
             self.assertEqual(finalize.pii_summary(), (2, 350))
 
 
+class FinalizeMissingTitleTests(unittest.TestCase):
+    def test_a_missing_title_reports_the_reason_download_records(self):
+        """sources.json and INDEX.md read httpCode/contentType keys that
+        download.py never writes - it fails the stage on HTTP and content
+        errors instead of recording them - so every missing title rendered as
+        None/None. The one recorded cause is the 'reason' field of the
+        explicit no-document case."""
+        with tempfile.TemporaryDirectory() as tmp:
+            base = Path(tmp)
+            build = base / "build"
+            build.mkdir()
+            for name in ("discover.py", "versions.py", "download.py",
+                         "extract.py", "finalize.py", "check_current.py",
+                         "corpus_paths.py", "curl_fetch.py"):
+                shutil.copy2(REPO / name, build / name)
+            finalize = load_module("finalize_missing_reason", build / "finalize.py")
+
+            ok = {"id": "C2004A00001", "name": "Example Tax Act",
+                  "collection": "Act", "status": "ok",
+                  "versionStart": "2026-01-01", "compilationNumber": "1",
+                  "epub": "C2004A00001.epub", "bytes": 100,
+                  "sourceUrl": "https://example.test/C2004A00001",
+                  "markdown": "C2004A00001/C2004A00001.md",
+                  "retrieved": "2026-08-03", "sections": 1,
+                  "granularity": "section", "words": 4, "endnotes": False}
+            missing = {"id": "F2020L01498", "name": "Unpublished Instrument",
+                       "collection": "LegislativeInstrument", "epub": None,
+                       "bytes": 0, "status": "no_epub",
+                       "reason": "current_version_has_no_document",
+                       "versionStart": "2026-03-01",
+                       "sourceUrl": "https://example.test/F2020L01498"}
+            (build / "manifest_md.json").write_text(json.dumps([ok]), encoding="utf-8")
+            (build / "manifest_raw.json").write_text(
+                json.dumps([ok, missing]), encoding="utf-8")
+            folder = base / "markdown" / "C2004A00001"
+            folder.mkdir(parents=True)
+            (folder / "sections.jsonl").write_text(json.dumps({
+                "register_id": "C2004A00001", "section": "1",
+                "kind": "section", "text": "The rate is 10%.",
+            }) + "\n", encoding="utf-8")
+
+            with contextlib.redirect_stdout(io.StringIO()):
+                finalize.main("2026-08-03")
+
+            sources = json.loads((base / "sources.json").read_text(encoding="utf-8"))
+            entry = sources["titles_without_epub"][0]
+            self.assertEqual(entry["reason"], "current_version_has_no_document")
+            self.assertNotIn("http_code", entry)
+            index_md = (base / "INDEX.md").read_text(encoding="utf-8")
+            self.assertIn("| Reason |", index_md)
+            self.assertIn(
+                "| Unpublished Instrument | LegislativeInstrument | F2020L01498 "
+                "| current_version_has_no_document |", index_md)
+            self.assertNotIn("| None | None |", index_md)
+
+
 class Retry13MergeTests(unittest.TestCase):
     def test_probe13_is_safe_to_import(self):
         with mock.patch("subprocess.run") as run:
@@ -789,10 +845,12 @@ class Retry13MergeTests(unittest.TestCase):
                  "versionStart": "2026-01-01"},
                 {"id": "F2020L01498", "name": "Recoverable Instrument",
                  "epub": None, "bytes": 0, "status": "no_epub",
-                 "httpCode": "404", "versionStart": "2026-03-01"},
+                 "reason": "current_version_has_no_document",
+                 "versionStart": "2026-03-01"},
                 {"id": "F2021L00002", "name": "Unrecoverable Instrument",
                  "epub": None, "bytes": 0, "status": "no_epub",
-                 "httpCode": "404", "versionStart": "2026-04-01"},
+                 "reason": "current_version_has_no_document",
+                 "versionStart": "2026-04-01"},
             ]
             (scratch / "manifest_raw.json").write_text(
                 json.dumps(manifest), encoding="utf-8")

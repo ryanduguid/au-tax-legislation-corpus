@@ -188,9 +188,13 @@ def main(retrieved):
             } for a in ok
         ],
         "titles_without_epub": [
+            # download.py stops on HTTP and content errors rather than record
+            # them, so a missing title carries only its 'reason': the explicit
+            # no-document case. The httpCode/contentType keys read here before
+            # were never written by any downloader this repository has held.
             {"register_id": a["id"], "name": a["name"],
              "collection": a.get("collection"),
-             "http_code": a.get("httpCode"), "content_type": a.get("contentType")}
+             "reason": a.get("reason")}
             for a in missing
         ],
     }
@@ -237,12 +241,12 @@ def main(retrieved):
                 a.get("collection") or "-", a["id"], f"{a['_rows']:,}"))
     if missing:
         idx += ["", "## Titles with no EPUB available", "",
-                "| Title | Collection | Register ID | HTTP | Content-Type |",
-                "|---|---|---|---|---|"]
+                "| Title | Collection | Register ID | Reason |",
+                "|---|---|---|---|"]
         for a in missing:
-            idx.append("| %s | %s | %s | %s | %s |" % (
+            idx.append("| %s | %s | %s | %s |" % (
                 a["name"], a.get("collection") or "-", a["id"],
-                a.get("httpCode"), a.get("contentType")))
+                a.get("reason") or "-"))
     with open(child(ROOT, "INDEX.md"), "w", encoding="utf-8") as f:
         f.write("\n".join(idx) + "\n")
 
