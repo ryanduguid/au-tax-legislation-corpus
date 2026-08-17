@@ -643,9 +643,10 @@ class FailureHandlingTests(unittest.TestCase):
             discover.COLLECTIONS = ["Act"]
             discover.KEYWORDS = ["Tax"]
             discover.curl_json = lambda _url: None
-            discover.time.sleep = lambda _seconds: None
 
-            with contextlib.redirect_stdout(io.StringIO()):
+            # module.time is the process-wide time module: patch, never assign.
+            with mock.patch.object(discover.time, "sleep"), \
+                    contextlib.redirect_stdout(io.StringIO()):
                 with self.assertRaisesRegex(RuntimeError, "refusing to write an incomplete"):
                     discover.main()
 
@@ -660,9 +661,9 @@ class FailureHandlingTests(unittest.TestCase):
             (scratch / "titles_all.json").write_text(json.dumps([title]), encoding="utf-8")
             versions.SCRATCH = str(scratch)
             versions.curl_json = lambda _url: None
-            versions.time.sleep = lambda _seconds: None
 
-            with contextlib.redirect_stdout(io.StringIO()):
+            with mock.patch.object(versions.time, "sleep"), \
+                    contextlib.redirect_stdout(io.StringIO()):
                 with self.assertRaisesRegex(RuntimeError, "refusing to write acts_resolved"):
                     versions.main()
 
@@ -675,7 +676,6 @@ class FailureHandlingTests(unittest.TestCase):
             scratch = Path(tmp)
             (scratch / "titles_all.json").write_text(json.dumps([title]), encoding="utf-8")
             versions.SCRATCH = str(scratch)
-            versions.time.sleep = lambda _seconds: None
 
             def response(url):
                 if "C2004A05138" in url:
@@ -686,7 +686,8 @@ class FailureHandlingTests(unittest.TestCase):
                 }]}
 
             versions.curl_json = response
-            with contextlib.redirect_stdout(io.StringIO()):
+            with mock.patch.object(versions.time, "sleep"), \
+                    contextlib.redirect_stdout(io.StringIO()):
                 versions.main()
 
             resolved = json.loads((scratch / "acts_resolved.json").read_text(encoding="utf-8"))
@@ -1116,8 +1117,8 @@ class DownloadManifestWriteTests(unittest.TestCase):
                 download.SCRATCH = str(scratch)
                 download.EPUB_DIR = str(epub_dir)
                 download.CRAWL_DELAY = 0
-                download.time.sleep = lambda _seconds: None
-                with mock.patch.object(download.subprocess, "run", failed_response):
+                with mock.patch.object(download.subprocess, "run", failed_response), \
+                        mock.patch.object(download.time, "sleep"):
                     with contextlib.redirect_stdout(io.StringIO()):
                         with self.assertRaisesRegex(download.DownloadError,
                                                     expected_error):
@@ -1167,8 +1168,8 @@ class DownloadManifestWriteTests(unittest.TestCase):
 
             download.SCRATCH = str(scratch)
             download.EPUB_DIR = str(epub_dir)
-            download.time.sleep = lambda _seconds: None
-            with mock.patch.object(download.subprocess, "run", blocked):
+            with mock.patch.object(download.subprocess, "run", blocked), \
+                    mock.patch.object(download.time, "sleep"):
                 with contextlib.redirect_stdout(io.StringIO()):
                     with self.assertRaisesRegex(download.DownloadError, "HTTP 403"):
                         download.main()
@@ -1294,7 +1295,9 @@ class DiscoveryPagingTests(unittest.TestCase):
         """Unordered paging is how 142 titles, the Tax Agent Services Act 2009
         among them, went missing."""
         discover = load_module("discover_paging", REPO / "discover.py")
-        discover.time.sleep = lambda _seconds: None
+        patcher = mock.patch.object(discover.time, "sleep")
+        patcher.start()
+        self.addCleanup(patcher.stop)
         first = {"value": [{"id": "C2004A%05d" % n} for n in range(100)]}
         requested = []
 
@@ -1330,7 +1333,9 @@ class DownloadValidationTests(unittest.TestCase):
     def test_fetch_fails_closed_for_http_and_content_errors(self):
         """Access blocks and server errors must not become missing editions."""
         download = load_module("download_fetch_validation", REPO / "download.py")
-        download.time.sleep = lambda _seconds: None
+        patcher = mock.patch.object(download.time, "sleep")
+        patcher.start()
+        self.addCleanup(patcher.stop)
         with tempfile.TemporaryDirectory() as tmp:
             dst = str(Path(tmp) / "C2004A00001.epub")
             for code in ("403", "404", "429", "503"):
@@ -1468,10 +1473,10 @@ class DownloadValidationTests(unittest.TestCase):
 class StalenessBucketTests(unittest.TestCase):
     def _run(self, base, response):
         module = load_module("check_current_buckets", base / "check_current.py")
-        module.time.sleep = lambda _seconds: None
         module.curl_json = response if callable(response) else lambda _url: response
         buffer = io.StringIO()
-        with mock.patch.object(module.sys, "argv", ["check_current.py"]):
+        with mock.patch.object(module.sys, "argv", ["check_current.py"]), \
+                mock.patch.object(module.time, "sleep"):
             with contextlib.redirect_stdout(buffer):
                 module.main()
         return buffer.getvalue()
@@ -1516,7 +1521,6 @@ class StalenessBucketTests(unittest.TestCase):
             base = Path(tmp)
             self._corpus(base)
             module = load_module("check_current_transport_failure", base / "check_current.py")
-            module.time.sleep = lambda _seconds: None
             responses = [None, {"value": [{"titleId": "F2020L01498"}]}]
             calls = []
 
@@ -1526,7 +1530,8 @@ class StalenessBucketTests(unittest.TestCase):
 
             module.curl_json = response
             buffer = io.StringIO()
-            with mock.patch.object(module.sys, "argv", ["check_current.py"]):
+            with mock.patch.object(module.sys, "argv", ["check_current.py"]), \
+                    mock.patch.object(module.time, "sleep"):
                 with contextlib.redirect_stdout(buffer):
                     module.main()
 
