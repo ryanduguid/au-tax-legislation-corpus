@@ -52,8 +52,15 @@ PHONE = re.compile(
 # admits it solely when it carries the ATO check digit, which keeps spaced
 # appropriation amounts and other statute numbers out of the gate while a
 # real unlabelled TFN cannot escape it.
+#
+# The label/digits separator is written ``\s*(?:[.:–-]\s*)?`` rather than the
+# equivalent ``\s*[.:–-]?\s*``: with two \s* runs adjacent across an optional
+# single character, a long space run after the label backtracks quadratically
+# (~90 s on 100k spaces, and this scans multi-megabyte titles).  Requiring the
+# punctuation before the second \s* keeps the same accepted strings while
+# leaving each space attributable to exactly one run.
 TFN = re.compile(
-    r"\b(?:tax file number|TFN)\b\s*[.:–-]?\s*(\d(?:[\s-]?\d){7,8})"
+    r"\b(?:tax file number|TFN)\b\s*(?:[.:–-]\s*)?(\d(?:[\s-]?\d){7,8})"
     r"(?![\s-]?\d)", re.I
 )
 TFN_BARE = re.compile(
