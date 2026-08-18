@@ -423,13 +423,53 @@ def table_split(body, name):
     return out
 
 
+class _VolumeState:
+    """Parser state private to one volume of the document.
+
+    A document is a set of volumes, and front matter repeats at the head of
+    every one, so everything here resets at the seam. Holding any of it once
+    across the whole document is the shape of the volume-gate defect:
+    F2025L00281 lost five volumes' Schedule 1 exactly that way.
+    """
+
+    def __init__(self, gate_free):
+        # In bare mode there is no structural heading to mark the start of
+        # the body, so the pre-body gate would discard the whole document. A
+        # document with no mapped heading anywhere is the same case and keeps
+        # its old behaviour: its volumes start with the gates open.
+        self.gate_free = gate_free
+        self.reset()
+
+    def reset(self):
+        """Return to the top-of-volume state at every volume boundary.
+
+        Without the reset, front matter fuses into whichever section was open
+        at the seam; one stray endnote trigger in volume 1 swallows every
+        remaining volume; and a row left open files the next volume's
+        pre-heading text under the previous volume's last section number.
+        """
+        self.seen_body = self.gate_free
+        # The bare-text endnote trigger stays disarmed until a mapped heading
+        # has been seen, because the cover page of every volume lists
+        # "Endnotes" as one of the volumes. Arming it from the top of a
+        # heading-less volume routes the volume's entire body into
+        # endnotes.md, which is the same content loss wearing a different hat.
+        self.endnote_armed = self.gate_free
+        self.in_endnotes = False
+        self.container = None
+        # The row emitted text lands in; None until a branch opens one.
+        self.cur = None
+        # Set once a PREBODY_CLASS paragraph has been admitted in this
+        # volume, so the table/img gate can let through the tables and
+        # figures embedded in that same run of pre-body prose. Per volume,
+        # like seen_body.
+        self.prebody_open = False
+
+
 def to_markdown(blocks, meta, force_bare=False):
     lines, sections, endnotes = [], [], []
     long_title = None
     long_title_is_longt = False
-    container = None
-    cur = None
-    in_endnotes = False
 
     def _head_lvl(b):
         base = (b["cls"].split() or [""])[0]
@@ -497,22 +537,7 @@ def to_markdown(blocks, meta, force_bare=False):
             _start = _i + 1
     _close_vol(_start, len(blocks))
     vol = 0
-    # In bare mode there is no structural heading to mark the start of the body,
-    # so the pre-body gate would discard the whole document. A document with no
-    # mapped heading anywhere is the same case and keeps its old behaviour: the
-    # gate is open from the first block, contents page or not.
-    gate_free = not has_acthead or force_bare
-    seen_body = gate_free
-    # Set once a PREBODY_CLASS paragraph has been admitted in this volume, so
-    # the table/img gate can let through the tables and figures embedded in
-    # that same run of pre-body prose. Per volume, like seen_body.
-    prebody_open = False
-    # The bare-text endnote trigger keeps the document-wide rule, because the
-    # cover page of every volume lists "Endnotes" as one of the volumes. Arming
-    # that trigger from the top of a heading-less volume routes the volume's
-    # entire body into endnotes.md, which is the same content loss wearing a
-    # different hat.
-    endnote_armed = gate_free
+    state = _VolumeState(gate_free=not has_acthead or force_bare)
     # Bare mode is never chosen from the markup, because guessing which classes
     # count as structure was wrong twice: cosmetic Word classes look structural,
     # and one-off template families run to dozens. The caller runs the normal
@@ -560,9 +585,18 @@ def to_markdown(blocks, meta, force_bare=False):
             if base_n and not SKIP_CLASS.match(base_n):
                 classless_heads.add(i)
 
+    def open_row(section, heading, kind, container, **extra):
+        """Open the row that emitted text lands in until the next one.
+
+        Every branch that starts a retrieval row goes through here, so the
+        row shape cannot drift between them.
+        """
+        state.cur = {"section": section, "heading": heading, "kind": kind,
+                     "container": container, "text": [], **extra}
+        sections.append(state.cur)
+
     def emit(s):
-        nonlocal cur
-        if in_endnotes:
+        if state.in_endnotes:
             endnotes.append(s)
             return
         lines.append(s)
@@ -573,36 +607,20 @@ def to_markdown(blocks, meta, force_bare=False):
         # sections.jsonl, which is the file retrieval actually reads. Opening
         # the row here covers tables and figures in that position too, which a
         # branch further down could not.
-        if cur is None and s.strip():
-            cur = {"section": None, "heading": "Introductory material",
-                   "kind": "introductory", "container": container, "text": [],
-                   # Read by the table_split gate, which must not treat a row
-                   # opened here as evidence that the document chunked. The
-                   # JSONL writer builds its own dict, so this never ships.
-                   "emit_fallback": True}
-            sections.append(cur)
-        if cur is not None:
-            cur["text"].append(s)
+        if state.cur is None and s.strip():
+            # emit_fallback is read by the table_split gate, which must not
+            # treat a row opened here as evidence that the document chunked.
+            # The JSONL writer builds its own dict, so this never ships.
+            open_row(None, "Introductory material", "introductory",
+                     state.container, emit_fallback=True)
+        if state.cur is not None:
+            state.cur["text"].append(s)
 
     for bi, b in enumerate(blocks):
         k = b["k"]
         if k == "file":
-            # Front matter repeats at the head of every volume; without this
-            # reset it fuses into whichever section was open at the seam.
-            # in_endnotes must reset too, or one stray trigger in volume 1
-            # swallows every remaining volume.
             vol += 1
-            seen_body = gate_free
-            endnote_armed = gate_free
-            in_endnotes = False
-            container = None
-            # cur must go with them. The comment above says front matter must
-            # not fuse into the section open at the seam, but leaving the row
-            # open did exactly that: the next volume's pre-heading text was
-            # appended to the previous volume's last section and retrieved
-            # under its number.
-            cur = None
-            prebody_open = False
+            state.reset()
             continue
 
         # A volume with no mapped heading never reaches the heading branch
@@ -613,13 +631,11 @@ def to_markdown(blocks, meta, force_bare=False):
         # the previous volume ended and is retrieved under that section's
         # number. The row stays empty, and so is dropped, for a volume whose
         # content turns out to be endnotes.
-        if (not seen_body and not vol_heads[vol]
+        if (not state.seen_body and not vol_heads[vol]
                 and vol_gate[vol] is not None and bi >= vol_gate[vol]):
-            seen_body = True
-            container = "%s - volume %d" % (meta["name"], vol)
-            cur = {"section": None, "heading": container, "kind": "container",
-                   "container": container, "text": []}
-            sections.append(cur)
+            state.seen_body = True
+            state.container = "%s - volume %d" % (meta["name"], vol)
+            open_row(None, state.container, "container", state.container)
 
         if k in ("table", "img"):
             # Same gate as paragraphs. Without it a trailing amendment-history
@@ -630,7 +646,8 @@ def to_markdown(blocks, meta, force_bare=False):
             # pre-body prose is flowing, a table or figure sitting between two
             # such paragraphs was dropped while the prose around it was kept -
             # silently, which the file elsewhere promises never to do.
-            if not seen_body and not in_endnotes and not prebody_open:
+            if (not state.seen_body and not state.in_endnotes
+                    and not state.prebody_open):
                 continue
             if k == "img":
                 emit("> Figure: %s" % b["alt"])
@@ -648,12 +665,13 @@ def to_markdown(blocks, meta, force_bare=False):
         # before the body has even started.
         if SKIP_CLASS.match(cls):
             continue
-        if not in_endnotes and (ENDNOTE_CLASS.match(base)
-                                or (endnote_armed and ENDNOTE_TEXT.match(text))):
-            in_endnotes = True
-            seen_body = True
-            endnote_armed = True
-            cur = None
+        if not state.in_endnotes and (
+                ENDNOTE_CLASS.match(base)
+                or (state.endnote_armed and ENDNOTE_TEXT.match(text))):
+            state.in_endnotes = True
+            state.seen_body = True
+            state.endnote_armed = True
+            state.cur = None
         if FRONT_CLASS.match(base) and (long_title is None or base.lower().startswith('longt')):
             if long_title is None or not long_title_is_longt:
                 long_title = text
@@ -668,9 +686,9 @@ def to_markdown(blocks, meta, force_bare=False):
                 lvl = 2 if m_iasb.group(1) == "1" else 5
         if lvl is None and sectno and not has_acthead and len(text) < 200:
             lvl = 5
-        if lvl and not in_endnotes:
-            seen_body = True
-            endnote_armed = True
+        if lvl and not state.in_endnotes:
+            state.seen_body = True
+            state.endnote_armed = True
             lines.append("")
             lines.append("#" * lvl + " " + text)
             if lvl == 5:
@@ -682,68 +700,54 @@ def to_markdown(blocks, meta, force_bare=False):
                     sid = p.group(1) if p else None
                 # A level-5 heading with no parseable number (e.g. "Notes.",
                 # "Table I") is not a section and must not be counted as one.
-                cur = {"section": sid, "heading": text,
-                       "kind": "section" if sid else "unnumbered",
-                       "container": container, "text": []}
-                sections.append(cur)
+                open_row(sid, text, "section" if sid else "unnumbered",
+                         state.container)
             else:
                 # A Chapter/Part/Division/Schedule heading closes the previous
                 # section. Without this, Schedule bodies keep appending to the
                 # last section and inherit a section number that does not own
                 # them. Open a container row so the text is still retrievable,
                 # labelled by its own heading.
-                container = text
-                cur = {"section": None, "heading": text, "kind": "container",
-                       "container": container, "text": []}
-                sections.append(cur)
+                state.container = text
+                open_row(None, text, "container", state.container)
             continue
 
-        if bare_mode and not in_endnotes and not SKIP_CLASS.match(cls):
+        if bare_mode and not state.in_endnotes and not SKIP_CLASS.match(cls):
             if " ".join(text.split()).lower() in toc_titles or bi in classless_heads:
                 lines.append("")
                 lines.append("## " + text)
-                container = text
-                cur = {"section": None, "heading": text, "kind": "container",
-                       "container": container, "text": []}
-                sections.append(cur)
+                state.container = text
+                open_row(None, text, "container", state.container)
                 continue
             m = None if BARE_DATEISH.match(text) else BARE_SECHEAD.match(text)
             if m:
                 lines.append("")
                 lines.append("##### " + text)
-                cur = {"section": m.group(1), "heading": text, "kind": "section",
-                       "container": container, "text": []}
-                sections.append(cur)
+                open_row(m.group(1), text, "section", state.container)
                 continue
             if BARE_CONTAINER.match(text):
                 lines.append("")
                 lines.append("## " + text)
-                container = text
-                cur = {"section": None, "heading": text, "kind": "container",
-                       "container": container, "text": []}
-                sections.append(cur)
+                state.container = text
+                open_row(None, text, "container", state.container)
                 continue
             # The making words and the signature block sit ahead of section 1.
             # Without a row to hold them they reach the markdown but never the
             # JSONL, which is the file retrieval actually reads.
-            if cur is None and text.strip():
-                cur = {"section": None, "heading": "Introductory material",
-                       "kind": "introductory", "container": None, "text": []}
-                sections.append(cur)
+            if state.cur is None and text.strip():
+                open_row(None, "Introductory material", "introductory", None)
 
         # Some Acts put real body text before the first ActHead (the Customs
         # Tariff Act's USER'S GUIDE). Emit it when it carries a body class;
         # unclassed compilation cover text stays out.
-        if not seen_body and not in_endnotes:
+        if not state.seen_body and not state.in_endnotes:
             if not PREBODY_CLASS.match(base):
                 continue
             # Tables and figures between pre-body paragraphs belong to the same
             # run of prose; the table/img gate above reads this.
-            prebody_open = True
-            if cur is None:
-                cur = {"section": None, "heading": "Introductory material",
-                       "kind": "introductory", "container": None, "text": []}
-                sections.append(cur)
+            state.prebody_open = True
+            if state.cur is None:
+                open_row(None, "Introductory material", "introductory", None)
         prefix = ""
         if PARA_CLASS.match(base):
             prefix = "- "
