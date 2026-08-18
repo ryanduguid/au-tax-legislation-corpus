@@ -1902,7 +1902,7 @@ class DistributionTests(unittest.TestCase):
             "- `epub/<register_id>.epub` - the file exactly as the Register served it\n"
             "- `markdown/<register_id>/<register_id>.md` - full text\n\n"
             # Spelled-out lead, as the README built by the previous finalize
-            # generation actually reads — the rewrite must strip this form
+            # generation actually reads. The rewrite must strip this form
             # too, not only the numeric "**12 titles name people.**" the new
             # finalize writes.
             "**Eleven titles name people.** The corpus carries about 3 name mentions\n"
