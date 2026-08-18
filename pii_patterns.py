@@ -25,15 +25,51 @@ REGNO = re.compile(r"\b\d{8}\b")
 # publication gates cannot disagree.  TFNs require eight or nine digits after
 # the label; the former one-digit pattern mistook section references such as
 # ``tax file number 7/...`` for TFNs.
+#
+# Phone forms cover the conventionally spaced groupings and the escapes the
+# review found: unspaced ten-digit numbers ("0412345678"), +61 international
+# notation with or without spaces and a bracketed area code, and the
+# 13/1300/1800 short codes.  Every alternative still pins its digit count
+# between (?<!\d)/(?!\d), so 8-digit statute references, years and
+# comma-grouped dollar amounts stay outside the gate.  The separator class
+# keeps \s because Register EPUB text uses no-break spaces inside numbers.
 EMAIL = re.compile(r"\b[\w.+-]+@[\w-]+(?:\.[\w-]+)+\b")
 PHONE = re.compile(
-    r"(?<!\d)(?:\(0\d\)\s?\d{4}\s?\d{4}|0[2-8]\s\d{4}\s\d{4}|"
-    r"04\d{2}\s\d{3}\s\d{3}|1[38]00\s\d{3}\s\d{3})(?!\d)"
+    r"(?<!\d)(?:"
+    r"\(0\d\)[\s-]?\d{4}[\s-]?\d{4}"                # (02) 1234 5678
+    r"|0[2-8][\s-]?\d{4}[\s-]?\d{4}"                # 02 1234 5678, 0212345678
+    r"|04\d{2}[\s-]?\d{3}[\s-]?\d{3}"               # 0412 345 678, 0412345678
+    r"|\+61[\s-]?(?:\(0\)[\s-]?)?\d(?:[\s-]?\d){8}"  # +61 2 1234 5678, +61 (0)2 ...
+    r"|\+61[\s-]?\(0?\d\)[\s-]?\d(?:[\s-]?\d){7}"   # +61 (02) 1234 5678
+    r"|1[38]00[\s-]?\d{3}[\s-]?\d{3}"               # 1300 123 456, 1800123456
+    r"|13[\s-]?\d{2}[\s-]?\d{2}"                    # 13 24 68
+    r")(?!\d)"
 )
+# The label now also accepts the "TFN" abbreviation with optional punctuation
+# ("TFN: 123 456 782"); the labelled digits are strong enough evidence on
+# their own.  A bare nine-digit run in TFN grouping (spaced 3-3-3, uniformly
+# hyphenated, or contiguous) is only a candidate: contact_fingerprints()
+# admits it solely when it carries the ATO check digit, which keeps spaced
+# appropriation amounts and other statute numbers out of the gate while a
+# real unlabelled TFN cannot escape it.
+#
+# The label/digits separator is written ``\s*(?:[.:–-]\s*)?`` rather than the
+# equivalent ``\s*[.:–-]?\s*``: with two \s* runs adjacent across an optional
+# single character, a long space run after the label backtracks quadratically
+# (~90 s on 100k spaces, and this scans multi-megabyte titles).  Requiring the
+# punctuation before the second \s* keeps the same accepted strings while
+# leaving each space attributable to exactly one run.
 TFN = re.compile(
-    r"\btax file number\s*:?\s*(\d(?:[ -]?\d){7,8})(?![ -]?\d)", re.I
+    r"\b(?:tax file number|TFN)\b\s*(?:[.:–-]\s*)?(\d(?:[\s-]?\d){7,8})"
+    r"(?![\s-]?\d)", re.I
 )
-CONTACT_PATTERNS = (("email", EMAIL), ("phone", PHONE), ("tfn", TFN))
+TFN_BARE = re.compile(
+    r"(?<![\d$])(?<![\d$][\s-])(\d{3}([\s-]?)\d{3}\2\d{3})(?![\s-]?\d)"
+)
+CONTACT_PATTERNS = (("email", EMAIL), ("phone", PHONE), ("tfn", TFN),
+                    ("tfn", TFN_BARE))
+# Weighted mod-11 check-digit sum every issued nine-digit TFN satisfies.
+_TFN_WEIGHTS = (1, 4, 3, 7, 5, 8, 6, 9, 10)
 _REGISTER_ID = re.compile(r"[A-Z]\d{4}[A-Z]\d{5}\Z")
 _SHA256 = re.compile(r"[0-9a-f]{64}\Z")
 _STATUTORY_WORDS = (
@@ -78,13 +114,34 @@ def _contact_value(kind, match):
     value = match.group(1) if kind == "tfn" else match.group(0)
     if kind == "email":
         return value.strip().casefold()
-    return "".join(c for c in value if c.isdigit())
+    digits = "".join(c for c in value if c.isdigit())
+    if kind == "phone" and value.startswith("+61"):
+        # International notation of a national number must produce the same
+        # fingerprint, so one allowlist decision covers both spellings.
+        rest = digits[2:]
+        digits = rest if rest.startswith("0") else "0" + rest
+    return digits
+
+
+def _plausible_tfn(digits):
+    """True when a nine-digit run satisfies the TFN check-digit sum."""
+    return (len(digits) == 9
+            and sum(w * int(d)
+                    for w, d in zip(_TFN_WEIGHTS, digits)) % 11 == 0)
 
 
 def contact_fingerprints(text):
     """Yield ``(kind, sha256)`` pairs without returning the matched identifier."""
+    labelled_tfn_spans = [match.span(1) for match in TFN.finditer(text)]
     for kind, pattern in CONTACT_PATTERNS:
         for match in pattern.finditer(text):
+            if pattern is TFN_BARE:
+                start, end = match.span(1)
+                if any(s <= start and end <= e
+                       for s, e in labelled_tfn_spans):
+                    continue  # already reported through the labelled pattern
+                if not _plausible_tfn(_contact_value(kind, match)):
+                    continue
             normalised = _contact_value(kind, match)
             yield kind, hashlib.sha256(normalised.encode("utf-8")).hexdigest()
 
