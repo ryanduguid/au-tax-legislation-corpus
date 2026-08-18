@@ -23,7 +23,9 @@ import collections, json, os, re, shutil, uuid
 
 from corpus_paths import (child, corpus_root, is_reparse_point, register_id,
                           reject_symlinks)
-from dist_verify import verify_distribution
+from dist_verify import (_expected_title_files,
+                         _title_tree as _verifier_title_tree,
+                         verify_distribution)
 from pii_patterns import (load_contact_allowlist,
                           privacy_findings_in_file)
 
@@ -147,39 +149,20 @@ def _promote_distribution(staging, target):
 
 
 def _title_tree(directory):
-    """Return contained regular files and nested directories in a safe tree."""
+    """Return contained regular files and nested directories in a safe tree.
+
+    One definition, in dist_verify.py: this file carried a copy that had
+    already drifted on the exception type. The verifier reports a non-regular
+    file as a named FAIL and raises ValueError; the preflight here has no
+    verdict to report into, so the same condition must abort the build as the
+    RuntimeError the other publication gates raise. reject_symlinks runs
+    first so a link keeps refusing with the ValueError its callers pin.
+    """
     reject_symlinks(directory)
-    contained_files, nested_directories = [], []
-    for current, directories, files in os.walk(directory, followlinks=False):
-        directories.sort()
-        for name in directories:
-            candidate = os.path.join(current, name)
-            relative = os.path.relpath(candidate, directory)
-            nested_directories.append(relative)
-        for name in sorted(files):
-            candidate = os.path.join(current, name)
-            relative = os.path.relpath(candidate, directory)
-            contained = child(directory, relative)
-            if not os.path.isfile(contained):
-                raise RuntimeError("title tree contains a non-regular file")
-            contained_files.append(contained)
-    return contained_files, nested_directories
-
-
-def _expected_title_files(rid, title):
-    """Return declared outputs and whether their manifest paths are exact."""
-    expected = {"sections.jsonl", rid + ".md"}
-    metadata_ok = (
-        title.get("markdown") == "markdown/%s/%s.md" % (rid, rid)
-        and title.get("sections_jsonl") == "markdown/%s/sections.jsonl" % rid
-    )
-    if title.get("endnotes"):
-        expected.add("endnotes.md")
-        metadata_ok = (metadata_ok and title.get("endnotes") ==
-                       "markdown/%s/endnotes.md" % rid)
-    else:
-        metadata_ok = metadata_ok and title.get("endnotes") in {None, False}
-    return expected, metadata_ok
+    try:
+        return _verifier_title_tree(directory)
+    except ValueError as error:
+        raise RuntimeError(str(error)) from error
 
 
 def _title_privacy_findings(directory, rid, title, approved):

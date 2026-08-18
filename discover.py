@@ -1,6 +1,8 @@
 """Stage 1: discover in-force principal tax Acts, and probe the 'latest' download alias."""
 import json, time, urllib.parse, subprocess, os
 
+from curl_fetch import curl_json as _curl_json
+
 API = "https://api.prod.legislation.gov.au/v1"
 SCRATCH = os.path.dirname(os.path.abspath(__file__))
 
@@ -11,25 +13,8 @@ COLLECTIONS = ["Act", "LegislativeInstrument", "NotifiableInstrument"]
 
 
 def curl_json(url, tries=3):
-    """curl leaves the previous response in place when a transfer fails, so a
-    shared temp file silently returns the PREVIOUS page as if it were this one.
-    On the paging path that is exactly how 142 titles went missing."""
-    dst = os.path.join(SCRATCH, "_tmp.json")
-    for _attempt in range(tries):
-        if os.path.exists(dst):
-            os.remove(dst)
-        r = subprocess.run(["curl", "-sL", "--max-time", "90", "-o", dst, url],
-                           capture_output=True)
-        if r.returncode == 0:
-            try:
-                with open(dst, encoding="utf-8") as f:
-                    d = json.load(f)
-                if "error" not in d:
-                    return d
-            except Exception:
-                pass
-        time.sleep(5)
-    return None
+    """This stage's temp file and retry pace; the trap is in curl_fetch.py."""
+    return _curl_json(url, os.path.join(SCRATCH, "_tmp.json"), tries, delay=5)
 
 
 def page_titles(keyword, collection="Act"):
