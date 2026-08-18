@@ -33,7 +33,9 @@ jobs:
       # No -q here: pyproject's addopts already sets it, and a second -q makes
       # it -qq, which drops the pass/fail count from the log. Without the count
       # a test file that stops being collected leaves every leg green.
-      - run: uv run --locked --extra dev --python ${{ matrix.python }} pytest
+      - run: uv run --locked --extra dev pytest
+        env:
+          UV_PYTHON: ${{ matrix.python }}
 
   package:
     permissions:
