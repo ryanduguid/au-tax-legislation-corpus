@@ -348,7 +348,7 @@ def table_split(body, name):
     matters twice over. On the TPB instruments it carries the sentence naming
     the enabling provision, without which a table of names and dates says
     nothing. On Excise By-law No. 127, which prescribes petroleum fields one
-    table per basin, it carries the basin name — and the operative paragraphs
+    table per basin, it carries the basin name, and the operative paragraphs
     ahead of the first table become their own chunk instead of being dropped.
     Discarding the interleaved prose was a real loss of text, not a tidier
     result.
@@ -580,7 +580,7 @@ def to_markdown(blocks, meta, force_bare=False):
             nxt = blocks[paras[pos + 1]]
             base_n = (nxt["cls"].split() or [""])[0]
             # Any style at all counts. COSMETIC_CLASS must not be used here: it
-            # matches BodyText, which prefix-matches BodyText1 — the very class
+            # matches BodyText, which prefix-matches BodyText1, the very class
             # that marks the styled body under an unstyled heading.
             if base_n and not SKIP_CLASS.match(base_n):
                 classless_heads.add(i)
