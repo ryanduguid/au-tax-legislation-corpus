@@ -1,30 +1,15 @@
 """Stage 2: dedup titles properly, then resolve each Act's current version date."""
-import json, time, urllib.parse, subprocess, os
+import json, time, urllib.parse, os
+
+from curl_fetch import curl_json as _curl_json
 
 API = "https://api.prod.legislation.gov.au/v1"
 SCRATCH = os.path.dirname(os.path.abspath(__file__))
 
 
 def curl_json(url, tries=3):
-    """curl leaves the previous response in place when a transfer fails, so the
-    temp file must be removed each attempt and the exit code checked. Without
-    this, one Act silently inherits another Act's version record."""
-    dst = os.path.join(SCRATCH, "_v.json")
-    for _ in range(tries):
-        if os.path.exists(dst):
-            os.remove(dst)
-        p = subprocess.run(["curl", "-sL", "--max-time", "90", "-o", dst, url],
-                           capture_output=True)
-        if p.returncode == 0:
-            try:
-                with open(dst, encoding="utf-8") as f:
-                    d = json.load(f)
-                if "error" not in d:
-                    return d
-            except Exception:
-                pass
-        time.sleep(6)
-    return None
+    """This stage's temp file; the trap is in curl_fetch.py."""
+    return _curl_json(url, os.path.join(SCRATCH, "_v.json"), tries)
 
 
 def main():

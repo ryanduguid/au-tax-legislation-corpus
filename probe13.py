@@ -1,22 +1,13 @@
-import json, os, subprocess, time, urllib.parse
+import json, os, time, urllib.parse
+
+from curl_fetch import curl_json as _curl_json
 
 API = "https://api.prod.legislation.gov.au/v1"
 SCRATCH = os.path.dirname(os.path.abspath(__file__))
 
 
 def curl_json(url, tries=3):
-    dst = os.path.join(SCRATCH, "_p13.json")
-    for _ in range(tries):
-        if os.path.exists(dst): os.remove(dst)
-        p = subprocess.run(["curl","-sL","--max-time","90","-o",dst,url], capture_output=True)
-        if p.returncode == 0:
-            try:
-                with open(dst, encoding="utf-8") as source:
-                    d = json.load(source)
-                if "error" not in d: return d
-            except Exception: pass
-        time.sleep(6)
-    return None
+    return _curl_json(url, os.path.join(SCRATCH, "_p13.json"), tries)
 
 
 def main():
