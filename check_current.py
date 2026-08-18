@@ -11,9 +11,10 @@ version comes back, this asks again without the isCurrent filter: versions but
 none current means the title has fallen out of force, nothing at all means the
 lookup failed. Reporting both as one number hid a repeal behind a network error.
 """
-import json, os, subprocess, sys, time, urllib.parse
+import json, os, sys, time, urllib.parse
 
 from corpus_paths import child, corpus_root
+from curl_fetch import curl_json as _curl_json
 
 API = "https://api.prod.legislation.gov.au/v1"
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -24,24 +25,8 @@ DELAY = 1.5
 
 
 def curl_json(url, tries=3):
-    """curl does not truncate -o on transport failure, so a stale file from the
-    previous request would be re-read and silently reported as a fresh answer."""
-    dst = child(ROOT, "_check_tmp.json")
-    for _ in range(tries):
-        if os.path.exists(dst):
-            os.remove(dst)
-        p = subprocess.run(["curl", "-sL", "--max-time", "90", "-o", dst, url],
-                           capture_output=True)
-        if p.returncode == 0:
-            try:
-                with open(dst, encoding="utf-8") as f:
-                    d = json.load(f)
-                if "error" not in d:
-                    return d
-            except Exception:
-                pass
-        time.sleep(6)
-    return None
+    """This stage's temp file; the trap is in curl_fetch.py."""
+    return _curl_json(url, child(ROOT, "_check_tmp.json"), tries)
 
 
 def main():

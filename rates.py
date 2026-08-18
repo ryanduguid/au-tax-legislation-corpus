@@ -277,9 +277,9 @@ def main():
                     if not (has_money or has_pct or has_factor):
                         continue
                     # A percentage stands on its own. Requiring the word "rate"
-                    # alongside it dropped s 9-70 of the GST Act — "The amount of
+                    # alongside it dropped s 9-70 of the GST Act, "The amount of
                     # GST on a taxable supply is 10% of the value of the taxable
-                    # supply" — which is the operative charging provision for the
+                    # supply", which is the operative charging provision for the
                     # whole tax. Dollar amounts still need a phrase, because
                     # legislation is full of incidental sums.
                     if not has_pct and not (RATE_PHRASE.search(sentence)

@@ -188,9 +188,13 @@ def main(retrieved):
             } for a in ok
         ],
         "titles_without_epub": [
+            # download.py stops on HTTP and content errors rather than record
+            # them, so a missing title carries only its 'reason': the explicit
+            # no-document case. The httpCode/contentType keys read here before
+            # were never written by any downloader this repository has held.
             {"register_id": a["id"], "name": a["name"],
              "collection": a.get("collection"),
-             "http_code": a.get("httpCode"), "content_type": a.get("contentType")}
+             "reason": a.get("reason")}
             for a in missing
         ],
     }
@@ -237,12 +241,12 @@ def main(retrieved):
                 a.get("collection") or "-", a["id"], f"{a['_rows']:,}"))
     if missing:
         idx += ["", "## Titles with no EPUB available", "",
-                "| Title | Collection | Register ID | HTTP | Content-Type |",
-                "|---|---|---|---|---|"]
+                "| Title | Collection | Register ID | Reason |",
+                "|---|---|---|---|"]
         for a in missing:
-            idx.append("| %s | %s | %s | %s | %s |" % (
+            idx.append("| %s | %s | %s | %s |" % (
                 a["name"], a.get("collection") or "-", a["id"],
-                a.get("httpCode"), a.get("contentType")))
+                a.get("reason") or "-"))
     with open(child(ROOT, "INDEX.md"), "w", encoding="utf-8") as f:
         f.write("\n".join(idx) + "\n")
 
@@ -285,16 +289,16 @@ instruments. {rows} retrieval rows, {words} words.
 
 Each title is stored as:
 
-- `epub/<register_id>.epub` — the file exactly as the Register served it
-- `markdown/<register_id>/<register_id>.md` — full text with YAML frontmatter
-- `markdown/<register_id>/sections.jsonl` — one row per section, ready for RAG
-- `markdown/<register_id>/endnotes.md` — amendment history, kept out of the sections
+- `epub/<register_id>.epub`: the file exactly as the Register served it
+- `markdown/<register_id>/<register_id>.md`: full text with YAML frontmatter
+- `markdown/<register_id>/sections.jsonl`: one row per section, ready for RAG
+- `markdown/<register_id>/endnotes.md`: amendment history, kept out of the sections
 
 Plus a derived index:
 
-- `rates/rates.jsonl` — every provision carrying a rate, threshold, factor or
+- `rates/rates.jsonl`: every provision carrying a rate, threshold, factor or
   indexation rule, bucketed by topic and cited back to its section
-- `rates/RATES.md` — the same, readable
+- `rates/RATES.md`: the same, readable
 
 `sources.json` records the register id, collection, compilation number and
 compilation date for every title.
@@ -340,12 +344,12 @@ retrieval, not for citation in formal advice.
 
 **Legislation only.** No ATO rulings, determinations or practice statements, no
 case law, no explanatory memoranda. Figures the ATO computes rather than
-Parliament enacts are therefore absent — the FBT gross-up factors, the Division
+Parliament enacts are therefore absent: the FBT gross-up factors, the Division
 7A benchmark rate and the indexed superannuation caps among them. The Acts and
 instruments give you the formula; the ATO publishes the result.
 
 **Selection is by title keyword.** A tax-relevant title without Tax, Excise,
-Superannuation, Customs Tariff or Medicare Levy in its name is absent — the
+Superannuation, Customs Tariff or Medicare Levy in its name is absent: the
 Customs Act 1901 and Charities Act 2013 among them.
 
 **Some collected titles are not tax law.** Three ways they got in:
@@ -375,13 +379,13 @@ values. Images inside a cell stay in that cell.
 **Some instruments have no structure to find.** {whole} of them are stored as a
 single `whole_act` row rather than split by section, because the document
 genuinely has no sections and is short enough that one row is the right chunk.
-No text is lost — retrieval returns the whole instrument.
+No text is lost: retrieval returns the whole instrument.
 
 **Table-shaped instruments are split on their tables.** {tabled} titles carry
 `granularity: table_block`: no headings anywhere, just a run of tables. The Tax
 Practitioners Board publishes its terminations this way, and Excise By-law No.
 127 prescribes petroleum fields one table per basin. Each table becomes a row,
-carrying the prose that preceded it — the sentence naming the enabling
+carrying the prose that preceded it: the sentence naming the enabling
 provision, or the basin name. The largest of these was a single 14,928-word row
 before the split.
 
@@ -440,10 +444,11 @@ survives a nested paragraph.
 
     build_dir = child(ROOT, "build")
     os.makedirs(build_dir, exist_ok=True)
-    for name in ("check_current.py", "corpus_paths.py"):
+    for name in ("check_current.py", "corpus_paths.py", "curl_fetch.py"):
         copy_if_different(os.path.join(SCRATCH, name), child(ROOT, name))
     for name in ("discover.py", "versions.py", "download.py", "extract.py",
-                 "finalize.py", "check_current.py", "corpus_paths.py"):
+                 "finalize.py", "check_current.py", "corpus_paths.py",
+                 "curl_fetch.py"):
         copy_if_different(os.path.join(SCRATCH, name),
                           child(build_dir, name))
 

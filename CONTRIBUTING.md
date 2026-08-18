@@ -4,7 +4,7 @@ The code here builds a corpus rather than carrying one. The pipeline downloads i
 
 ## Data boundary
 
-- Keep built artifacts out of git. The `.gitignore` blocks `epub/`, `markdown/`, `rates/`, `external/`, `corpus/`, `sources.json`, `INDEX.md`, `LICENCE-NOTICE.md` and the download logs. Commit the builder and leave its output on disk.
+- Keep built artefacts out of git. The `.gitignore` blocks `epub/`, `markdown/`, `rates/`, `external/`, `corpus/`, `sources.json`, `INDEX.md`, `LICENCE-NOTICE.md` and the download logs. Commit the builder and leave its output on disk.
 - Do not commit material whose licence forbids redistribution, and leave the licence notice the pipeline generates in place.
 - The PII scan exists because source documents carry names and identifiers. Keep its findings out of commit messages and pull request bodies.
 
