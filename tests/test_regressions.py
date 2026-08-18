@@ -1631,6 +1631,40 @@ class PiiNameGateTests(unittest.TestCase):
         self.assertEqual(list(patterns.contact_fingerprints(
             "The expression tax file number 7/subsection 2 is a heading.")), [])
 
+    def test_phone_gate_sees_unspaced_international_and_short_code_forms(self):
+        patterns = load_module("pii_patterns_phone_forms", REPO / "pii_patterns.py")
+        for text in ("0412345678", "0212345678", "0412 345 678",
+                     "+61 2 1234 5678", "+61412345678", "+61 (0)2 1234 5678",
+                     "+61 (02) 1234 5678", "13 24 68", "132468",
+                     "1300 123 456", "1800123456"):
+            self.assertTrue(patterns.PHONE.search(text), text)
+        for text in ("s 12345678", "section 123 456", "the year 2026",
+                     "$1,234,567", "a $1 300 000 000 appropriation",
+                     "$100 000 000", "ABN 12 345 678 901"):
+            self.assertFalse(patterns.PHONE.search(text), text)
+        # National and international notation of one number fingerprint
+        # identically, so a single allowlist decision covers both spellings.
+        self.assertEqual(list(patterns.contact_fingerprints("(02) 1234 5678")),
+                         list(patterns.contact_fingerprints("+61 2 1234 5678")))
+
+    def test_tfn_gate_sees_abbreviated_labels_and_bare_nine_digit_runs(self):
+        patterns = load_module("pii_patterns_tfn_forms", REPO / "pii_patterns.py")
+        labelled = list(patterns.contact_fingerprints("TFN: 123 456 782"))
+        self.assertEqual([kind for kind, _ in labelled], ["tfn"])
+        # The abbreviation, the full label, and the bare grouped or contiguous
+        # run all normalise to one fingerprint feeding the same gate.
+        for text in ("Tax file number: 123456782", "TFN 123-456-782",
+                     "123 456 782", "123456782"):
+            self.assertEqual(list(patterns.contact_fingerprints(text)),
+                             labelled, text)
+        # A bare run must carry the TFN check digit; statute references,
+        # years, amounts and ABN groupings stay outside the gate.
+        for text in ("section 123 456", "s 12345678", "the year 2026",
+                     "$1,234,567", "123 456 789", "$123 456 782",
+                     "worth $100 000 000 in total", "ABN 12 345 678 901"):
+            self.assertEqual(list(patterns.contact_fingerprints(text)),
+                             [], text)
+
     def test_contact_allowlist_is_bound_to_kind_digest_and_title(self):
         patterns = load_module("pii_patterns_policy", REPO / "pii_patterns.py")
         rid = "C2004A00001"

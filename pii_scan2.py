@@ -9,7 +9,8 @@ is the shape of a disciplinary table. Two things that shape misses:
 So this drops the threshold to a single name-plus-number pairing, and sweeps
 separately for emails, phone numbers and tax file numbers anywhere in the
 corpus. A statute quoting "1 300 000 000" as a dollar figure is not a phone
-number, so the phone pattern requires the conventional grouping.
+number, so the phone pattern pins its digit counts and prefixes even though
+it now accepts unspaced, +61 and 13/1300/1800 forms.
 """
 import collections
 import glob
