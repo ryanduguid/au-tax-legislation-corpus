@@ -29,17 +29,22 @@ def pii_summary():
 
     Derived from pii_flagged.json rather than hardcoded in prose, which is how
     the corpus README came to claim eleven titles and 3,750 names against a
-    committed scan showing twelve and 5,404. pii_scan.py runs after this stage
-    in the documented pipeline, so on a fresh build the scan output may not
-    exist yet; fall back to the totals of the last committed scan.
+    committed scan showing twelve and 5,404. The documented pipeline runs
+    pii_scan.py and pii_scan2.py before this stage, so the scan output must
+    exist here. A missing or unreadable file means the stages ran out of
+    order; refuse to write a README carrying unverified counts.
     """
+    path = os.path.join(SCRATCH, "pii_flagged.json")
     try:
-        with open(os.path.join(SCRATCH, "pii_flagged.json"), encoding="utf-8") as f:
+        with open(path, encoding="utf-8") as f:
             flagged = json.load(f)
         titles = len(flagged)
         names = sum(int(t.get("names_est") or 0) for t in flagged)
-    except (OSError, ValueError, TypeError):
-        titles, names = 12, 5400
+    except (OSError, ValueError, TypeError) as error:
+        raise RuntimeError(
+            "pii_flagged.json is missing or unreadable (%s); run pii_scan.py "
+            "and pii_scan2.py before finalize.py so the README's PII counts "
+            "come from a real scan" % error)
     # The paragraph says "about", so round the mention count to the nearest 50.
     return titles, int(round(names / 50.0)) * 50
 

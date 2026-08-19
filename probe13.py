@@ -20,11 +20,20 @@ def main():
     output = []
     for item in missing:
         rid = item["id"]
+        # Descending by start: $top caps the page, so ascending order would
+        # return the 60 OLDEST versions and a long-history title would resolve
+        # to a decades-old compilation.
         response = curl_json(
-            "%s/versions?$top=60&$orderby=start&$filter=%s&$select=titleId,start,end,isCurrent,compilationNumber,registerId"
+            "%s/versions?$top=60&$orderby=start%%20desc&$filter=%s&$select=titleId,start,end,isCurrent,compilationNumber,registerId"
             % (API, urllib.parse.quote("titleId eq '%s'" % rid))
         )
-        versions = (response or {}).get("value") or []
+        if response is None:
+            # retry13.py treats an entry without versions as unrecoverable, so
+            # swallowing an API failure here would silently drop the title.
+            raise RuntimeError(
+                "version lookup failed for %s after retries; refusing to "
+                "write probe13.json with that title missing" % rid)
+        versions = response.get("value") or []
         with_document = [version for version in versions if version.get("registerId")]
         current = [version for version in versions if version.get("isCurrent")]
         latest = max(with_document, key=lambda version: version["start"]) if with_document else None

@@ -31,7 +31,13 @@ def main():
                           "titleId eq 'C2004A05138' and isCurrent eq true")))
     print("\nprobe isCurrent filter:", json.dumps(probe.get("value") if probe else None)[:200])
     if not probe or not probe.get("value"):
-        print("!! isCurrent filter unusable, falling back to ordered scan per Act")
+        # No fallback exists: an earlier revision advertised an "ordered scan
+        # per Act" here that was never implemented. If the isCurrent filter is
+        # unusable, every per-Act lookup below comes back empty, each title
+        # lands in `failed`, and the stage raises instead of writing a partial
+        # acts_resolved.json. The probe result is a diagnostic, not a switch.
+        print("!! isCurrent filter unusable; every per-Act lookup will fail "
+              "and this stage will refuse to write acts_resolved.json")
 
     resolved, failed = [], []
     for i, t in enumerate(principal, 1):
