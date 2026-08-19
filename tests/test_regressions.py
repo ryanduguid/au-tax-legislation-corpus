@@ -748,16 +748,17 @@ class FailureHandlingTests(unittest.TestCase):
 
 
 class FinalizePiiSummaryTests(unittest.TestCase):
-    def test_readme_pii_totals_derive_from_the_scan_with_a_fallback(self):
+    def test_readme_pii_totals_derive_from_the_scan_and_refuse_without_it(self):
         finalize = load_module("finalize_pii_regression", REPO / "finalize.py")
         # The committed scan: 12 titles, 5,404 name mentions, rounded to 5,400.
         self.assertEqual(finalize.pii_summary(), (12, 5400))
         with tempfile.TemporaryDirectory() as tmp:
             finalize.SCRATCH = tmp
-            # pii_scan.py runs after finalize.py in the documented pipeline,
-            # so a fresh build has no scan output yet: fall back to the last
-            # committed totals rather than crash or print prose constants.
-            self.assertEqual(finalize.pii_summary(), (12, 5400))
+            # The documented pipeline runs pii_scan.py before finalize.py, so
+            # a missing scan output means the stages ran out of order: refuse
+            # rather than print counts no scan produced.
+            with self.assertRaisesRegex(RuntimeError, "pii_flagged.json"):
+                finalize.pii_summary()
             (Path(tmp) / "pii_flagged.json").write_text(json.dumps([
                 {"register_id": "F2023N00096", "names_est": 130},
                 {"register_id": "F2021N00219", "names_est": 220},
@@ -799,6 +800,8 @@ class FinalizeMissingTitleTests(unittest.TestCase):
             (build / "manifest_md.json").write_text(json.dumps([ok]), encoding="utf-8")
             (build / "manifest_raw.json").write_text(
                 json.dumps([ok, missing]), encoding="utf-8")
+            # finalize.py refuses to run without the PII scan output.
+            (build / "pii_flagged.json").write_text("[]\n", encoding="utf-8")
             folder = base / "markdown" / "C2004A00001"
             folder.mkdir(parents=True)
             (folder / "sections.jsonl").write_text(json.dumps({
