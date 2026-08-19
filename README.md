@@ -2,13 +2,23 @@
 
 [![Verify](https://github.com/ryanduguid/au-tax-legislation-corpus/actions/workflows/verify.yml/badge.svg)](https://github.com/ryanduguid/au-tax-legislation-corpus/actions/workflows/verify.yml) [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 
-Nine Python scripts that download every in-force principal Commonwealth tax
-title from the Federal Register of Legislation and turn it into a retrieval
-corpus: full-text markdown with provenance front matter, one JSONL row per
-section, and a derived rates-and-thresholds index.
+A pipeline of small Python scripts that downloads every in-force principal
+Commonwealth tax title from the Federal Register of Legislation and turns it
+into a retrieval corpus: full-text markdown with provenance front matter, one
+JSONL row per section, and a derived rates-and-thresholds index.
 
 No dependencies beyond the standard library and `curl`. No API key: the
 Register's API is free and unauthenticated.
+
+## For practitioners
+
+Run the pipeline and you get the current compilations of 946 tax titles as
+plain markdown and per-section JSONL rows, each row carrying its register id,
+compilation number, compilation date and source URL, so a quoted provision can
+be traced back to the exact version it came from. You also get a derived index
+of 4,149 rates and thresholds across 286 titles, each entry citing the Act and
+section that sets it. It is a finding aid built from the Register's own
+documents, not advice and not the authorised text.
 
 **This repository holds the code, not the corpus.** The output is roughly a
 gigabyte and includes material that should not be redistributed casually; see
@@ -65,7 +75,7 @@ Every JSONL row carries its own register id, collection, compilation number,
 compilation date, section, source URL, licence and attribution, because rows
 travel independently of the file they came from.
 
-## Running it
+## Running the pipeline
 
 The builder deliberately does **not** read `ATO_KB_ROOT` or `ATO_DIST`.
 Environment-selected output roots made it possible for a poisoned process
@@ -74,29 +84,38 @@ checkout, generated corpus files live in the deterministic `./corpus/`
 directory. To build at another location, place the scripts in that location's
 `build/` directory; they then use the parent directory as the corpus root.
 
+From an empty checkout, run the stages in order:
+
 ```bash
-python discover.py      # -> titles_all.json, titles_principal.json
-python versions.py      # -> acts_resolved.json
-python download.py      # -> ./corpus/epub/*.epub, manifest_raw.json
-python probe13.py       # only if download reports no_epub
-python retry13.py       # -> retry13_patch.json; patches manifest_raw.json in place
-python extract.py       # -> ./corpus/markdown/**, manifest_md.json
-python finalize.py      # -> ./corpus/sources.json, INDEX.md, README.md, LICENCE-NOTICE.md
-python rates.py         # -> ./corpus/rates/rates.jsonl, RATES.md
+python discover.py      # list every in-force title matching the tax keywords -> titles_all.json, titles_principal.json
+python versions.py      # dedup titles and resolve each one's current version date -> acts_resolved.json
+python download.py      # fetch the current EPUB for each resolved title -> ./corpus/epub/*.epub, manifest_raw.json
+python probe13.py       # only if download reports no_epub: probe version history -> probe13.json
+python retry13.py       # fetch the latest published compilation for those titles -> retry13_patch.json; patches manifest_raw.json in place
+python extract.py       # convert each EPUB to markdown and per-section JSONL -> ./corpus/markdown/**, manifest_md.json
+python finalize.py      # write the corpus-level index and licence files -> ./corpus/sources.json, INDEX.md, README.md, LICENCE-NOTICE.md
+python rates.py         # derive the rates-and-thresholds index -> ./corpus/rates/rates.jsonl, RATES.md
 python check_current.py # read-only staleness check against the Register
 ```
 
 To produce a corpus you can pass on to someone else:
 
 ```bash
-python pii_scan.py      # -> pii_flagged.json, the titles that name people
-python pii_scan2.py     # second pass at a lower threshold, plus contact details
-python dist.py          # -> ./corpus/dist/, the redistributable subset
-python dist_verify.py   # checks the built subset, exits non-zero if any check fails
+python pii_scan.py      # flag disciplinary-register rows naming private individuals -> pii_flagged.json
+python pii_scan2.py     # second pass at a lower threshold, plus emails, phones and TFNs
+python dist.py          # build the redistributable subset -> ./corpus/dist/
+python dist_verify.py   # check the built subset against its own claims, exits non-zero on failure
 ```
 
-The intermediate JSON files from the 4 August run are committed, so any single
-stage re-runs without repeating the earlier ones.
+`corpus_paths.py`, `curl_fetch.py` and `pii_patterns.py` are shared modules the
+stages import; they are not run directly.
+
+The intermediate JSON files (`titles_all.json`, `acts_resolved.json`,
+`manifest_raw.json`, `probe13.json`, `retry13_patch.json`) are build outputs
+the pipeline regenerates; they are not committed or shipped. Each stage writes
+its file beside the scripts, so any single stage re-runs without repeating the
+earlier ones. `manifest_md.json` from the 4 August run stays committed because
+the regression suite pins its pre-fix figures against BUILD.md.
 
 `download.py` sleeps 10 seconds between titles, honouring the `Crawl-delay` in
 https://www.legislation.gov.au/robots.txt, so a full download is about 2 hours
