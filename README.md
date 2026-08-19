@@ -93,16 +93,20 @@ python download.py      # fetch the current EPUB for each resolved title -> ./co
 python probe13.py       # only if download reports no_epub: probe version history -> probe13.json
 python retry13.py       # fetch the latest published compilation for those titles -> retry13_patch.json; patches manifest_raw.json in place
 python extract.py       # convert each EPUB to markdown and per-section JSONL -> ./corpus/markdown/**, manifest_md.json
+python pii_scan.py      # flag disciplinary-register rows naming private individuals -> pii_flagged.json
+python pii_scan2.py     # second pass at a lower threshold, plus emails, phones and TFNs
 python finalize.py      # write the corpus-level index and licence files -> ./corpus/sources.json, INDEX.md, README.md, LICENCE-NOTICE.md
 python rates.py         # derive the rates-and-thresholds index -> ./corpus/rates/rates.jsonl, RATES.md
 python check_current.py # read-only staleness check against the Register
 ```
 
+The PII scans run before `finalize.py` because the generated corpus README
+reports the scan's totals; `finalize.py` refuses to run without
+`pii_flagged.json` rather than print counts no scan produced.
+
 To produce a corpus you can pass on to someone else:
 
 ```bash
-python pii_scan.py      # flag disciplinary-register rows naming private individuals -> pii_flagged.json
-python pii_scan2.py     # second pass at a lower threshold, plus emails, phones and TFNs
 python dist.py          # build the redistributable subset -> ./corpus/dist/
 python dist_verify.py   # check the built subset against its own claims, exits non-zero on failure
 ```
