@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import ast
+import copy
 import hashlib
 import json
 from pathlib import Path
@@ -22,6 +23,63 @@ def _queue():
         observation_path=sample_path("observations", "sample-register-observation.json"),
         mapping_path=sample_path("mappings", "sample-source-skill-map.json"),
     )
+
+
+def _expected_queue_digest(queue: dict) -> str:
+    payload = {key: value for key, value in queue.items() if key != "queue_digest"}
+    return "sha256:" + sha256_json(payload)
+
+
+def _matching_decision(queue: dict) -> dict:
+    open_item = next(item for item in queue["items"] if item["state"] == "OPEN")
+    return {
+        "schema_version": "au-tax-technical-review.v2",
+        "run_id": queue["run_id"],
+        "queue_digest": queue["queue_digest"],
+        "reviewer_ref": "demo-tax-reviewer",
+        "reviewed_at": "2026-08-09T00:00:00Z",
+        "decisions": [
+            {
+                "item_id": open_item["item_id"],
+                "decision": "ESCALATE_TECHNICAL_REVIEW",
+                "rationale": "Synthetic fixture requires technical-tax assessment.",
+                "evidence_note": "Reviewed the fabricated source metadata and fixture link.",
+            }
+        ],
+    }
+
+
+def _matching_decision_for_all_open_items(queue: dict) -> dict:
+    decision = _matching_decision(queue)
+    template = decision["decisions"][0]
+    decision["decisions"] = [
+        {**template, "item_id": item["item_id"]}
+        for item in queue["items"]
+        if item["state"] == "OPEN"
+    ]
+    assert decision["decisions"]
+    return decision
+
+
+def _validate_payloads(
+    tmp_path: Path, queue: dict, decision: dict
+) -> dict:
+    queue_path = tmp_path / "impact-queue.json"
+    decision_path = tmp_path / "technical-review.json"
+    queue_path.write_text(json.dumps(queue), encoding="utf-8")
+    decision_path.write_text(json.dumps(decision), encoding="utf-8")
+    return validate_review(queue_path=queue_path, decision_path=decision_path)
+
+
+def _json_with_conflicting_duplicate(
+    payload: dict, *, target: dict, key: str, conflicting_value: object
+) -> str:
+    """Serialise a payload while retaining a conflicting first JSON member."""
+    encoded = json.dumps(payload)
+    original = f"{json.dumps(key)}: {json.dumps(target[key])}"
+    assert encoded.count(original) == 1
+    duplicate = f"{json.dumps(key)}: {json.dumps(conflicting_value)}, {original}"
+    return encoded.replace(original, duplicate, 1)
 
 
 def _payload(kind: str, name: str) -> dict:
@@ -58,6 +116,519 @@ def _clear_compilation(entry: dict) -> dict:
     for field in ("observed_compilation_number", "observed_compilation_date", "observed_register_document_id"):
         entry[field] = None
     return entry
+
+
+def _independent_changed_item(
+    template: dict,
+    *,
+    change_kind: str,
+    state: str,
+    mapping_status: str,
+    observed_compilation: bool,
+) -> dict:
+    item = copy.deepcopy(template)
+    item["item_id"] = (
+        "impact:independent-"
+        f"{change_kind.lower()}-{mapping_status.lower()}-"
+        f"{'observed' if observed_compilation else 'null'}"
+    )
+    item["change_kind"] = change_kind
+    item["state"] = state
+    item["source"]["observed_compilation"] = (
+        copy.deepcopy(template["source"]["observed_compilation"])
+        if observed_compilation
+        else None
+    )
+    item["mapping_status"] = mapping_status
+    if mapping_status != "MAPPED":
+        item["impact_candidates"] = []
+    return item
+
+
+def _independent_scope_item(template: dict, *, change_kind: str, suffix: str) -> dict:
+    item = copy.deepcopy(template)
+    item.update(
+        item_id=f"impact:independent-{change_kind.lower()}-{suffix}",
+        state="BLOCKED",
+        change_kind=change_kind,
+        impact_candidates=[],
+        mapping_status="NOT_EVALUATED",
+        limitations=["Synthetic scope evidence requires operator resolution."],
+    )
+    if change_kind == "INCOMPLETE_SCOPE":
+        item["source"] = None
+    else:
+        item["source"]["observed_compilation"] = None
+    return item
+
+
+def _bind_independent_queue(
+    queue: dict, *, complete: bool, items: list[dict]
+) -> tuple[dict, dict]:
+    queue = copy.deepcopy(queue)
+    queue["observation"]["complete"] = complete
+    queue["items"] = copy.deepcopy(items)
+    queue["run_status"] = (
+        "BLOCKED"
+        if any(item["state"] == "BLOCKED" for item in items)
+        else "REVIEW_REQUIRED" if items else "NO_CHANGE_DETECTED"
+    )
+    queue["queue_digest"] = _expected_queue_digest(queue)
+    return queue, _matching_decision_for_all_open_items(queue)
+
+
+def test_queue_digest_is_present_and_deterministic() -> None:
+    first = _queue()
+    second = _queue()
+
+    assert first["queue_digest"] == _expected_queue_digest(first)
+    assert second["queue_digest"] == first["queue_digest"]
+
+
+def test_queue_digest_and_source_digests_include_the_mapping_snapshot(
+    tmp_path: Path,
+) -> None:
+    original_mapping = _payload("mappings", "sample-source-skill-map.json")
+    changed_mapping = copy.deepcopy(original_mapping)
+    changed_mapping["mapping_version"] += "-changed-bytes"
+
+    first_dir = tmp_path / "first"
+    second_dir = tmp_path / "second"
+    first_dir.mkdir()
+    second_dir.mkdir()
+    first = _compare_fixtures(first_dir, mapping=original_mapping)
+    second = _compare_fixtures(second_dir, mapping=changed_mapping)
+
+    assert set(first["source_digests"]) == {"baseline", "observation", "mapping"}
+    assert first["source_digests"]["mapping"] != second["source_digests"]["mapping"]
+    assert first["run_id"] != second["run_id"]
+    assert first["queue_digest"] != second["queue_digest"]
+
+
+@pytest.mark.parametrize(
+    "field",
+    [
+        "source.title",
+        "source.evidence_url",
+        "source.baseline_compilation.number",
+        "source.baseline_compilation.date",
+        "source.observed_compilation.number",
+        "source.observed_compilation.date",
+        "source.observed_compilation.document_id",
+        "impact_candidates",
+        "impact_candidates.review_question",
+        "mapping_status",
+        "limitations",
+    ],
+)
+def test_queue_digest_rejects_tampered_review_evidence(
+    tmp_path: Path, field: str
+) -> None:
+    queue = _queue()
+    decision = _matching_decision(queue)
+    item = queue["items"][0]
+    source = item["source"]
+
+    if field == "source.title":
+        source["title"] += " amended"
+    elif field == "source.evidence_url":
+        source["evidence_url"] = "https://example.test/replaced-evidence"
+    elif field == "source.baseline_compilation.number":
+        source["baseline_compilation"]["number"] = "999"
+    elif field == "source.baseline_compilation.date":
+        source["baseline_compilation"]["date"] = "2099-07-02"
+    elif field == "source.observed_compilation.number":
+        source["observed_compilation"]["number"] = "999"
+    elif field == "source.observed_compilation.date":
+        source["observed_compilation"]["date"] = "2099-08-02"
+    elif field == "source.observed_compilation.document_id":
+        source["observed_compilation"]["document_id"] = "C2099C00999"
+    elif field == "impact_candidates":
+        added = copy.deepcopy(item["impact_candidates"][0])
+        added["mapping_id"] += ":added-after-review"
+        item["impact_candidates"].append(added)
+    elif field == "impact_candidates.review_question":
+        item["impact_candidates"][0]["review_question"] += " Changed."
+    elif field == "mapping_status":
+        item["mapping_status"] = "UNMAPPED_SOURCE"
+    elif field == "limitations":
+        item["limitations"].append("Additional synthetic limitation.")
+    else:  # pragma: no cover - the parameter list controls this branch.
+        raise AssertionError(field)
+
+    with pytest.raises(MonitorError):
+        _validate_payloads(tmp_path, queue, decision)
+
+
+@pytest.mark.parametrize(
+    "location",
+    [
+        "queue",
+        "source_digests",
+        "baseline",
+        "observation",
+        "item",
+        "source",
+        "baseline_compilation",
+        "observed_compilation",
+        "candidate",
+    ],
+)
+def test_exact_queue_schemas_reject_additional_properties_before_digesting(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, location: str
+) -> None:
+    queue = _queue()
+    decision = _matching_decision(queue)
+    item = queue["items"][0]
+    targets = {
+        "queue": queue,
+        "source_digests": queue["source_digests"],
+        "baseline": queue["baseline"],
+        "observation": queue["observation"],
+        "item": item,
+        "source": item["source"],
+        "baseline_compilation": item["source"]["baseline_compilation"],
+        "observed_compilation": item["source"]["observed_compilation"],
+        "candidate": item["impact_candidates"][0],
+    }
+    targets[location]["unexpected"] = "must be rejected"
+
+    def digest_must_not_run(value: object) -> str:
+        raise AssertionError(f"digest ran before exact schema validation: {value!r}")
+
+    monkeypatch.setattr(monitor_module, "sha256_json", digest_must_not_run)
+
+    with pytest.raises(MonitorError, match="invalid shape|must contain exactly"):
+        _validate_payloads(tmp_path, queue, decision)
+
+
+@pytest.mark.parametrize(
+    ("value", "message"),
+    [
+        ("not-a-list", "limitations must be a list"),
+        ([""], "non-empty string"),
+        ([7], "non-empty string"),
+    ],
+)
+def test_exact_queue_limitations_schema_is_enforced(
+    tmp_path: Path, value: object, message: str
+) -> None:
+    queue = _queue()
+    decision = _matching_decision(queue)
+    queue["items"][0]["limitations"] = value
+
+    with pytest.raises(MonitorError, match=message):
+        _validate_payloads(tmp_path, queue, decision)
+
+
+def test_exact_queue_rejects_a_missing_mapping_digest(tmp_path: Path) -> None:
+    queue = _queue()
+    decision = _matching_decision(queue)
+    del queue["source_digests"]["mapping"]
+
+    with pytest.raises(MonitorError, match="source_digests.*invalid shape"):
+        _validate_payloads(tmp_path, queue, decision)
+
+
+def test_exact_queue_rejects_a_non_string_run_status_cleanly(
+    tmp_path: Path,
+) -> None:
+    queue = _queue()
+    decision = _matching_decision(queue)
+    queue["run_status"] = ["REVIEW_REQUIRED"]
+
+    with pytest.raises(MonitorError, match="unsupported run_status"):
+        _validate_payloads(tmp_path, queue, decision)
+
+
+def test_exact_queue_rejects_a_non_string_candidate_id_cleanly(
+    tmp_path: Path,
+) -> None:
+    queue = _queue()
+    decision = _matching_decision(queue)
+    queue["items"][0]["impact_candidates"][0]["mapping_id"] = ["map:bad"]
+
+    with pytest.raises(MonitorError, match="non-empty string"):
+        _validate_payloads(tmp_path, queue, decision)
+
+
+@pytest.mark.parametrize("location", ["item", "source", "candidate", "queue"])
+def test_tamper_additional_review_evidence_is_rejected(
+    tmp_path: Path, location: str
+) -> None:
+    queue = _queue()
+    decision = _matching_decision(queue)
+    item = queue["items"][0]
+    targets = {
+        "item": item,
+        "source": item["source"],
+        "candidate": item["impact_candidates"][0],
+        "queue": queue,
+    }
+    targets[location]["unreviewed_property"] = "not in the decision"
+
+    with pytest.raises(MonitorError):
+        _validate_payloads(tmp_path, queue, decision)
+
+
+def test_tamper_with_unchanged_run_id_is_rejected_by_queue_digest(
+    tmp_path: Path,
+) -> None:
+    queue = _queue()
+    decision = _matching_decision(queue)
+    original_run_id = queue["run_id"]
+    queue["items"][0]["source"]["title"] += " changed after review"
+    # Model an attacker who can rewrite the queue and update its self-digest,
+    # but cannot rewrite the human's already-recorded decision.
+    queue["queue_digest"] = _expected_queue_digest(queue)
+
+    assert queue["run_id"] == original_run_id
+    with pytest.raises(MonitorError, match="decision.*queue_digest"):
+        _validate_payloads(tmp_path, queue, decision)
+
+
+@pytest.mark.parametrize("change", ["missing", "different"])
+def test_queue_digest_is_required_in_the_decision(
+    tmp_path: Path, change: str
+) -> None:
+    queue = _queue()
+    decision = _matching_decision(queue)
+    if change == "missing":
+        del decision["queue_digest"]
+    else:
+        decision["queue_digest"] = "sha256:" + "0" * 64
+
+    with pytest.raises(MonitorError, match="queue_digest"):
+        _validate_payloads(tmp_path, queue, decision)
+
+
+@pytest.mark.parametrize("location", ["decision", "entry"])
+def test_exact_queue_decision_schemas_reject_additional_properties(
+    tmp_path: Path, location: str
+) -> None:
+    queue = _queue()
+    decision = _matching_decision(queue)
+    target = decision if location == "decision" else decision["decisions"][0]
+    target["unexpected"] = "must be rejected"
+
+    with pytest.raises(MonitorError, match="exactly"):
+        _validate_payloads(tmp_path, queue, decision)
+
+
+def test_queue_digest_validation_receipt_records_both_identifiers(
+    tmp_path: Path,
+) -> None:
+    queue = _queue()
+    decision = _matching_decision(queue)
+
+    receipt = _validate_payloads(tmp_path, queue, decision)
+
+    assert receipt["status"] == "DECISION_RECORDED"
+    assert receipt["run_id"] == queue["run_id"]
+    assert receipt["queue_digest"] == queue["queue_digest"]
+
+
+@pytest.mark.parametrize(
+    ("artefact", "location"),
+    [
+        ("queue", "top_level"),
+        ("queue", "source_title"),
+        ("decision", "reviewer_ref"),
+        ("decision", "entry_item_id"),
+    ],
+)
+def test_duplicate_json_members_are_rejected_before_canonicalisation(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    artefact: str,
+    location: str,
+) -> None:
+    queue = _queue()
+    decision = _matching_decision(queue)
+    queue_text = json.dumps(queue)
+    decision_text = json.dumps(decision)
+
+    if artefact == "queue":
+        target, key, conflicting_value = {
+            "top_level": (queue, "run_status", "BLOCKED"),
+            "source_title": (
+                queue["items"][0]["source"],
+                "title",
+                "Conflicting first-consumer title",
+            ),
+        }[location]
+        queue_text = _json_with_conflicting_duplicate(
+            queue, target=target, key=key, conflicting_value=conflicting_value
+        )
+    else:
+        target, key, conflicting_value = {
+            "reviewer_ref": (
+                decision,
+                "reviewer_ref",
+                "conflicting-first-reviewer",
+            ),
+            "entry_item_id": (
+                decision["decisions"][0],
+                "item_id",
+                "impact:conflicting-first-item",
+            ),
+        }[location]
+        decision_text = _json_with_conflicting_duplicate(
+            decision, target=target, key=key, conflicting_value=conflicting_value
+        )
+
+    queue_path = tmp_path / "impact-queue.json"
+    decision_path = tmp_path / "technical-review.json"
+    queue_path.write_text(queue_text, encoding="utf-8")
+    decision_path.write_text(decision_text, encoding="utf-8")
+
+    def digest_must_not_run(value: object) -> str:
+        raise AssertionError(
+            f"canonicalisation ran before duplicate-member rejection: {value!r}"
+        )
+
+    monkeypatch.setattr(monitor_module, "sha256_json", digest_must_not_run)
+
+    with pytest.raises(MonitorError, match="duplicate JSON members"):
+        validate_review(queue_path=queue_path, decision_path=decision_path)
+
+
+@pytest.mark.parametrize("mapping_status", ["MAPPED", "UNMAPPED_SOURCE"])
+@pytest.mark.parametrize(
+    ("change_kind", "state", "observed_compilation"),
+    [
+        ("SUPERSEDED", "OPEN", True),
+        ("CURRENT_NO_PUBLISHED_COMPILATION", "BLOCKED", False),
+        ("NO_LONGER_IN_FORCE", "OPEN", False),
+        ("LOOKUP_FAILED", "BLOCKED", False),
+        ("BASELINE_NOT_CURRENT", "BLOCKED", True),
+        ("BASELINE_NOT_CURRENT", "BLOCKED", False),
+    ],
+)
+def test_supported_queue_matrix_accepts_every_changed_kind_and_mapping_shape(
+    tmp_path: Path,
+    change_kind: str,
+    state: str,
+    observed_compilation: bool,
+    mapping_status: str,
+) -> None:
+    original = _queue()
+    anchor = original["items"][0]
+    independent = _independent_changed_item(
+        anchor,
+        change_kind=change_kind,
+        state=state,
+        mapping_status=mapping_status,
+        observed_compilation=observed_compilation,
+    )
+    queue, decision = _bind_independent_queue(
+        original, complete=True, items=[anchor, independent]
+    )
+
+    receipt = _validate_payloads(tmp_path, queue, decision)
+
+    assert receipt["status"] == "DECISION_RECORDED"
+
+
+@pytest.mark.parametrize("change_kind", ["INCOMPLETE_SCOPE", "MISSING_OBSERVATION"])
+def test_supported_queue_matrix_accepts_scope_kinds_only_in_incomplete_scope(
+    tmp_path: Path, change_kind: str
+) -> None:
+    original = _queue()
+    anchor = original["items"][0]
+    incomplete = _independent_scope_item(
+        anchor, change_kind="INCOMPLETE_SCOPE", suffix="required"
+    )
+    items = [anchor, incomplete]
+    if change_kind == "MISSING_OBSERVATION":
+        items.append(
+            _independent_scope_item(
+                anchor, change_kind="MISSING_OBSERVATION", suffix="missing"
+            )
+        )
+    queue, decision = _bind_independent_queue(
+        original, complete=False, items=items
+    )
+
+    receipt = _validate_payloads(tmp_path, queue, decision)
+
+    assert receipt["status"] == "DECISION_RECORDED"
+
+
+@pytest.mark.parametrize(
+    "case",
+    [
+        "incomplete_without_blocker",
+        "incomplete_with_two_blockers",
+        "complete_with_blocker",
+        "complete_with_missing_observation",
+    ],
+)
+def test_observation_scope_matrix_rejects_writer_impossible_scope_items(
+    tmp_path: Path, case: str
+) -> None:
+    original = _queue()
+    anchor = original["items"][0]
+    incomplete = _independent_scope_item(
+        anchor, change_kind="INCOMPLETE_SCOPE", suffix="one"
+    )
+    missing = _independent_scope_item(
+        anchor, change_kind="MISSING_OBSERVATION", suffix="one"
+    )
+    complete, items = {
+        "incomplete_without_blocker": (False, [anchor]),
+        "incomplete_with_two_blockers": (
+            False,
+            [
+                anchor,
+                incomplete,
+                _independent_scope_item(
+                    anchor, change_kind="INCOMPLETE_SCOPE", suffix="two"
+                ),
+            ],
+        ),
+        "complete_with_blocker": (True, [anchor, incomplete]),
+        "complete_with_missing_observation": (True, [anchor, missing]),
+    }[case]
+    queue, decision = _bind_independent_queue(
+        original, complete=complete, items=items
+    )
+
+    with pytest.raises(MonitorError, match="observation complete.*scope items"):
+        _validate_payloads(tmp_path, queue, decision)
+
+
+@pytest.mark.parametrize(
+    ("change_kind", "state", "observed_compilation"),
+    [
+        ("SUPERSEDED", "OPEN", True),
+        ("CURRENT_NO_PUBLISHED_COMPILATION", "BLOCKED", False),
+        ("NO_LONGER_IN_FORCE", "OPEN", False),
+        ("LOOKUP_FAILED", "BLOCKED", False),
+        ("BASELINE_NOT_CURRENT", "BLOCKED", False),
+    ],
+)
+def test_non_scope_mapping_matrix_rejects_not_evaluated(
+    tmp_path: Path,
+    change_kind: str,
+    state: str,
+    observed_compilation: bool,
+) -> None:
+    original = _queue()
+    anchor = original["items"][0]
+    independent = _independent_changed_item(
+        anchor,
+        change_kind=change_kind,
+        state=state,
+        mapping_status="NOT_EVALUATED",
+        observed_compilation=observed_compilation,
+    )
+    queue, decision = _bind_independent_queue(
+        original, complete=True, items=[anchor, independent]
+    )
+
+    with pytest.raises(MonitorError, match="mapping_status.*unsupported"):
+        _validate_payloads(tmp_path, queue, decision)
 
 
 def test_superseded_source_creates_an_open_exactly_mapped_review_item() -> None:
@@ -722,9 +1293,10 @@ def test_validate_review_parses_both_timestamps_with_the_pinned_grammar(tmp_path
     # interpreter, which is the property that matters for a stored artefact.
     queue = _queue()
     queue["observation"]["observed_at"] = "2026-08-08T00:00:00.000000Z"
+    queue["queue_digest"] = _expected_queue_digest(queue)
     queue_path = tmp_path / "queue.json"
     queue_path.write_text(json.dumps(queue), encoding="utf-8")
-    decision = json.loads(sample_path("decisions", "sample-technical-review.json").read_text(encoding="utf-8"))
+    decision = _matching_decision(queue)
     decision["reviewed_at"] = "2026-08-09T00:00:00.5Z"
     decision_path = tmp_path / "decision.json"
     decision_path.write_text(json.dumps(decision), encoding="utf-8")
@@ -739,12 +1311,16 @@ def test_partial_technical_review_remains_explicit(tmp_path: Path) -> None:
     second = dict(queue["items"][0])
     second["item_id"] = "impact:second-open-item"
     queue["items"].append(second)
+    queue["queue_digest"] = _expected_queue_digest(queue)
     queue_path = tmp_path / "queue.json"
     queue_path.write_text(json.dumps(queue), encoding="utf-8")
+    decision = _matching_decision(queue)
+    decision_path = tmp_path / "decision.json"
+    decision_path.write_text(json.dumps(decision), encoding="utf-8")
 
     validation = validate_review(
         queue_path=queue_path,
-        decision_path=sample_path("decisions", "sample-technical-review.json"),
+        decision_path=decision_path,
     )
 
     assert validation["status"] == "PARTIAL_DECISION_RECORDED"
@@ -848,7 +1424,7 @@ def test_a_decision_for_a_different_run_cannot_be_recorded(tmp_path: Path) -> No
     queue = _queue()
     paths = write_queue(queue, tmp_path / "queue")
     payload = json.loads(sample_path("decisions", "sample-technical-review.json").read_text(encoding="utf-8"))
-    payload["run_id"] = "sha256:deadbeef"
+    payload["run_id"] = "sha256:" + "0" * 64
     bad = tmp_path / "decision.json"
     bad.write_text(json.dumps(payload), encoding="utf-8")
 
@@ -859,14 +1435,33 @@ def test_a_decision_for_a_different_run_cannot_be_recorded(tmp_path: Path) -> No
 def test_a_blocked_item_cannot_be_signed_off(tmp_path: Path) -> None:
     # A BLOCKED item is one the tool could not assess at all. Recording a
     # technical decision against it would close a question that was never put.
-    queue = _queue()
-    queue["items"][0]["state"] = "BLOCKED"
-    queue["run_status"] = "BLOCKED"
+    observation = _payload("observations", "sample-register-observation.json")
+    entry = _clear_compilation(observation["observations"][0])
+    entry["state"] = "LOOKUP_FAILED"
+    entry["error_category"] = "register_unavailable"
+    queue = _compare_fixtures(tmp_path, observation=observation)
+    decision = {
+        "schema_version": "au-tax-technical-review.v2",
+        "run_id": queue["run_id"],
+        "queue_digest": queue["queue_digest"],
+        "reviewer_ref": "demo-tax-reviewer",
+        "reviewed_at": "2026-08-09T00:00:00Z",
+        "decisions": [
+            {
+                "item_id": queue["items"][0]["item_id"],
+                "decision": "ESCALATE_TECHNICAL_REVIEW",
+                "rationale": "The source lookup is blocked.",
+                "evidence_note": "Reviewed the synthetic lookup failure.",
+            }
+        ],
+    }
     bad = tmp_path / "blocked-queue.json"
     bad.write_text(json.dumps(queue), encoding="utf-8")
+    decision_path = tmp_path / "blocked-decision.json"
+    decision_path.write_text(json.dumps(decision), encoding="utf-8")
 
     with pytest.raises(MonitorError, match="unknown, blocked, or duplicate"):
-        validate_review(queue_path=bad, decision_path=sample_path("decisions", "sample-technical-review.json"))
+        validate_review(queue_path=bad, decision_path=decision_path)
 
 
 def test_a_decision_naming_an_item_outside_the_queue_is_rejected(tmp_path: Path) -> None:

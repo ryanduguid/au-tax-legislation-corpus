@@ -10,6 +10,19 @@ from typing import Any
 from .errors import MonitorError
 
 
+class _DuplicateJsonMemberError(ValueError):
+    """Internal signal for an ambiguous JSON object."""
+
+
+def _reject_duplicate_json_members(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
+    payload: dict[str, Any] = {}
+    for key, value in pairs:
+        if key in payload:
+            raise _DuplicateJsonMemberError
+        payload[key] = value
+    return payload
+
+
 @dataclass(frozen=True, slots=True)
 class SourceSnapshot:
     """One immutable read of a JSON source and the digest of those exact bytes."""
@@ -72,7 +85,14 @@ def load_json_exact(
     )
     source_path = snapshot.path
     try:
-        payload = json.loads(snapshot.text(label=label))
+        payload = json.loads(
+            snapshot.text(label=label),
+            object_pairs_hook=_reject_duplicate_json_members,
+        )
+    except _DuplicateJsonMemberError as exc:
+        raise MonitorError(
+            f"{label} contains duplicate JSON members: {source_path}."
+        ) from exc
     except json.JSONDecodeError as exc:
         raise MonitorError(f"{label} is not valid JSON: {source_path}.") from exc
     if not isinstance(payload, dict) or set(payload) != required:

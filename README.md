@@ -35,7 +35,9 @@ The sample fixtures ship inside the package, so a plain `pip install` can run th
 
 The example creates one `SUPERSEDED` source item mapped to a BAS-review question. It deliberately does not infer the legal effect of the change, update a skill, or send a notification.
 
-The output directory contains deterministic `impact-queue.json` and `impact-queue.md` files. Both are staged before publication; if committing the second file fails, the writer restores the complete previous pair rather than leaving two runs mixed together. Input digests and identifiers come from the same immutable byte snapshots that are parsed. An item is `OPEN` when it needs human technical review, carrying `change_kind` `SUPERSEDED` or `NO_LONGER_IN_FORCE`. An item is `BLOCKED` for any of five reasons, each named by its own `change_kind`:
+The output directory contains deterministic `impact-queue.json` and `impact-queue.md` files. Both are staged before publication; if committing the second file fails, the writer restores the complete previous pair rather than leaving two runs mixed together. Input digests and identifiers come from the same immutable byte snapshots that are parsed. The v2 JSON queue records the baseline, observation and mapping snapshot digests in `source_digests`. Its source-derived `run_id` identifies that three-file run, while `queue_digest` identifies the complete canonical queue evidence: schema version, run summary, source digests, baseline, observation and every item field. The digest is calculated before the `queue_digest` field itself is added.
+
+An item is `OPEN` when it needs human technical review, carrying `change_kind` `SUPERSEDED` or `NO_LONGER_IN_FORCE`. An item is `BLOCKED` for any of five reasons, each named by its own `change_kind`:
 
 | `change_kind` | Cause |
 | --- | --- |
@@ -57,7 +59,9 @@ au-tax-change-impact-monitor validate-review \
   --decision path/to/a-human-technical-review.json
 ```
 
-Only `AWAIT_PRIMARY_TEXT`, `NO_WORKFLOW_CHANGE`, `UPDATE_CANDIDATE`, and `ESCALATE_TECHNICAL_REVIEW` are accepted. Validation reports `PARTIAL_DECISION_RECORDED` while any open item remains undecided; it checks structure and matching queue only and does not certify the review, edit a skill, or establish a legal conclusion. Observation and review timestamps require an explicit UTC offset (or `Z`) so audit ordering is unambiguous.
+Only `AWAIT_PRIMARY_TEXT`, `NO_WORKFLOW_CHANGE`, `UPDATE_CANDIDATE`, and `ESCALATE_TECHNICAL_REVIEW` are accepted. A v2 technical-review decision must copy both `run_id` and `queue_digest` from the exact queue reviewed; the packaged `sample-technical-review.json` demonstrates the complete decision shape. Validation enforces exact queue, nested evidence and decision schemas before recalculating the digest. It rejects a changed, missing or additional evidence field even when `run_id` is left unchanged. The validation receipt records both identifiers.
+
+Validation reports `PARTIAL_DECISION_RECORDED` while any open item remains undecided; it checks structure and matching queue only and does not certify the review, edit a skill, or establish a legal conclusion. Observation and review timestamps require an explicit UTC offset (or `Z`) so audit ordering is unambiguous. Decisions written for the v1 queue schema do not carry a complete-evidence digest and are intentionally not accepted as v2 decisions; review the new queue and record a new decision instead of carrying an earlier decision forward.
 
 The accepted timestamp grammar is exactly `YYYY-MM-DDThh:mm:ss[.ffffff][Z|+hh:mm|-hh:mm]`, with `t` or a single space allowed in place of `T`. It is pinned by a pattern rather than handed to `datetime.fromisoformat`, whose grammar differs between Python 3.10 and 3.11+, so the same stored artefact validates the same way on every supported interpreter. The ISO basic form (`20260808T000000Z`), week and ordinal dates, a bare-hour offset (`+00`), a lowercase `z`, a date with no clock, and any other date/time separator are all refused. Dates in the baseline and observation are `YYYY-MM-DD` on the same basis.
 

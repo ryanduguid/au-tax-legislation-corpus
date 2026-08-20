@@ -1,6 +1,7 @@
 {
-  "schema_version": "au-tax-technical-review.v1",
+  "schema_version": "au-tax-technical-review.v2",
   "run_id": "sha256:2accb440a45063cb02ab7efd0d095feb7edc451d1af075bfbbacbb198018c0fa",
+  "queue_digest": "sha256:eb825ac3bba9efae19f89824a861d640b33e3d6bcfd1332ab70022e29ee010e2",
   "reviewer_ref": "demo-tax-reviewer",
   "reviewed_at": "2026-08-08T00:00:00Z",
   "decisions": [

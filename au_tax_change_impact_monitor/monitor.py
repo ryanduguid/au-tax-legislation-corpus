@@ -45,6 +45,80 @@ TIMESTAMP_PATTERN = re.compile(
     r"(?P<fraction>\.\d{1,6})?"
     r"(?P<offset>Z|[+-]\d{2}:\d{2})?"
 )
+SHA256_ID_PATTERN = re.compile(r"sha256:[0-9a-f]{64}")
+
+QUEUE_FIELDS = {
+    "schema_version",
+    "run_id",
+    "queue_digest",
+    "mode",
+    "run_status",
+    "source_digests",
+    "baseline",
+    "observation",
+    "items",
+}
+SOURCE_DIGEST_FIELDS = {"baseline", "observation", "mapping"}
+BASELINE_QUEUE_FIELDS = {"id", "retrieved", "source"}
+OBSERVATION_QUEUE_FIELDS = {"id", "observed_at", "complete"}
+ITEM_FIELDS = {
+    "item_id",
+    "state",
+    "change_kind",
+    "source",
+    "impact_candidates",
+    "mapping_status",
+    "limitations",
+}
+SOURCE_FIELDS = {
+    "register_id",
+    "collection",
+    "title",
+    "baseline_compilation",
+    "observed_compilation",
+    "evidence_url",
+}
+BASELINE_COMPILATION_FIELDS = {"number", "date"}
+OBSERVED_COMPILATION_FIELDS = {"number", "date", "document_id"}
+CANDIDATE_FIELDS = {
+    "mapping_id",
+    "skill_ref",
+    "owner_role",
+    "review_question",
+    "mapping_basis",
+}
+DECISION_FIELDS = {
+    "schema_version",
+    "run_id",
+    "queue_digest",
+    "reviewer_ref",
+    "reviewed_at",
+    "decisions",
+}
+DECISION_ENTRY_FIELDS = {"item_id", "decision", "rationale", "evidence_note"}
+CHANGE_KIND_MATRIX = {
+    "INCOMPLETE_SCOPE": ("BLOCKED", frozenset({"NOT_EVALUATED"})),
+    "MISSING_OBSERVATION": ("BLOCKED", frozenset({"NOT_EVALUATED"})),
+    "SUPERSEDED": ("OPEN", frozenset({"MAPPED", "UNMAPPED_SOURCE"})),
+    "CURRENT_NO_PUBLISHED_COMPILATION": (
+        "BLOCKED",
+        frozenset({"MAPPED", "UNMAPPED_SOURCE"}),
+    ),
+    "NO_LONGER_IN_FORCE": (
+        "OPEN",
+        frozenset({"MAPPED", "UNMAPPED_SOURCE"}),
+    ),
+    "LOOKUP_FAILED": (
+        "BLOCKED",
+        frozenset({"MAPPED", "UNMAPPED_SOURCE"}),
+    ),
+    "BASELINE_NOT_CURRENT": (
+        "BLOCKED",
+        frozenset({"MAPPED", "UNMAPPED_SOURCE"}),
+    ),
+}
+CHANGE_KINDS = set(CHANGE_KIND_MATRIX)
+MAPPING_STATUSES = {"MAPPED", "UNMAPPED_SOURCE", "NOT_EVALUATED"}
 
 
 @dataclass(frozen=True)
@@ -66,6 +140,13 @@ def _non_empty(value: Any, *, field: str) -> str:
     text = value.strip()
     if any(ord(char) < 32 or ord(char) == 127 for char in text):
         raise MonitorError(f"{field} must not contain control characters.")
+    return text
+
+
+def _sha256_id(value: Any, *, field: str) -> str:
+    text = _non_empty(value, field=field)
+    if SHA256_ID_PATTERN.fullmatch(text) is None:
+        raise MonitorError(f"{field} must be a lowercase sha256 identifier.")
     return text
 
 
@@ -446,15 +527,20 @@ def compare(*, baseline_path: Path, observation_path: Path, mapping_path: Path) 
     items.sort(key=lambda item: (item["state"] != "BLOCKED", item["change_kind"], item["item_id"]))
     run_status = _run_status_for(items)
     run_id = "sha256:" + sha256_json(source_digests)
-    return {
-        "schema_version": "au-tax-impact-queue.v1",
+    queue = {
+        "schema_version": "au-tax-impact-queue.v2",
         "run_id": run_id,
         "mode": "synthetic",
         "run_status": run_status,
+        "source_digests": {
+            name: "sha256:" + digest for name, digest in source_digests.items()
+        },
         "baseline": {"id": "sha256:" + baseline_source.sha256, "retrieved": baseline_raw["retrieved"], "source": baseline_raw["source"]},
         "observation": {"id": "sha256:" + observation_source.sha256, "observed_at": observation["observed_at"], "complete": observation["complete"]},
         "items": items,
     }
+    queue["queue_digest"] = "sha256:" + sha256_json(queue)
+    return queue
 
 
 def render_markdown(queue: dict[str, Any]) -> str:
@@ -585,66 +671,322 @@ def write_queue(queue: dict[str, Any], output_dir: Path) -> dict[str, Path]:
     return {"json": json_path, "markdown": markdown_path}
 
 
-def validate_review(*, queue_path: Path, decision_path: Path) -> dict[str, Any]:
-    queue = load_json_exact(queue_path, {"schema_version", "run_id", "mode", "run_status", "baseline", "observation", "items"}, label="impact queue")
-    decision = load_json_exact(decision_path, {"schema_version", "run_id", "reviewer_ref", "reviewed_at", "decisions"}, label="technical review decision")
-    if queue["schema_version"] != "au-tax-impact-queue.v1" or decision["schema_version"] != "au-tax-technical-review.v1":
+def _validate_compilation(
+    value: Any, *, field: str, observed: bool
+) -> None:
+    expected = (
+        OBSERVED_COMPILATION_FIELDS if observed else BASELINE_COMPILATION_FIELDS
+    )
+    if not isinstance(value, dict) or set(value) != expected:
+        raise MonitorError(f"{field} has an invalid shape.")
+    _non_empty(value["number"], field=f"{field} number")
+    _iso_date(value["date"], field=f"{field} date")
+    if observed:
+        _non_empty(value["document_id"], field=f"{field} document_id")
+
+
+def _validate_source(value: Any, *, item_index: int, change_kind: str) -> None:
+    field = f"Impact queue item {item_index} source"
+    if change_kind == "INCOMPLETE_SCOPE":
+        if value is not None:
+            raise MonitorError(f"{field} must be null for INCOMPLETE_SCOPE.")
+        return
+    if not isinstance(value, dict) or set(value) != SOURCE_FIELDS:
+        raise MonitorError(f"{field} has an invalid shape.")
+    for name in ("register_id", "collection", "title"):
+        _non_empty(value[name], field=f"{field} {name}")
+    _https_url(value["evidence_url"], field=f"{field} evidence_url")
+    _validate_compilation(
+        value["baseline_compilation"],
+        field=f"{field} baseline_compilation",
+        observed=False,
+    )
+    observed_compilation = value["observed_compilation"]
+    if observed_compilation is not None:
+        _validate_compilation(
+            observed_compilation,
+            field=f"{field} observed_compilation",
+            observed=True,
+        )
+    if change_kind == "SUPERSEDED" and observed_compilation is None:
+        raise MonitorError(f"{field} must include observed_compilation for SUPERSEDED.")
+    if change_kind not in {"SUPERSEDED", "BASELINE_NOT_CURRENT"} and observed_compilation is not None:
+        raise MonitorError(
+            f"{field} observed_compilation is unsupported for {change_kind}."
+        )
+
+
+def _validate_candidates(value: Any, *, item_index: int) -> int:
+    if not isinstance(value, list):
+        raise MonitorError(
+            f"Impact queue item {item_index} impact_candidates must be a list."
+        )
+    mapping_ids: set[str] = set()
+    for candidate_index, candidate in enumerate(value, start=1):
+        field = f"Impact queue item {item_index} candidate {candidate_index}"
+        if not isinstance(candidate, dict) or set(candidate) != CANDIDATE_FIELDS:
+            raise MonitorError(f"{field} has an invalid shape.")
+        for name in (
+            "mapping_id",
+            "skill_ref",
+            "owner_role",
+            "review_question",
+        ):
+            _non_empty(candidate[name], field=f"{field} {name}")
+        if candidate["mapping_basis"] != "exact_register_id_and_collection":
+            raise MonitorError(f"{field} has an unsupported mapping_basis.")
+        mapping_id = candidate["mapping_id"]
+        if mapping_id in mapping_ids:
+            raise MonitorError(
+                f"Impact queue item {item_index} contains duplicate candidate mapping IDs."
+            )
+        mapping_ids.add(mapping_id)
+    return len(value)
+
+
+def _validate_queue_evidence(queue: dict[str, Any]) -> tuple[set[str], str]:
+    if queue["schema_version"] != "au-tax-impact-queue.v2":
         raise MonitorError("Queue or decision schema version is unsupported.")
     if queue["mode"] != "synthetic":
         raise MonitorError("Only synthetic impact queues can be validated.")
-    if queue["run_id"] != decision["run_id"]:
-        raise MonitorError("Technical review decision must refer to the exact queue run_id.")
-    _non_empty(decision["reviewer_ref"], field="technical review reviewer_ref")
-    reviewed_at = _iso_timestamp(decision["reviewed_at"], field="technical review reviewed_at")
-    if not isinstance(queue["observation"], dict) or set(queue["observation"]) != {"id", "observed_at", "complete"}:
+    _sha256_id(queue["run_id"], field="Impact queue run_id")
+    _sha256_id(queue["queue_digest"], field="Impact queue queue_digest")
+    if not isinstance(queue["run_status"], str) or queue["run_status"] not in {
+        "BLOCKED",
+        "REVIEW_REQUIRED",
+        "NO_CHANGE_DETECTED",
+    }:
+        raise MonitorError("Impact queue has an unsupported run_status.")
+
+    source_digests = queue["source_digests"]
+    if not isinstance(source_digests, dict) or set(source_digests) != SOURCE_DIGEST_FIELDS:
+        raise MonitorError("Impact queue source_digests has an invalid shape.")
+    for name in sorted(SOURCE_DIGEST_FIELDS):
+        _sha256_id(
+            source_digests[name], field=f"Impact queue source_digests {name}"
+        )
+
+    baseline = queue["baseline"]
+    if not isinstance(baseline, dict) or set(baseline) != BASELINE_QUEUE_FIELDS:
+        raise MonitorError("Impact queue baseline has an invalid shape.")
+    _sha256_id(baseline["id"], field="Impact queue baseline id")
+    _iso_date(baseline["retrieved"], field="Impact queue baseline retrieved")
+    _non_empty(baseline["source"], field="Impact queue baseline source")
+    if baseline["id"] != source_digests["baseline"]:
+        raise MonitorError(
+            "Impact queue baseline id must equal the baseline source digest."
+        )
+
+    observation = queue["observation"]
+    if (
+        not isinstance(observation, dict)
+        or set(observation) != OBSERVATION_QUEUE_FIELDS
+    ):
         raise MonitorError("Impact queue observation has an invalid shape.")
-    observed_at = _iso_timestamp(queue["observation"]["observed_at"], field="impact queue observed_at")
-    # Same parser as the validation above: a second fromisoformat call here
-    # would reintroduce the interpreter-dependent grammar it just removed.
-    reviewed_value = _parse_timestamp(reviewed_at, field="technical review reviewed_at")
-    observed_value = _parse_timestamp(observed_at, field="impact queue observed_at")
-    try:
-        review_predates_observation = reviewed_value < observed_value
-    except TypeError as exc:
-        raise MonitorError("Review and observation timestamps must use compatible timezone qualifiers.") from exc
-    if review_predates_observation:
-        raise MonitorError("Technical review reviewed_at cannot predate the queue observation.")
+    _sha256_id(observation["id"], field="Impact queue observation id")
+    observed_at = _iso_timestamp(
+        observation["observed_at"], field="impact queue observed_at"
+    )
+    if not isinstance(observation["complete"], bool):
+        raise MonitorError("Impact queue observation complete must be a boolean.")
+    if observation["id"] != source_digests["observation"]:
+        raise MonitorError(
+            "Impact queue observation id must equal the observation source digest."
+        )
+
     if not isinstance(queue["items"], list):
         raise MonitorError("Impact queue items must be a list.")
     open_items: set[str] = set()
     queue_item_ids: set[str] = set()
+    incomplete_scope_count = 0
+    missing_observation_count = 0
     for index, item in enumerate(queue["items"], start=1):
-        if not isinstance(item, dict) or "item_id" not in item or "state" not in item:
+        if not isinstance(item, dict) or set(item) != ITEM_FIELDS:
             raise MonitorError(f"Impact queue item {index} has an invalid shape.")
-        item_id = _non_empty(item["item_id"], field=f"impact queue item {index} item_id")
+        item_id = _non_empty(
+            item["item_id"], field=f"impact queue item {index} item_id"
+        )
         if item_id in queue_item_ids:
             raise MonitorError("Impact queue contains duplicate item IDs.")
         queue_item_ids.add(item_id)
-        # isinstance first: an unhashable value such as a list would raise
-        # TypeError from the set membership test instead of MonitorError.
-        if not isinstance(item["state"], str) or item["state"] not in {"OPEN", "BLOCKED"}:
+        if not isinstance(item["state"], str) or item["state"] not in {
+            "OPEN",
+            "BLOCKED",
+        }:
             raise MonitorError(f"Impact queue item {index} has an unsupported state.")
+        if (
+            not isinstance(item["change_kind"], str)
+            or item["change_kind"] not in CHANGE_KINDS
+        ):
+            raise MonitorError(
+                f"Impact queue item {index} has an unsupported change_kind."
+            )
+        change_kind = item["change_kind"]
+        expected_state, supported_mapping_statuses = CHANGE_KIND_MATRIX[change_kind]
+        if change_kind == "INCOMPLETE_SCOPE":
+            incomplete_scope_count += 1
+        elif change_kind == "MISSING_OBSERVATION":
+            missing_observation_count += 1
+        _validate_source(item["source"], item_index=index, change_kind=change_kind)
+        candidate_count = _validate_candidates(
+            item["impact_candidates"], item_index=index
+        )
+        if (
+            not isinstance(item["mapping_status"], str)
+            or item["mapping_status"] not in MAPPING_STATUSES
+        ):
+            raise MonitorError(
+                f"Impact queue item {index} has an unsupported mapping_status."
+            )
+        if item["mapping_status"] == "MAPPED" and candidate_count == 0:
+            raise MonitorError(
+                f"Impact queue item {index} cannot be MAPPED without a candidate."
+            )
+        if item["mapping_status"] != "MAPPED" and candidate_count:
+            raise MonitorError(
+                f"Impact queue item {index} with candidates must be MAPPED."
+            )
+        if item["state"] != expected_state:
+            raise MonitorError(
+                f"Impact queue item {index} change_kind must remain {expected_state}."
+            )
+        if item["mapping_status"] not in supported_mapping_statuses:
+            raise MonitorError(
+                f"Impact queue item {index} mapping_status is unsupported for its change_kind."
+            )
+        limitations = item["limitations"]
+        if not isinstance(limitations, list):
+            raise MonitorError(
+                f"Impact queue item {index} limitations must be a list."
+            )
+        for limitation_index, limitation in enumerate(limitations, start=1):
+            _non_empty(
+                limitation,
+                field=(
+                    f"impact queue item {index} limitation {limitation_index}"
+                ),
+            )
         if item["state"] == "OPEN":
             open_items.add(item_id)
-    # Recomputed on purpose: validation re-derives the writer's rule, never trusts the stored run_status.
+
+    expected_incomplete_scope_count = 0 if observation["complete"] else 1
+    if (
+        incomplete_scope_count != expected_incomplete_scope_count
+        or (observation["complete"] and missing_observation_count)
+    ):
+        raise MonitorError(
+            "Impact queue observation complete is inconsistent with its scope items."
+        )
+
+    # Recomputed on purpose: validation derives the writer's rule and never
+    # trusts the stored summary state.
     if queue["run_status"] != _run_status_for(queue["items"]):
         raise MonitorError("Impact queue run_status does not match its items.")
+    return open_items, observed_at
+
+
+def validate_review(*, queue_path: Path, decision_path: Path) -> dict[str, Any]:
+    queue = load_json_exact(queue_path, QUEUE_FIELDS, label="impact queue")
+    decision = load_json_exact(
+        decision_path, DECISION_FIELDS, label="technical review decision"
+    )
+    if decision["schema_version"] != "au-tax-technical-review.v2":
+        raise MonitorError("Queue or decision schema version is unsupported.")
+
+    # Fully validate every queue field before hashing it. Exact schemas keep
+    # arbitrary nested data out of the canonicalisation step and ensure the
+    # digest has one supported interpretation.
+    open_items, observed_at = _validate_queue_evidence(queue)
+
+    raw_source_digests = {
+        name: queue["source_digests"][name].removeprefix("sha256:")
+        for name in sorted(SOURCE_DIGEST_FIELDS)
+    }
+    expected_run_id = "sha256:" + sha256_json(raw_source_digests)
+    if queue["run_id"] != expected_run_id:
+        raise MonitorError(
+            "Impact queue run_id does not match its exact source digests."
+        )
+    queue_payload = {
+        key: value for key, value in queue.items() if key != "queue_digest"
+    }
+    expected_queue_digest = "sha256:" + sha256_json(queue_payload)
+    if queue["queue_digest"] != expected_queue_digest:
+        raise MonitorError(
+            "Impact queue queue_digest does not match its complete review evidence."
+        )
+
+    _sha256_id(decision["run_id"], field="Technical review run_id")
+    _sha256_id(
+        decision["queue_digest"], field="Technical review queue_digest"
+    )
+    if queue["run_id"] != decision["run_id"]:
+        raise MonitorError(
+            "Technical review decision must refer to the exact queue run_id."
+        )
+    if queue["queue_digest"] != decision["queue_digest"]:
+        raise MonitorError(
+            "Technical review decision must refer to the exact queue_digest."
+        )
+    _non_empty(decision["reviewer_ref"], field="technical review reviewer_ref")
+    reviewed_at = _iso_timestamp(
+        decision["reviewed_at"], field="technical review reviewed_at"
+    )
+    # Same parser as the validation above: a second fromisoformat call here
+    # would reintroduce the interpreter-dependent grammar it just removed.
+    reviewed_value = _parse_timestamp(
+        reviewed_at, field="technical review reviewed_at"
+    )
+    observed_value = _parse_timestamp(observed_at, field="impact queue observed_at")
+    try:
+        review_predates_observation = reviewed_value < observed_value
+    except TypeError as exc:
+        raise MonitorError(
+            "Review and observation timestamps must use compatible timezone qualifiers."
+        ) from exc
+    if review_predates_observation:
+        raise MonitorError(
+            "Technical review reviewed_at cannot predate the queue observation."
+        )
+
     if not isinstance(decision["decisions"], list) or not decision["decisions"]:
-        raise MonitorError("Technical review decision must include at least one decision.")
+        raise MonitorError(
+            "Technical review decision must include at least one decision."
+        )
     seen: set[str] = set()
     for item in decision["decisions"]:
-        if not isinstance(item, dict) or set(item) != {"item_id", "decision", "rationale", "evidence_note"}:
-            raise MonitorError("Each technical decision must contain exactly item_id, decision, rationale, and evidence_note.")
+        if not isinstance(item, dict) or set(item) != DECISION_ENTRY_FIELDS:
+            raise MonitorError(
+                "Each technical decision must contain exactly item_id, decision, rationale, and evidence_note."
+            )
         item_id = _non_empty(item["item_id"], field="technical decision item_id")
         if item_id not in open_items or item_id in seen:
-            raise MonitorError("Technical decision references an unknown, blocked, or duplicate item.")
-        # isinstance first: an unhashable value such as a list would raise
-        # TypeError from the set-membership test instead of a clean error.
-        if not isinstance(item["decision"], str) or item["decision"] not in ALLOWED_DECISIONS:
+            raise MonitorError(
+                "Technical decision references an unknown, blocked, or duplicate item."
+            )
+        if (
+            not isinstance(item["decision"], str)
+            or item["decision"] not in ALLOWED_DECISIONS
+        ):
             raise MonitorError("Technical decision is not allowlisted.")
         _non_empty(item["rationale"], field="technical decision rationale")
-        _non_empty(item["evidence_note"], field="technical decision evidence_note")
+        _non_empty(
+            item["evidence_note"], field="technical decision evidence_note"
+        )
         seen.add(item_id)
     undecided_count = len(open_items - seen)
-    status = "DECISION_RECORDED" if undecided_count == 0 else "PARTIAL_DECISION_RECORDED"
-    return {"schema_version": "au-tax-review-decision-validation.v1", "run_id": queue["run_id"], "mode": "synthetic", "status": status, "decision_count": len(seen), "undecided_count": undecided_count, "limitation": "Validation records structurally valid human decisions only; it does not establish legal effect, change a skill, notify anyone, or produce tax advice."}
+    status = (
+        "DECISION_RECORDED"
+        if undecided_count == 0
+        else "PARTIAL_DECISION_RECORDED"
+    )
+    return {
+        "schema_version": "au-tax-review-decision-validation.v2",
+        "run_id": queue["run_id"],
+        "queue_digest": queue["queue_digest"],
+        "mode": "synthetic",
+        "status": status,
+        "decision_count": len(seen),
+        "undecided_count": undecided_count,
+        "limitation": "Validation records structurally valid human decisions only; it does not establish legal effect, change a skill, notify anyone, or produce tax advice.",
+    }
