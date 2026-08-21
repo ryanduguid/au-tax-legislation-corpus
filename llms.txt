@@ -1,0 +1,12 @@
+# au-tax-change-impact-monitor
+> High-density context for LLM agents, legislative researchers, and tax compliance monitors.
+
+## Package Overview
+- **Repository**: https://github.com/ryanduguid/au-tax-change-impact-monitor
+- **Domain**: Automated surveillance and cryptographic provenance tracking of Commonwealth taxation legislation changes, ATO public rulings, and statutory amendments.
+- **Statutory Corpus**: *ITAA 1936*, *ITAA 1997*, *Taxation Administration Act 1953*, ATO Practical Compliance Guidelines (PCGs) and Taxation Rulings (TRs).
+
+## Core Architecture
+- **Surveillance Engine**: Periodic polling and structural diffing of Federal Register of Legislation feeds.
+- **Cryptographic Provenance**: Exact SHA-256 source anchoring and temporal validity tagging.
+- **Human-in-the-Loop Review Queue**: Generates deterministic change candidate queues for qualified tax practitioner review without automated legal conclusions.

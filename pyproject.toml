@@ -17,7 +17,10 @@ classifiers = [
   "Intended Audience :: Financial and Insurance Industry",
   "Programming Language :: Python :: 3",
 ]
-dependencies = []
+[project.urls]
+Homepage = "https://github.com/ryanduguid/au-tax-change-impact-monitor"
+Repository = "https://github.com/ryanduguid/au-tax-change-impact-monitor.git"
+Issues = "https://github.com/ryanduguid/au-tax-change-impact-monitor/issues"
 
 [project.optional-dependencies]
 dev = ["build>=1.2", "pytest>=8"]
