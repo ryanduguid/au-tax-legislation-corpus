@@ -11,7 +11,7 @@ from typing import Any
 from urllib.parse import urlsplit
 
 from .errors import MonitorError
-from .util import SourceSnapshot, load_json_exact, safe_markdown, sha256_json
+from .util import SourceSnapshot, load_json, load_json_exact, safe_markdown, sha256_json
 
 
 OBSERVATION_STATES = {
@@ -275,9 +275,29 @@ def _load_baseline(
 def _load_observation(
     path: Path | SourceSnapshot, expected_ids: set[str]
 ) -> dict[str, Any]:
-    raw = load_json_exact(path, {"schema_version", "mode", "observed_at", "expected_register_ids", "complete", "observations"}, label="Register observation")
-    if raw["schema_version"] != "au-tax-register-observation.v1" or raw["mode"] != "synthetic":
-        raise MonitorError("Only au-tax-register-observation.v1 in synthetic mode is supported.")
+    # We inspect schema_version before loading exact keys since v1 and v2 have distinct required top-level sets.
+    pre_raw = load_json(path, label="Register observation")
+    if not isinstance(pre_raw, dict) or "schema_version" not in pre_raw:
+        raise MonitorError("Register observation must be a JSON object with schema_version.")
+    version = pre_raw.get("schema_version")
+    if version == "au-tax-register-observation.v1":
+        raw = load_json_exact(
+            path,
+            {"schema_version", "mode", "observed_at", "expected_register_ids", "complete", "observations"},
+            label="Register observation",
+        )
+    elif version == "au-tax-register-observation.v2":
+        raw = load_json_exact(
+            path,
+            {"schema_version", "mode", "observed_at", "scope_id", "expected_register_ids", "complete", "observations"},
+            label="Register observation",
+        )
+        _non_empty(raw["scope_id"], field="scope_id")
+    else:
+        raise MonitorError("Only au-tax-register-observation.v1 and au-tax-register-observation.v2 in synthetic mode are supported.")
+
+    if raw["mode"] != "synthetic":
+        raise MonitorError("Only synthetic mode is supported.")
     _iso_timestamp(raw["observed_at"], field="observed_at")
     if not isinstance(raw["expected_register_ids"], list) or not all(isinstance(item, str) for item in raw["expected_register_ids"]):
         raise MonitorError("Observation expected_register_ids must be a list of strings.")
@@ -288,8 +308,37 @@ def _load_observation(
         raise MonitorError("Observation expected_register_ids must exactly match the baseline scope.")
     if not isinstance(raw["complete"], bool) or not isinstance(raw["observations"], list):
         raise MonitorError("Observation complete/observations fields are invalid.")
-    required = {"register_id", "collection", "state", "observed_compilation_number", "observed_compilation_date", "observed_register_document_id", "current_version_start", "evidence_url", "checked_at", "error_category"}
+
+    if version == "au-tax-register-observation.v2":
+        required = {
+            "register_id",
+            "collection",
+            "state",
+            "evidence_id",
+            "evidence_url",
+            "checked_at",
+            "observed_compilation_number",
+            "observed_compilation_date",
+            "observed_register_document_id",
+            "current_version_start",
+            "error_category",
+        }
+    else:
+        required = {
+            "register_id",
+            "collection",
+            "state",
+            "observed_compilation_number",
+            "observed_compilation_date",
+            "observed_register_document_id",
+            "current_version_start",
+            "evidence_url",
+            "checked_at",
+            "error_category",
+        }
+
     seen: set[str] = set()
+    seen_evidence_ids: set[str] = set()
     for index, item in enumerate(raw["observations"], start=1):
         if not isinstance(item, dict) or set(item) != required:
             raise MonitorError(f"Observation item {index} has an invalid shape.")
@@ -300,17 +349,16 @@ def _load_observation(
             raise MonitorError("Observation contains duplicate register IDs.")
         seen.add(register_id)
         collection = _non_empty(item["collection"], field=f"observation {index} collection")
-        # Write both cleaned values back. The scope, duplicate and coverage
-        # checks above all use the cleaned identifier, but compare() builds its
-        # lookup and its collection check straight off the item, so leaving the
-        # raw values here let an identifier this loader accepted as an exact
-        # scope match fail to map and become a MISSING_OBSERVATION instead.
-        # Mutating the parsed dict does not move any artefact ID: run_id and
-        # item_id use the immutable source snapshot digests, not parsed objects.
         item["register_id"] = register_id
         item["collection"] = collection
-        # isinstance first: an unhashable value such as a list would raise
-        # TypeError from the set-membership test instead of a clean error.
+
+        if version == "au-tax-register-observation.v2":
+            evidence_id = _non_empty(item["evidence_id"], field=f"observation {index} evidence_id")
+            if evidence_id in seen_evidence_ids:
+                raise MonitorError(f"Observation item {index} has duplicate evidence_id.")
+            seen_evidence_ids.add(evidence_id)
+            item["evidence_id"] = evidence_id
+
         if not isinstance(item["state"], str) or item["state"] not in OBSERVATION_STATES:
             raise MonitorError(f"Observation {index} has an unsupported state.")
         state = item["state"]

@@ -77,15 +77,15 @@ def sha256_json(value: Any) -> str:
     return hashlib.sha256(canonical_json(value)).hexdigest()
 
 
-def load_json_exact(
-    path: Path | SourceSnapshot, required: set[str], *, label: str
-) -> dict[str, Any]:
+def load_json(
+    path: Path | SourceSnapshot, *, label: str
+) -> Any:
     snapshot = (
         path if isinstance(path, SourceSnapshot) else SourceSnapshot.capture(path, label=label)
     )
     source_path = snapshot.path
     try:
-        payload = json.loads(
+        return json.loads(
             snapshot.text(label=label),
             object_pairs_hook=_reject_duplicate_json_members,
         )
@@ -95,6 +95,12 @@ def load_json_exact(
         ) from exc
     except json.JSONDecodeError as exc:
         raise MonitorError(f"{label} is not valid JSON: {source_path}.") from exc
+
+
+def load_json_exact(
+    path: Path | SourceSnapshot, required: set[str], *, label: str
+) -> dict[str, Any]:
+    payload = load_json(path, label=label)
     if not isinstance(payload, dict) or set(payload) != required:
         raise MonitorError(f"{label} must contain exactly: {', '.join(sorted(required))}.")
     return payload

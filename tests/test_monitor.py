@@ -1662,3 +1662,46 @@ def test_a_padded_collection_the_loader_accepted_does_not_raise(tmp_path: Path) 
 
     kinds = [item["change_kind"] for item in queue["items"]]
     assert "MISSING_OBSERVATION" not in kinds
+
+
+def test_nominal_v2_observation_loads_and_compares(tmp_path: Path) -> None:
+    observation = _payload("observations", "sample-register-observation-v2.json")
+    queue = _compare_fixtures(tmp_path, observation=observation)
+    assert queue["run_status"] == "REVIEW_REQUIRED"
+    assert queue["observation"]["complete"] is True
+    assert len(queue["items"]) == 1
+    assert queue["items"][0]["change_kind"] == "SUPERSEDED"
+
+
+def test_v2_observation_requires_scope_id(tmp_path: Path) -> None:
+    observation = _payload("observations", "sample-register-observation-v2.json")
+    del observation["scope_id"]
+    with pytest.raises(MonitorError, match="must contain exactly"):
+        _compare_fixtures(tmp_path, observation=observation)
+
+    observation = _payload("observations", "sample-register-observation-v2.json")
+    observation["scope_id"] = "   "
+    with pytest.raises(MonitorError, match="scope_id must be a non-empty string"):
+        _compare_fixtures(tmp_path, observation=observation)
+
+
+def test_v2_observation_rejects_duplicate_evidence_id(tmp_path: Path) -> None:
+    observation = _payload("observations", "sample-register-observation-v2.json")
+    observation["observations"][1]["evidence_id"] = observation["observations"][0]["evidence_id"]
+    with pytest.raises(MonitorError, match="duplicate evidence_id"):
+        _compare_fixtures(tmp_path, observation=observation)
+
+
+def test_v2_observation_missing_evidence_id_is_rejected(tmp_path: Path) -> None:
+    observation = _payload("observations", "sample-register-observation-v2.json")
+    del observation["observations"][0]["evidence_id"]
+    with pytest.raises(MonitorError, match="invalid shape"):
+        _compare_fixtures(tmp_path, observation=observation)
+
+
+def test_unsupported_observation_schema_version_is_rejected(tmp_path: Path) -> None:
+    observation = _payload("observations", "sample-register-observation.json")
+    observation["schema_version"] = "au-tax-register-observation.v99"
+    with pytest.raises(MonitorError, match="Only au-tax-register-observation.v1 and au-tax-register-observation.v2"):
+        _compare_fixtures(tmp_path, observation=observation)
+
