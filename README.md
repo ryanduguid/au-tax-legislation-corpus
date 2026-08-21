@@ -109,7 +109,7 @@ reports the scan's totals; `finalize.py` refuses to run without
 `export_monitor_contract.py` projects a completed corpus `sources.json` and a
 separately collected, structured observation-facts JSON file into the exact
 v1 baseline and observation inputs for
-[`au-tax-change-impact-monitor`](https://github.com/ryanduguid/au-tax-change-impact-monitor):
+[`tax-radar-au`](https://github.com/ryanduguid/tax-radar-au):
 
 ```bash
 python export_monitor_contract.py corpus/sources.json observation-facts.json --out monitor-input
