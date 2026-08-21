@@ -21,7 +21,7 @@ import unittest
 from unittest import mock
 from pathlib import Path
 
-import export_monitor_contract as contract
+from fadden import export_monitor_contract as contract
 
 
 def sources_document() -> dict:

@@ -36,6 +36,11 @@ def is_reparse_point(path: PathPart) -> bool:
 def corpus_root(script_file: PathPart) -> str:
     """Return the deterministic output root for a builder script."""
     script_dir = Path(script_file).resolve().parent
+    if script_dir.name == "fadden":
+        parent = script_dir.parent
+        if parent.name == "build":
+            return str(parent.parent)
+        return str(parent / "corpus")
     if script_dir.name == "build":
         return str(script_dir.parent)
     return str(script_dir / "corpus")

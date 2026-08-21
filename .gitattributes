@@ -1,6 +1,6 @@
 # Data files derived by the pipeline or from ATO/Register sources.
 # linguist-generated hides them from the language bar and diff stats,
 # so the repository reads as the Python pipeline it is.
-manifest_md.json linguist-generated
-pii_flagged.json linguist-generated
-titles_principal.json linguist-generated
+fadden/manifest_md.json linguist-generated
+fadden/pii_flagged.json linguist-generated
+fadden/titles_principal.json linguist-generated
