@@ -115,6 +115,14 @@ class MonitorContractTests(unittest.TestCase):
         self.assertIn("one writer", build)
         self.assertIn("power loss", build)
         self.assertIn("operator", build)
+        self.assertIn("rollback itself fails", readme)
+        self.assertIn("rollback itself fails", build)
+        self.assertIn(".bak", readme)
+        self.assertIn(".bak", build)
+        self.assertIn("restore or", readme)
+        self.assertIn("restore or", build)
+        self.assertIn("deliberately retire", readme)
+        self.assertIn("deliberately retire", build)
 
     def test_projects_rich_sources_to_the_monitor_exact_baseline_shape(self):
         baseline = contract.project_baseline(sources_document())
@@ -651,6 +659,53 @@ class MonitorContractTests(unittest.TestCase):
             self.assertFalse(second.is_alive())
             self.assertEqual(1, len(errors))
             self.assertIsInstance(errors[0], OSError)
+
+    def test_rollback_failure_retains_prior_bytes_and_blocks_publishers(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            output = root / "out"
+            sources = root / "sources.json"
+            facts = root / "facts.json"
+            sources.write_text(json.dumps(sources_document()), encoding="utf-8")
+            facts.write_text(json.dumps(observation_facts()), encoding="utf-8")
+            paths = contract.publish_pair(sources, facts, output)
+            prior = {name: path.read_bytes() for name, path in paths.items()}
+
+            changed_sources = sources_document()
+            changed_sources["corpus"] = "attempted replacement"
+            sources.write_text(json.dumps(changed_sources), encoding="utf-8")
+            original_replace = contract.os.replace
+
+            def fail_promotion_and_every_restore(source, destination):
+                source_path = Path(source)
+                if (
+                    source_path.name.endswith(".tmp")
+                    and Path(destination) == output / "register-observation.json"
+                ):
+                    raise OSError("simulated observation promotion failure")
+                if source_path.name.endswith(".bak"):
+                    raise OSError("simulated rollback restoration failure")
+                return original_replace(source, destination)
+
+            with mock.patch.object(
+                contract.os,
+                "replace",
+                side_effect=fail_promotion_and_every_restore,
+            ):
+                with self.assertRaisesRegex(contract.ContractError, "rollback failed"):
+                    contract.publish_pair(sources, facts, output)
+
+            backups = list(output.glob(".*.monitor-contract-*.bak"))
+            self.assertEqual(2, len(backups))
+            self.assertEqual(
+                {prior["baseline"], prior["observation"]},
+                {path.read_bytes() for path in backups},
+            )
+            self.assertTrue((output / contract.PUBLISH_LOCK_FILENAME).exists())
+            with mock.patch.object(contract, "PUBLISH_LOCK_TIMEOUT_SECONDS", 0):
+                with self.assertRaisesRegex(contract.ContractError, "locked by another writer"):
+                    contract.publish_pair(sources, facts, output)
+            self.assertEqual(2, len(list(output.glob(".*.monitor-contract-*.bak"))))
 
     def test_generated_pair_is_accepted_by_a_local_monitor_when_available(self):
         local_work_root = Path(__file__).resolve().parents[3]

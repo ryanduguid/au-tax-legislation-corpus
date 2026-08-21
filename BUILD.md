@@ -39,8 +39,12 @@ writes the deterministic, exact monitor inputs `monitor-baseline.json` and
 resolved input/output-collision checks. Existing output names must be ordinary
 files, never directories, links, junctions or other special paths. Exactly one writer
 can publish to a given output directory at a time. Any existing lock
-fails closed; after confirming its owner is no longer running, an operator must
-remove `.monitor-contract.publish.lock` before retrying. It never queries the Register:
+fails closed; if it has no recovery artefacts, an operator may remove
+`.monitor-contract.publish.lock` after confirming its owner is no longer running.
+If rollback itself fails,
+the exporter retains that lock and every unrecovered `.bak` file, so no later publisher
+proceeds. The operator must restore or deliberately retire the old/new pair and its
+recovery artefacts before removing the lock. It never queries the Register:
 `check_current.py` remains the read-only Register lookup stage, and the adapter
 only validates and projects facts a caller has already collected.
 

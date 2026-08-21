@@ -123,8 +123,12 @@ fields, rejects duplicate JSON members and control characters, and refuses an
 input whose resolved path is either output filename. Existing output names must
 be ordinary files, never directories, links, junctions or other special paths.
 Exactly one writer may publish to an output directory at a time; any existing
-publisher lock fails closed. After confirming that its owner is no longer
-running, an operator must remove `.monitor-contract.publish.lock` before retrying.
+publisher lock fails closed. If it has no recovery artefacts, an operator may
+remove `.monitor-contract.publish.lock` after confirming its owner is no longer
+running. If rollback itself fails, the exporter retains that lock and every unrecovered
+`.bak` file, so no later publisher proceeds. The operator must restore or
+deliberately retire the old/new pair and its recovery artefacts before removing
+the lock.
 
 The exporter stages both files and restores the prior pair after an ordinary
 write failure. `monitor-baseline.json` and `register-observation.json` are

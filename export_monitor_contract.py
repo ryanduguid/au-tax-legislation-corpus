@@ -357,6 +357,11 @@ class _OutputDirectoryLock:
     def __init__(self, directory: Path) -> None:
         self.path = directory / PUBLISH_LOCK_FILENAME
         self._token: bytes | None = None
+        self._recovery_required = False
+
+    def retain_for_recovery(self) -> None:
+        """Leave this writer's lock in place until an operator recovers the pair."""
+        self._recovery_required = True
 
     def __enter__(self) -> _OutputDirectoryLock:
         deadline = time.monotonic() + PUBLISH_LOCK_TIMEOUT_SECONDS
@@ -387,7 +392,11 @@ class _OutputDirectoryLock:
 
     def __exit__(self, exc_type: object, exc: object, traceback: object) -> bool:
         try:
-            if self._token is not None and self.path.read_bytes() == self._token:
+            if (
+                not self._recovery_required
+                and self._token is not None
+                and self.path.read_bytes() == self._token
+            ):
                 _remove(self.path)
         except OSError:
             pass
@@ -396,11 +405,12 @@ class _OutputDirectoryLock:
 
 def _publish(staged: dict[str, Path], destinations: dict[str, Path]) -> None:
     try:
-        with _OutputDirectoryLock(destinations["baseline"].parent):
+        with _OutputDirectoryLock(destinations["baseline"].parent) as publisher_lock:
             for destination in destinations.values():
                 _validate_existing_destination(destination)
             backups: dict[str, Path | None] = {}
             promoted: list[str] = []
+            recovery_required = False
             try:
                 for name, destination in destinations.items():
                     backup = destination.with_name(f".{destination.name}.monitor-contract-{uuid.uuid4().hex}.bak")
@@ -412,19 +422,33 @@ def _publish(staged: dict[str, Path], destinations: dict[str, Path]) -> None:
                     os.replace(staged[name], destination)
                     promoted.append(name)
             except BaseException:
+                rollback_errors: list[BaseException] = []
                 for name in reversed(promoted):
-                    _remove(destinations[name])
-                    if backups[name] is not None:
-                        os.replace(backups[name], destinations[name])
-                        backups[name] = None
+                    try:
+                        _remove(destinations[name])
+                        if backups[name] is not None:
+                            os.replace(backups[name], destinations[name])
+                            backups[name] = None
+                    except BaseException as rollback_error:
+                        rollback_errors.append(rollback_error)
                 for name, backup in backups.items():
-                    if backup is not None:
-                        os.replace(backup, destinations[name])
-                        backups[name] = None
+                    if name not in promoted and backup is not None:
+                        try:
+                            os.replace(backup, destinations[name])
+                            backups[name] = None
+                        except BaseException as rollback_error:
+                            rollback_errors.append(rollback_error)
+                if rollback_errors:
+                    recovery_required = True
+                    publisher_lock.retain_for_recovery()
+                    raise ContractError(
+                        "monitor output publication rollback failed; retain the lock and any remaining .bak recovery files for operator recovery."
+                    ) from rollback_errors[0]
                 raise
             finally:
-                for backup in backups.values():
-                    _remove(backup)
+                if not recovery_required:
+                    for backup in backups.values():
+                        _remove(backup)
     finally:
         for path in staged.values():
             _remove(path)
