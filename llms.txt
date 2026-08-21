@@ -4,10 +4,10 @@
 ## Package Overview
 - **Repository**: https://github.com/ryanduguid/tax-radar-au
 - **Compatibility**: The Python distribution, import package, CLI command, wheel names and existing releases remain `au-tax-change-impact-monitor` / `au_tax_change_impact_monitor`.
-- **Domain**: Automated surveillance and cryptographic provenance tracking of Commonwealth taxation legislation changes, ATO public rulings, and statutory amendments.
-- **Statutory Corpus**: *ITAA 1936*, *ITAA 1997*, *Taxation Administration Act 1953*, ATO Practical Compliance Guidelines (PCGs) and Taxation Rulings (TRs).
+- **Domain**: Synthetic, provenance-first review-queue demonstration for supplied Commonwealth tax-source metadata.
+- **Reference Scope**: Metadata identifiers may refer to Commonwealth tax legislation, ATO public rulings, and related instruments; the package does not read or store source text.
 
 ## Core Architecture
-- **Surveillance Engine**: Periodic polling and structural diffing of Federal Register of Legislation feeds.
-- **Cryptographic Provenance**: Exact SHA-256 source anchoring and temporal validity tagging.
-- **Human-in-the-Loop Review Queue**: Generates deterministic change candidate queues for qualified tax practitioner review without automated legal conclusions.
+- **Supplied Metadata Comparison**: Compares fabricated source-index metadata, a fabricated Register-observation contract, and an exact source-to-workflow map. Runtime code performs no network polling or Register scraping.
+- **Review Evidence Binding**: SHA-256 source digests, run identifiers, and a complete queue digest bind a human decision to the exact synthetic queue reviewed.
+- **Human-in-the-Loop Review Queue**: Generates deterministic change candidates without establishing current law, legal effect, a workflow update, or a client action.
