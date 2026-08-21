@@ -104,6 +104,39 @@ The PII scans run before `finalize.py` because the generated corpus README
 reports the scan's totals; `finalize.py` refuses to run without
 `pii_flagged.json` rather than print counts no scan produced.
 
+## Exporting a change-review observation
+
+`export_monitor_contract.py` projects a completed corpus `sources.json` and a
+separately collected, structured observation-facts JSON file into the exact
+v1 baseline and observation inputs for
+[`au-tax-change-impact-monitor`](https://github.com/ryanduguid/au-tax-change-impact-monitor):
+
+```bash
+python export_monitor_contract.py corpus/sources.json observation-facts.json --out monitor-input
+```
+
+The facts file has schema version `au-tax-register-observation-facts.v1`. It
+contains the observation timestamp, whether coverage is complete, and one
+stateful result for each observed Register id. The exporter validates the
+scope, collection, UTC timestamps, HTTPS evidence links and state-specific
+fields, rejects duplicate JSON members and control characters, and refuses an
+input whose resolved path is either output filename. Exactly one writer may publish to
+an output directory at a time; a live publisher lock fails closed and a lock
+older than five minutes is reclaimed for a failed writer.
+
+The exporter stages both files and restores the prior pair after an ordinary
+write failure. `monitor-baseline.json` and `register-observation.json` are
+replaced individually, not by a cross-file filesystem transaction. A process
+or power loss between replacements can therefore leave an old/new pair and
+lock or rollback files for recovery. A fully crash-atomic publication needs
+versioned pair directories and an atomic generation pointer, which this v1
+adapter does not create.
+
+It does not call the Register, download a document, decide the legal effect of
+a change, or update any workflow. `synthetic` remains the output mode because
+the monitor's current v1 schema is a provenance-first review-queue contract;
+the human technical review remains separate.
+
 To produce a corpus you can pass on to someone else:
 
 ```bash
