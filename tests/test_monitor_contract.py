@@ -96,6 +96,43 @@ def observation_facts(*, complete: bool = True) -> dict:
     }
 
 
+def observation_facts_v2(*, complete: bool = True) -> dict:
+    return {
+        "schema_version": "au-tax-register-observation-facts.v2",
+        "observed_at": "2026-08-21T10:00:00Z",
+        "scope_id": "au-primary-tax-legislation.v2",
+        "complete": complete,
+        "observations": [
+            {
+                "register_id": "F2099L00001",
+                "collection": "LegislativeInstrument",
+                "state": "UNCHANGED",
+                "evidence_id": "EV-F2099L00001-01",
+                "observed_compilation_number": None,
+                "observed_compilation_date": None,
+                "observed_register_document_id": None,
+                "current_version_start": None,
+                "evidence_url": "https://example.test/F2099L00001/latest/text",
+                "checked_at": "2026-08-21T10:00:01Z",
+                "error_category": None,
+            },
+            {
+                "register_id": "C2099A00001",
+                "collection": "Act",
+                "state": "SUPERSEDED",
+                "evidence_id": "EV-C2099A00001-01",
+                "observed_compilation_number": "3",
+                "observed_compilation_date": "2099-09-01",
+                "observed_register_document_id": "C2099C00003",
+                "current_version_start": None,
+                "evidence_url": "https://example.test/C2099A00001/latest/text",
+                "checked_at": "2026-08-21T10:00:02Z",
+                "error_category": None,
+            },
+        ],
+    }
+
+
 def _local_monitor_repository() -> Path:
     """Return the fixed local checkout used by the optional compatibility test."""
     return (
@@ -914,6 +951,38 @@ class MonitorContractTests(unittest.TestCase):
 
             self.assertEqual(first_bytes, {name: path.read_bytes() for name, path in first.items()})
             self.assertFalse(list(output.glob(".*.monitor-contract-*")))
+
+    def test_project_observation_v2_nominal(self):
+        projected = contract.project_observation(sources_document(), observation_facts_v2())
+        self.assertEqual(projected["schema_version"], "au-tax-register-observation.v2")
+        self.assertEqual(projected["scope_id"], "au-primary-tax-legislation.v2")
+        self.assertTrue(projected["complete"])
+        self.assertEqual(len(projected["observations"]), 2)
+        self.assertEqual(projected["observations"][0]["evidence_id"], "EV-C2099A00001-01")
+        self.assertEqual(projected["observations"][1]["evidence_id"], "EV-F2099L00001-01")
+
+    def test_project_observation_v2_requires_scope_id(self):
+        facts = observation_facts_v2()
+        del facts["scope_id"]
+        with self.assertRaisesRegex(contract.ContractError, "invalid shape"):
+            contract.project_observation(sources_document(), facts)
+
+        facts = observation_facts_v2()
+        facts["scope_id"] = "   "
+        with self.assertRaisesRegex(contract.ContractError, "scope_id must be a non-empty string"):
+            contract.project_observation(sources_document(), facts)
+
+    def test_project_observation_v2_rejects_duplicate_evidence_id(self):
+        facts = observation_facts_v2()
+        facts["observations"][1]["evidence_id"] = facts["observations"][0]["evidence_id"]
+        with self.assertRaisesRegex(contract.ContractError, "duplicate evidence_id"):
+            contract.project_observation(sources_document(), facts)
+
+    def test_project_observation_v2_requires_evidence_id_per_item(self):
+        facts = observation_facts_v2()
+        del facts["observations"][0]["evidence_id"]
+        with self.assertRaisesRegex(contract.ContractError, "invalid shape"):
+            contract.project_observation(sources_document(), facts)
 
 
 if __name__ == "__main__":
