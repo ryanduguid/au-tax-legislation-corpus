@@ -1,36 +1,41 @@
 # Rebuilding this corpus
 
-Run from inside this `build/` directory. Each script resolves its working
-directory to its own folder, so the intermediate JSON files beside it are both
-the inputs and the outputs of the pipeline.
+In a source checkout, run `python -m fadden <stage>` from the repository root.
+Each stage resolves paths from its own module file under `fadden/`, so the
+intermediate JSON files beside those modules are both the inputs and the
+outputs of the pipeline. Derived corpus files are written below `./corpus/`.
 
-For a direct source checkout, run the same commands from the checkout root;
-derived corpus files are then written below `./corpus/`. The builder does not
-accept an environment-selected output root. To build at a different location,
-copy the builder scripts into that location's `build/` directory as shown
-below; the parent of `build/` is the deterministic corpus root.
+The builder does not accept an environment-selected output root. To build at a
+different location, copy the stage modules into that location's `build/`
+directory as shown below; the parent of `build/` is the deterministic corpus
+root. `finalize.py` still publishes that flat `build/` layout into a completed
+corpus so operators can keep running `python discover.py` there.
 
 ```bash
+# source checkout
+python -m fadden discover      # -> fadden/titles_all.json, fadden/titles_principal.json
+python -m fadden versions      # -> fadden/acts_resolved.json
+python -m fadden download      # -> ./corpus/epub/*.epub, fadden/manifest_raw.json
+python -m fadden probe13       # -> fadden/probe13.json      (only if download reports no_epub)
+python -m fadden retry13       # -> fadden/retry13_patch.json; patches manifest_raw.json in place
+python -m fadden extract       # -> ./corpus/markdown/**, fadden/manifest_md.json
+python -m fadden finalize      # -> ./corpus/sources.json, INDEX.md, README.md, LICENCE-NOTICE.md
+python -m fadden rates         # -> ./corpus/rates/rates.jsonl, RATES.md
+
+# deployed corpus (flat scripts copied into build/)
 cd C:\ato-kb\build
-python discover.py      # -> titles_all.json, titles_principal.json
-python versions.py      # -> acts_resolved.json
-python download.py      # -> ../epub/*.epub, manifest_raw.json
-python probe13.py       # -> probe13.json      (only if download reports no_epub)
-python retry13.py       # -> retry13_patch.json; patches manifest_raw.json in place
-python extract.py       # -> ../markdown/**, manifest_md.json
-python finalize.py      # -> ../sources.json, ../INDEX.md, ../README.md, ../LICENCE-NOTICE.md
-python rates.py         # -> ../rates/rates.jsonl, ../rates/RATES.md
+python discover.py
 ```
 
 ## Exporting monitor inputs
 
 After `finalize.py` has written a completed `sources.json`, a separately
 collected fabricated or reviewed observation-facts document can be projected
-for `au-tax-change-impact-monitor` without giving that project access to this
-build tree:
+by `export_monitor_contract.py` for `au-tax-change-impact-monitor` without
+giving that project access to this build tree:
 
 ```bash
-python export_monitor_contract.py ../sources.json observation-facts.json --out monitor-input
+python -m fadden export_monitor_contract -- ../sources.json observation-facts.json --out monitor-input
 ```
 
 The facts document must use `au-tax-register-observation-facts.v1`. The command
