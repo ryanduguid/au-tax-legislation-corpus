@@ -95,7 +95,28 @@ def observation_facts(*, complete: bool = True) -> dict:
     }
 
 
+def _local_monitor_repository() -> Path:
+    """Return the fixed local checkout used by the optional compatibility test."""
+    return (
+        Path(__file__).resolve().parents[3]
+        / "github-build-audit"
+        / "au-tax-change-impact-monitor"
+    )
+
+
 class MonitorContractTests(unittest.TestCase):
+    def test_local_monitor_compatibility_path_ignores_environment_override(self):
+        expected = (
+            Path(__file__).resolve().parents[3]
+            / "github-build-audit"
+            / "au-tax-change-impact-monitor"
+        )
+        with mock.patch.dict(
+            os.environ,
+            {"AU_TAX_CHANGE_IMPACT_MONITOR_REPOSITORY": "C:/untrusted-monitor"},
+        ):
+            self.assertEqual(expected, _local_monitor_repository())
+
     def test_build_docs_state_the_adapter_is_review_only_and_never_contacts_the_register(self):
         root = Path(__file__).resolve().parents[1]
         readme = (root / "README.md").read_text(encoding="utf-8")
@@ -708,13 +729,7 @@ class MonitorContractTests(unittest.TestCase):
             self.assertEqual(2, len(list(output.glob(".*.monitor-contract-*.bak"))))
 
     def test_generated_pair_is_accepted_by_a_local_monitor_when_available(self):
-        local_work_root = Path(__file__).resolve().parents[3]
-        monitor_repository = Path(
-            os.environ.get(
-                "AU_TAX_CHANGE_IMPACT_MONITOR_REPOSITORY",
-                str(local_work_root / "github-build-audit" / "au-tax-change-impact-monitor"),
-            )
-        )
+        monitor_repository = _local_monitor_repository()
         if not (monitor_repository / "au_tax_change_impact_monitor").is_dir():
             self.skipTest("local au-tax-change-impact-monitor checkout is unavailable")
         sys.path.insert(0, str(monitor_repository))
