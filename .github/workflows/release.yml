@@ -14,4 +14,33 @@ jobs:
       attestations: write # Record provenance and SBOM attestations for release assets.
       contents: write # Create the draft release, upload assets and publish it.
       id-token: write # Obtain the OIDC identity required to sign attestations.
-    uses: ryanduguid/release-policy/.github/workflows/release-python.yml@2138799a34e5a3441c9b132113a29f9d9af86109 # v0.1.0
+    uses: ryanduguid/release-policy/.github/workflows/release-python.yml@7095ffd2d03e5068bd57c928c306a99626ca46b8 # post-v0.1.0, adds upload-dist-artifact (#7)
+    with:
+      upload-dist-artifact: true
+  pypi:
+    name: publish to PyPI
+    needs: release
+    runs-on: ubuntu-latest
+    environment:
+      name: pypi
+      url: https://pypi.org/p/au-tax-change-impact-monitor
+    permissions:
+      id-token: write # Obtain the OIDC identity that PyPI trusted publishing verifies.
+    steps:
+      - name: Download the exact distribution the release job attested
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: dist-${{ needs.release.outputs.stem }}-${{ needs.release.outputs.version }}
+          path: dist
+
+      - name: Require exactly one wheel and one source distribution
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(find dist -name '*.whl' | wc -l)" = "1"
+          test "$(find dist -name '*.tar.gz' | wc -l)" = "1"
+          ls -l dist
+
+      - name: Publish to PyPI via trusted publishing
+        uses: pypa/gh-action-pypi-publish@dc37677b2e1c63e2034f94d8a5b11f265b73ba33 # v1.14.2
+
