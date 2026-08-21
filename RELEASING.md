@@ -9,7 +9,7 @@ Before tagging:
 3. From an operator session authenticated with repository Administration read access, run:
 
     ```bash
-    gh api -H "X-GitHub-Api-Version: 2026-03-10" repos/ryanduguid/au-tax-change-impact-monitor/immutable-releases --jq .enabled
+    gh api -H "X-GitHub-Api-Version: 2026-03-10" repos/ryanduguid/tax-radar-au/immutable-releases --jq .enabled
     ```
 
     Do not push the tag unless the output is exactly `true`. The Actions `GITHUB_TOKEN` cannot be granted repository Administration read access, so the tag workflow cannot perform this preflight itself.
@@ -21,14 +21,14 @@ The workflow runs the locked tests, builds the wheel and source distribution onc
 Verify the downloaded release with:
 
 ```bash
-gh release download v0.1.1 -R ryanduguid/au-tax-change-impact-monitor --dir release-v0.1.1
+gh release download v0.1.1 -R ryanduguid/tax-radar-au --dir release-v0.1.1
 cd release-v0.1.1
 sha256sum --check SHA256SUMS
-gh attestation verify au_tax_change_impact_monitor-0.1.1-py3-none-any.whl -R ryanduguid/au-tax-change-impact-monitor
-gh attestation verify au_tax_change_impact_monitor-0.1.1-py3-none-any.whl -R ryanduguid/au-tax-change-impact-monitor --predicate-type https://spdx.dev/Document/v2.3
-gh release view v0.1.1 -R ryanduguid/au-tax-change-impact-monitor --json isImmutable
-gh release verify v0.1.1 -R ryanduguid/au-tax-change-impact-monitor
-gh release verify-asset v0.1.1 au_tax_change_impact_monitor-0.1.1-py3-none-any.whl -R ryanduguid/au-tax-change-impact-monitor
+gh attestation verify au_tax_change_impact_monitor-0.1.1-py3-none-any.whl -R ryanduguid/tax-radar-au
+gh attestation verify au_tax_change_impact_monitor-0.1.1-py3-none-any.whl -R ryanduguid/tax-radar-au --predicate-type https://spdx.dev/Document/v2.3
+gh release view v0.1.1 -R ryanduguid/tax-radar-au --json isImmutable
+gh release verify v0.1.1 -R ryanduguid/tax-radar-au
+gh release verify-asset v0.1.1 au_tax_change_impact_monitor-0.1.1-py3-none-any.whl -R ryanduguid/tax-radar-au
 ```
 
 If any gate fails, inspect it before touching the tag or draft. Never move a published tag.

@@ -18,9 +18,9 @@ classifiers = [
   "Programming Language :: Python :: 3",
 ]
 [project.urls]
-Homepage = "https://github.com/ryanduguid/au-tax-change-impact-monitor"
-Repository = "https://github.com/ryanduguid/au-tax-change-impact-monitor.git"
-Issues = "https://github.com/ryanduguid/au-tax-change-impact-monitor/issues"
+Homepage = "https://github.com/ryanduguid/tax-radar-au"
+Repository = "https://github.com/ryanduguid/tax-radar-au.git"
+Issues = "https://github.com/ryanduguid/tax-radar-au/issues"
 
 [project.optional-dependencies]
 dev = ["build>=1.2", "pytest>=8"]

@@ -1,8 +1,10 @@
-# AU Tax Change Impact Monitor
+# Tax Radar AU
 
-[![tests](https://github.com/ryanduguid/au-tax-change-impact-monitor/actions/workflows/ci.yml/badge.svg)](https://github.com/ryanduguid/au-tax-change-impact-monitor/actions/workflows/ci.yml) [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE) [![Python 3.10+](https://img.shields.io/badge/python-3.10%2B-blue.svg)](https://www.python.org/downloads/)
+[![tests](https://github.com/ryanduguid/tax-radar-au/actions/workflows/ci.yml/badge.svg)](https://github.com/ryanduguid/tax-radar-au/actions/workflows/ci.yml) [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE) [![Python 3.10+](https://img.shields.io/badge/python-3.10%2B-blue.svg)](https://www.python.org/downloads/)
 
 A **provenance-first change-review queue**, not a tax-answering system or an automatic skill updater.
+
+> Compatibility: the Python distribution, import package, CLI command, wheel names and existing releases remain `au-tax-change-impact-monitor` / `au_tax_change_impact_monitor`.
 
 The first version compares fabricated source-index metadata with a fabricated Register-observation contract. It keeps important states distinct (`SUPERSEDED`, `CURRENT_NO_PUBLISHED_COMPILATION`, `NO_LONGER_IN_FORCE`, and `LOOKUP_FAILED`), then maps only exact register ID + collection pairs to a potential workflow-review question.
 

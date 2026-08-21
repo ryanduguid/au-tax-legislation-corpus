@@ -1,8 +1,9 @@
-# au-tax-change-impact-monitor
+# Tax Radar AU
 > High-density context for LLM agents, legislative researchers, and tax compliance monitors.
 
 ## Package Overview
-- **Repository**: https://github.com/ryanduguid/au-tax-change-impact-monitor
+- **Repository**: https://github.com/ryanduguid/tax-radar-au
+- **Compatibility**: The Python distribution, import package, CLI command, wheel names and existing releases remain `au-tax-change-impact-monitor` / `au_tax_change_impact_monitor`.
 - **Domain**: Automated surveillance and cryptographic provenance tracking of Commonwealth taxation legislation changes, ATO public rulings, and statutory amendments.
 - **Statutory Corpus**: *ITAA 1936*, *ITAA 1997*, *Taxation Administration Act 1953*, ATO Practical Compliance Guidelines (PCGs) and Taxation Rulings (TRs).
 
