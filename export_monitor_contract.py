@@ -202,26 +202,41 @@ def project_baseline(sources: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+OBSERVATION_V2_FIELDS = OBSERVATION_FIELDS | {"evidence_id"}
+
+
 def project_observation(
     baseline: dict[str, Any], facts: dict[str, Any]
 ) -> dict[str, Any]:
-    """Validate structured facts and produce the monitor's exact v1 observation."""
+    """Validate structured facts and produce the monitor's exact v1 or v2 observation."""
     projected_baseline = project_baseline(baseline)
     raw = _object(facts, "observation facts")
-    expected_fields = {"schema_version", "observed_at", "complete", "observations"}
-    if set(raw) != expected_fields:
-        raise ContractError("observation facts has an invalid shape.")
+    if "schema_version" not in raw:
+        raise ContractError("observation facts is missing schema_version.")
     schema_version = _non_empty(
         raw["schema_version"], "observation facts schema_version"
     )
-    if schema_version != "au-tax-register-observation-facts.v1":
+    if schema_version == "au-tax-register-observation-facts.v1":
+        expected_fields = {"schema_version", "observed_at", "complete", "observations"}
+        item_fields = OBSERVATION_FIELDS
+        is_v2 = False
+    elif schema_version == "au-tax-register-observation-facts.v2":
+        expected_fields = {"schema_version", "observed_at", "scope_id", "complete", "observations"}
+        item_fields = OBSERVATION_V2_FIELDS
+        is_v2 = True
+    else:
         raise ContractError("observation facts schema_version is unsupported.")
+
+    if set(raw) != expected_fields:
+        raise ContractError("observation facts has an invalid shape.")
+    scope_id = _non_empty(raw["scope_id"], "observation facts scope_id") if is_v2 else None
     observed_at = _utc_timestamp(raw["observed_at"], "observation facts observed_at")
     if not isinstance(raw["complete"], bool) or not isinstance(raw["observations"], list):
         raise ContractError("observation facts complete/observations fields are invalid.")
     expected_by_id = {title["register_id"]: title for title in projected_baseline["titles"]}
     observations: list[dict[str, Any]] = []
     seen: set[str] = set()
+    seen_evidence_ids: set[str] = set()
     required_by_state = {
         "UNCHANGED": set(),
         "SUPERSEDED": {
@@ -238,7 +253,7 @@ def project_observation(
     }
     for index, value in enumerate(raw["observations"], start=1):
         item = _object(value, f"observation fact {index}")
-        if set(item) != OBSERVATION_FIELDS:
+        if set(item) != item_fields:
             raise ContractError(f"observation fact {index} has an invalid shape.")
         register_id = _non_empty(item["register_id"], f"observation fact {index} register_id")
         if register_id not in expected_by_id:
@@ -267,6 +282,13 @@ def project_observation(
             "checked_at": _utc_timestamp(item["checked_at"], f"observation fact {index} checked_at"),
             "error_category": None,
         }
+        if is_v2:
+            evidence_id = _non_empty(item["evidence_id"], f"observation fact {index} evidence_id")
+            if evidence_id in seen_evidence_ids:
+                raise ContractError(f"observation fact {index} contains duplicate evidence_id.")
+            seen_evidence_ids.add(evidence_id)
+            projected["evidence_id"] = evidence_id
+
         if state == "SUPERSEDED":
             projected["observed_compilation_number"] = _non_empty(
                 item["observed_compilation_number"],
@@ -292,14 +314,18 @@ def project_observation(
         observations.append(projected)
     if raw["complete"] and seen != set(expected_by_id):
         raise ContractError("a complete observation must cover every baseline register_id exactly once.")
-    return {
-        "schema_version": "au-tax-register-observation.v1",
+    
+    result: dict[str, Any] = {
+        "schema_version": "au-tax-register-observation.v2" if is_v2 else "au-tax-register-observation.v1",
         "mode": "synthetic",
         "observed_at": observed_at,
-        "expected_register_ids": sorted(expected_by_id),
-        "complete": raw["complete"],
-        "observations": sorted(observations, key=lambda item: (item["register_id"], item["collection"])),
     }
+    if is_v2:
+        result["scope_id"] = scope_id
+    result["expected_register_ids"] = sorted(expected_by_id)
+    result["complete"] = raw["complete"]
+    result["observations"] = sorted(observations, key=lambda item: (item["register_id"], item["collection"]))
+    return result
 
 
 def _write_staged(path: Path, value: dict[str, Any]) -> Path:
