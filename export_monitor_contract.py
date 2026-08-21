@@ -13,6 +13,7 @@ import datetime as dt
 import json
 import os
 import re
+import stat
 import time
 import uuid
 from pathlib import Path
@@ -59,7 +60,6 @@ UTC_TIMESTAMP = re.compile(r"\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{1,6})?Z"
 PUBLISH_LOCK_FILENAME = ".monitor-contract.publish.lock"
 PUBLISH_LOCK_TIMEOUT_SECONDS = 30
 PUBLISH_LOCK_RETRY_SECONDS = 0.05
-PUBLISH_LOCK_STALE_SECONDS = 300
 
 
 def _non_empty(value: Any, field: str) -> str:
@@ -325,39 +325,38 @@ def _remove(path: Path | None) -> None:
             pass
 
 
+def _validate_existing_destination(path: Path) -> None:
+    """Reject an existing destination that is not an ordinary file."""
+    try:
+        details = os.lstat(path)
+    except FileNotFoundError:
+        return
+    except OSError as exc:
+        raise ContractError(
+            f"monitor output path cannot be inspected: {path} ({exc})."
+        ) from exc
+    is_junction = getattr(os.path, "isjunction", lambda _path: False)
+    is_reparse_point = bool(
+        getattr(details, "st_file_attributes", 0)
+        & getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0x400)
+    )
+    if (
+        not stat.S_ISREG(details.st_mode)
+        or os.path.islink(path)
+        or is_junction(path)
+        or is_reparse_point
+    ):
+        raise ContractError(
+            f"monitor output path must be absent or a regular file: {path}."
+        )
+
+
 class _OutputDirectoryLock:
     """An exclusive, recoverable publisher lock for one output directory."""
 
     def __init__(self, directory: Path) -> None:
         self.path = directory / PUBLISH_LOCK_FILENAME
         self._token: bytes | None = None
-
-    def _reclaim_stale_lock(self) -> bool:
-        try:
-            before = self.path.stat()
-        except FileNotFoundError:
-            return True
-        if time.time() - before.st_mtime < PUBLISH_LOCK_STALE_SECONDS:
-            return False
-        try:
-            current = self.path.stat()
-        except FileNotFoundError:
-            return True
-        if (
-            current.st_mtime_ns != before.st_mtime_ns
-            or current.st_size != before.st_size
-            or current.st_ino != before.st_ino
-        ):
-            return False
-        try:
-            self.path.unlink()
-        except FileNotFoundError:
-            return True
-        except OSError as exc:
-            raise ContractError(
-                f"monitor output lock cannot be reclaimed: {self.path} ({exc})."
-            ) from exc
-        return True
 
     def __enter__(self) -> _OutputDirectoryLock:
         deadline = time.monotonic() + PUBLISH_LOCK_TIMEOUT_SECONDS
@@ -369,8 +368,6 @@ class _OutputDirectoryLock:
                     0o600,
                 )
             except FileExistsError:
-                if self._reclaim_stale_lock():
-                    continue
                 if time.monotonic() >= deadline:
                     raise ContractError(
                         f"monitor output directory is locked by another writer: {self.path}."
@@ -400,6 +397,8 @@ class _OutputDirectoryLock:
 def _publish(staged: dict[str, Path], destinations: dict[str, Path]) -> None:
     try:
         with _OutputDirectoryLock(destinations["baseline"].parent):
+            for destination in destinations.values():
+                _validate_existing_destination(destination)
             backups: dict[str, Path | None] = {}
             promoted: list[str] = []
             try:
@@ -449,6 +448,8 @@ def publish_pair(
             raise ContractError(
                 f"monitor output would replace an input ({label}): {path}."
             )
+    for destination in destinations.values():
+        _validate_existing_destination(destination)
     baseline = project_baseline(_load_json(inputs["sources"], "sources"))
     observation = project_observation(
         baseline, _load_json(inputs["observation facts"], "observation facts")

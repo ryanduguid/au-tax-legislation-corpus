@@ -120,9 +120,11 @@ contains the observation timestamp, whether coverage is complete, and one
 stateful result for each observed Register id. The exporter validates the
 scope, collection, UTC timestamps, HTTPS evidence links and state-specific
 fields, rejects duplicate JSON members and control characters, and refuses an
-input whose resolved path is either output filename. Exactly one writer may publish to
-an output directory at a time; a live publisher lock fails closed and a lock
-older than five minutes is reclaimed for a failed writer.
+input whose resolved path is either output filename. Existing output names must
+be ordinary files, never directories, links, junctions or other special paths.
+Exactly one writer may publish to an output directory at a time; any existing
+publisher lock fails closed. After confirming that its owner is no longer
+running, an operator must remove `.monitor-contract.publish.lock` before retrying.
 
 The exporter stages both files and restores the prior pair after an ordinary
 write failure. `monitor-baseline.json` and `register-observation.json` are

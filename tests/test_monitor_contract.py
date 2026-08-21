@@ -11,6 +11,7 @@ from __future__ import annotations
 import json
 import importlib
 import os
+import stat
 import sys
 import tempfile
 import threading
@@ -109,9 +110,11 @@ class MonitorContractTests(unittest.TestCase):
         self.assertIn("replaced individually", readme)
         self.assertIn("one writer", readme)
         self.assertIn("power loss", readme)
+        self.assertIn("operator", readme)
         self.assertIn("replaced individually", build)
         self.assertIn("one writer", build)
         self.assertIn("power loss", build)
+        self.assertIn("operator", build)
 
     def test_projects_rich_sources_to_the_monitor_exact_baseline_shape(self):
         baseline = contract.project_baseline(sources_document())
@@ -257,6 +260,109 @@ class MonitorContractTests(unittest.TestCase):
                         self.assertEqual(original, collision.read_bytes())
                         collision.unlink()
 
+    def test_preflight_refuses_an_existing_output_directory_without_mutation(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            sources = root / "sources.json"
+            facts = root / "facts.json"
+            output = root / "out"
+            destination = output / "monitor-baseline.json"
+            output.mkdir()
+            destination.mkdir()
+            marker = destination / "must-remain"
+            marker.write_bytes(b"directory contents must remain")
+            sources.write_text(json.dumps(sources_document()), encoding="utf-8")
+            facts.write_text(json.dumps(observation_facts()), encoding="utf-8")
+
+            with self.assertRaisesRegex(contract.ContractError, "regular file"):
+                contract.publish_pair(sources, facts, output)
+
+            self.assertTrue(destination.is_dir())
+            self.assertEqual(b"directory contents must remain", marker.read_bytes())
+            self.assertFalse((output / "register-observation.json").exists())
+            self.assertFalse(list(output.glob(".*.monitor-contract-*")))
+
+    def test_preflight_refuses_an_existing_output_symlink_without_mutation(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            sources = root / "sources.json"
+            facts = root / "facts.json"
+            output = root / "out"
+            output.mkdir()
+            target = root / "outside.json"
+            original = b"outside bytes must remain"
+            target.write_bytes(original)
+            destination = output / "register-observation.json"
+            try:
+                destination.symlink_to(target)
+            except OSError:
+                self.skipTest("symbolic links are unavailable on this platform")
+            sources.write_text(json.dumps(sources_document()), encoding="utf-8")
+            facts.write_text(json.dumps(observation_facts()), encoding="utf-8")
+
+            with self.assertRaisesRegex(contract.ContractError, "regular file"):
+                contract.publish_pair(sources, facts, output)
+
+            self.assertTrue(destination.is_symlink())
+            self.assertEqual(original, target.read_bytes())
+            self.assertFalse((output / "monitor-baseline.json").exists())
+            self.assertFalse(list(output.glob(".*.monitor-contract-*")))
+
+    def test_preflight_refuses_an_existing_output_junction_without_mutation(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            sources = root / "sources.json"
+            facts = root / "facts.json"
+            output = root / "out"
+            output.mkdir()
+            destination = output / "monitor-baseline.json"
+            original = b"existing bytes must remain"
+            destination.write_bytes(original)
+            sources.write_text(json.dumps(sources_document()), encoding="utf-8")
+            facts.write_text(json.dumps(observation_facts()), encoding="utf-8")
+            real_isjunction = getattr(os.path, "isjunction", lambda _path: False)
+
+            def classify(candidate):
+                return os.path.normcase(os.fspath(candidate)) == os.path.normcase(os.fspath(destination)) or real_isjunction(candidate)
+
+            with mock.patch.object(contract.os.path, "isjunction", side_effect=classify, create=True):
+                with self.assertRaisesRegex(contract.ContractError, "regular file"):
+                    contract.publish_pair(sources, facts, output)
+
+            self.assertEqual(original, destination.read_bytes())
+            self.assertFalse((output / "register-observation.json").exists())
+            self.assertFalse(list(output.glob(".*.monitor-contract-*")))
+
+    def test_preflight_refuses_an_existing_output_reparse_point_without_mutation(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            sources = root / "sources.json"
+            facts = root / "facts.json"
+            output = root / "out"
+            output.mkdir()
+            destination = output / "monitor-baseline.json"
+            original = b"existing bytes must remain"
+            destination.write_bytes(original)
+            sources.write_text(json.dumps(sources_document()), encoding="utf-8")
+            facts.write_text(json.dumps(observation_facts()), encoding="utf-8")
+            real_lstat = contract.os.lstat
+
+            def marked_reparse(candidate):
+                if os.path.normcase(os.fspath(candidate)) == os.path.normcase(os.fspath(destination)):
+                    return mock.Mock(
+                        st_mode=stat.S_IFREG,
+                        st_file_attributes=getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0x400),
+                    )
+                return real_lstat(candidate)
+
+            with mock.patch.object(contract.os, "lstat", side_effect=marked_reparse):
+                with self.assertRaisesRegex(contract.ContractError, "regular file"):
+                    contract.publish_pair(sources, facts, output)
+
+            self.assertEqual(original, destination.read_bytes())
+            self.assertFalse((output / "register-observation.json").exists())
+            self.assertFalse(list(output.glob(".*.monitor-contract-*")))
+
     def test_rejects_duplicate_json_members_at_top_and_nested_levels(self):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
@@ -339,7 +445,7 @@ class MonitorContractTests(unittest.TestCase):
 
             self.assertFalse(list((root / "out").glob(".*.monitor-contract-*.tmp")))
 
-    def test_stale_output_lock_is_reclaimed_but_a_live_lock_fails_closed(self):
+    def test_live_and_aged_output_locks_fail_closed_without_mutation(self):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
             sources = root / "sources.json"
@@ -355,10 +461,52 @@ class MonitorContractTests(unittest.TestCase):
                     contract.publish_pair(sources, facts, output)
             self.assertTrue(lock.exists())
 
-            stale = time.time() - contract.PUBLISH_LOCK_STALE_SECONDS - 1
+            stale = time.time() - 600
             os.utime(lock, (stale, stale))
-            contract.publish_pair(sources, facts, output)
-            self.assertFalse(lock.exists())
+            with mock.patch.object(contract, "PUBLISH_LOCK_TIMEOUT_SECONDS", 0):
+                with self.assertRaisesRegex(contract.ContractError, "locked by another writer"):
+                    contract.publish_pair(sources, facts, output)
+            self.assertEqual("live writer", lock.read_text(encoding="utf-8"))
+            self.assertFalse((output / "monitor-baseline.json").exists())
+            self.assertFalse((output / "register-observation.json").exists())
+
+    def test_competing_writers_leave_an_aged_lock_untouched(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            sources = root / "sources.json"
+            facts = root / "facts.json"
+            output = root / "out"
+            output.mkdir()
+            sources.write_text(json.dumps(sources_document()), encoding="utf-8")
+            facts.write_text(json.dumps(observation_facts()), encoding="utf-8")
+            lock = output / contract.PUBLISH_LOCK_FILENAME
+            lock.write_text("failed writer requires operator recovery", encoding="utf-8")
+            stale = time.time() - 600
+            os.utime(lock, (stale, stale))
+            barrier = threading.Barrier(2)
+            errors: list[BaseException] = []
+
+            def publish() -> None:
+                try:
+                    barrier.wait(5)
+                    contract.publish_pair(sources, facts, output)
+                except BaseException as exc:
+                    errors.append(exc)
+
+            with mock.patch.object(contract, "PUBLISH_LOCK_TIMEOUT_SECONDS", 0):
+                writers = [threading.Thread(target=publish) for _ in range(2)]
+                for writer in writers:
+                    writer.start()
+                for writer in writers:
+                    writer.join(5)
+
+            self.assertTrue(all(not writer.is_alive() for writer in writers))
+            self.assertEqual(2, len(errors))
+            self.assertTrue(all(isinstance(exc, contract.ContractError) for exc in errors))
+            self.assertTrue(all("locked by another writer" in str(exc) for exc in errors))
+            self.assertEqual("failed writer requires operator recovery", lock.read_text(encoding="utf-8"))
+            self.assertFalse((output / "monitor-baseline.json").exists())
+            self.assertFalse((output / "register-observation.json").exists())
 
     def test_concurrent_writers_cannot_interleave_a_published_pair(self):
         with tempfile.TemporaryDirectory() as temporary:

@@ -36,9 +36,11 @@ python export_monitor_contract.py ../sources.json observation-facts.json --out m
 The facts document must use `au-tax-register-observation-facts.v1`. The command
 writes the deterministic, exact monitor inputs `monitor-baseline.json` and
 `register-observation.json` with duplicate-member, control-character and
-resolved input/output-collision checks. Exactly one writer can publish to a given
-output directory at a time. A live lock fails closed; a lock older than five
-minutes is reclaimed for a failed writer. It never queries the Register:
+resolved input/output-collision checks. Existing output names must be ordinary
+files, never directories, links, junctions or other special paths. Exactly one writer
+can publish to a given output directory at a time. Any existing lock
+fails closed; after confirming its owner is no longer running, an operator must
+remove `.monitor-contract.publish.lock` before retrying. It never queries the Register:
 `check_current.py` remains the read-only Register lookup stage, and the adapter
 only validates and projects facts a caller has already collected.
 
