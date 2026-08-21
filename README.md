@@ -75,7 +75,7 @@ The accepted timestamp grammar is exactly `YYYY-MM-DDThh:mm:ss[.ffffff][Z|+hh:mm
 
 ## Relationship to existing work
 
-The intended future source is a reviewed, deliberately versioned observation output from [au-tax-legislation-corpus](https://github.com/ryanduguid/au-tax-legislation-corpus). That corpus’s distinction between a superseded compilation, a current version with no published compilation, a title no longer in force, and a failed lookup is preserved here. This project is not a replacement corpus builder and must not treat derived corpus material as authorised legal text.
+The intended future source is a reviewed, deliberately versioned observation output from [SirArthurFadden](https://github.com/ryanduguid/SirArthurFadden), the Commonwealth tax legislation corpus builder. That corpus’s distinction between a superseded compilation, a current version with no published compilation, a title no longer in force, and a failed lookup is preserved here. This project is not a replacement corpus builder and must not treat derived corpus material as authorised legal text.
 
 ## Development
 
