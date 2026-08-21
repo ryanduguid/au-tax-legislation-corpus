@@ -18,6 +18,7 @@ jobs:
     with:
       upload-dist-artifact: true
   pypi:
+    timeout-minutes: 15
     name: publish to PyPI
     needs: release
     runs-on: ubuntu-latest
