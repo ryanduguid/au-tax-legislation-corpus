@@ -100,12 +100,16 @@ class ReleaseArchiveTests(unittest.TestCase):
             )
             self.assertEqual(_zip_files(first[0]), _tar_files(first[1]))
 
-    def test_release_workflow_uses_the_portable_builder(self) -> None:
+    def test_release_workflow_uses_the_shared_archive_policy(self) -> None:
         workflow = (ROOT / ".github" / "workflows" / "release.yml").read_text(
             encoding="utf-8",
         )
-        self.assertIn("TZ: UTC", workflow)
-        self.assertIn("python tools/build_release_archives.py", workflow)
+        self.assertIn(
+            "ryanduguid/release-policy/.github/workflows/release-archive.yml@"
+            "7095ffd2d03e5068bd57c928c306a99626ca46b8",
+            workflow,
+        )
+        self.assertIn("artifact-stem: au-tax-legislation-corpus-builder", workflow)
         self.assertNotIn("\n          git archive ", workflow)
 
     def test_builder_refuses_unsafe_prefixes(self) -> None:

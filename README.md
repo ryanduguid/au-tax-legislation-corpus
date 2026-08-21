@@ -2,7 +2,7 @@
 
 [![Verify](https://github.com/ryanduguid/SirArthurFadden/actions/workflows/verify.yml/badge.svg)](https://github.com/ryanduguid/SirArthurFadden/actions/workflows/verify.yml) [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 
-A pipeline of small Python scripts that downloads every in-force principal
+A packaged pipeline (`python -m fadden <stage>`) that downloads every in-force principal
 Commonwealth tax title from the Federal Register of Legislation and turns it
 into a retrieval corpus: full-text markdown with provenance front matter, one
 JSONL row per section, and a derived rates-and-thresholds index.
@@ -84,20 +84,22 @@ checkout, generated corpus files live in the deterministic `./corpus/`
 directory. To build at another location, place the scripts in that location's
 `build/` directory; they then use the parent directory as the corpus root.
 
-From an empty checkout, run the stages in order:
+From an empty checkout, run the stages in order. Stage names are unchanged;
+the dispatcher lives at `python -m fadden <stage>`. Intermediate JSON files
+are written beside the stage modules under `fadden/`.
 
 ```bash
-python discover.py      # list every in-force title matching the tax keywords -> titles_all.json, titles_principal.json
-python versions.py      # dedup titles and resolve each one's current version date -> acts_resolved.json
-python download.py      # fetch the current EPUB for each resolved title -> ./corpus/epub/*.epub, manifest_raw.json
-python probe13.py       # only if download reports no_epub: probe version history -> probe13.json
-python retry13.py       # fetch the latest published compilation for those titles -> retry13_patch.json; patches manifest_raw.json in place
-python extract.py       # convert each EPUB to markdown and per-section JSONL -> ./corpus/markdown/**, manifest_md.json
-python pii_scan.py      # flag disciplinary-register rows naming private individuals -> pii_flagged.json
-python pii_scan2.py     # second pass at a lower threshold, plus emails, phones and TFNs
-python finalize.py      # write the corpus-level index and licence files -> ./corpus/sources.json, INDEX.md, README.md, LICENCE-NOTICE.md
-python rates.py         # derive the rates-and-thresholds index -> ./corpus/rates/rates.jsonl, RATES.md
-python check_current.py # read-only staleness check against the Register
+python -m fadden discover      # list every in-force title matching the tax keywords -> fadden/titles_all.json, fadden/titles_principal.json
+python -m fadden versions      # dedup titles and resolve each one's current version date -> fadden/acts_resolved.json
+python -m fadden download      # fetch the current EPUB for each resolved title -> ./corpus/epub/*.epub, fadden/manifest_raw.json
+python -m fadden probe13       # only if download reports no_epub: probe version history -> fadden/probe13.json
+python -m fadden retry13       # fetch the latest published compilation for those titles -> fadden/retry13_patch.json; patches manifest_raw.json in place
+python -m fadden extract       # convert each EPUB to markdown and per-section JSONL -> ./corpus/markdown/**, fadden/manifest_md.json
+python -m fadden pii_scan      # flag disciplinary-register rows naming private individuals -> fadden/pii_flagged.json
+python -m fadden pii_scan2     # second pass at a lower threshold, plus emails, phones and TFNs
+python -m fadden finalize      # write the corpus-level index and licence files -> ./corpus/sources.json, INDEX.md, README.md, LICENCE-NOTICE.md
+python -m fadden rates         # derive the rates-and-thresholds index -> ./corpus/rates/rates.jsonl, RATES.md
+python -m fadden check_current # read-only staleness check against the Register
 ```
 
 The PII scans run before `finalize.py` because the generated corpus README
@@ -112,7 +114,7 @@ v1 baseline and observation inputs for
 [`tax-radar-au`](https://github.com/ryanduguid/tax-radar-au):
 
 ```bash
-python export_monitor_contract.py corpus/sources.json observation-facts.json --out monitor-input
+python -m fadden export_monitor_contract -- corpus/sources.json observation-facts.json --out monitor-input
 ```
 
 The facts file has schema version `au-tax-register-observation-facts.v1`. It
@@ -146,17 +148,19 @@ the human technical review remains separate.
 To produce a corpus you can pass on to someone else:
 
 ```bash
-python dist.py          # build the redistributable subset -> ./corpus/dist/
-python dist_verify.py   # check the built subset against its own claims, exits non-zero on failure
+python -m fadden dist          # build the redistributable subset -> ./corpus/dist/
+python -m fadden dist_verify   # check the built subset against its own claims, exits non-zero on failure
 ```
 
-`corpus_paths.py`, `curl_fetch.py` and `pii_patterns.py` are shared modules the
-stages import; they are not run directly.
+`fadden/corpus_paths.py`, `fadden/curl_fetch.py` and `fadden/pii_patterns.py` are shared modules the
+stages import; they are not run directly. `finalize.py` still copies the runnable
+stages into a completed corpus `build/` directory as flat scripts so a deployed
+corpus keeps the historical `python discover.py` layout.
 
 The intermediate JSON files (`titles_all.json`, `acts_resolved.json`,
 `manifest_raw.json`, `probe13.json`, `retry13_patch.json`) are build outputs
 the pipeline regenerates; they are not committed or shipped. Each stage writes
-its file beside the scripts, so any single stage re-runs without repeating the
+its file beside the stage modules, so any single stage re-runs without repeating the
 earlier ones. `manifest_md.json` from the 4 August run stays committed because
 the regression suite pins its pre-fix figures against BUILD.md.
 

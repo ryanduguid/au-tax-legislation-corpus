@@ -23,6 +23,12 @@ from unittest import mock
 
 
 REPO = Path(__file__).resolve().parents[1]
+STAGE = REPO / "fadden"
+
+
+def stage_file(name):
+    candidate = STAGE / name
+    return candidate if candidate.exists() else REPO / name
 
 
 def load_module(name, path):
@@ -50,7 +56,7 @@ class ArchiveLifecycleTests(unittest.TestCase):
         return payload.getvalue()
 
     def test_zip_validation_closes_the_archive(self):
-        download = load_module("download_archive_lifecycle", REPO / "download.py")
+        download = load_module("download_archive_lifecycle", STAGE / "download.py")
         epub_bytes = self._epub_bytes()
         real_zipfile = zipfile.ZipFile
         opened = []
@@ -66,7 +72,7 @@ class ArchiveLifecycleTests(unittest.TestCase):
         self.assertIsNone(opened[0].fp)
 
     def test_epub_extraction_closes_the_archive(self):
-        extract = load_module("extract_archive_lifecycle", REPO / "extract.py")
+        extract = load_module("extract_archive_lifecycle", STAGE / "extract.py")
         epub_bytes = self._epub_bytes()
         real_zipfile = zipfile.ZipFile
         opened = []
@@ -168,7 +174,7 @@ class VolumeGateTests(unittest.TestCase):
         return payload.getvalue()
 
     def parse(self):
-        extract = load_module("extract_volume_gate", REPO / "extract.py")
+        extract = load_module("extract_volume_gate", STAGE / "extract.py")
         blocks = extract.epub_blocks(io.BytesIO(self.epub_bytes()))
         return extract.to_markdown(blocks, self.META)
 
@@ -192,7 +198,7 @@ class VolumeGateTests(unittest.TestCase):
         self.assertNotIn("This compilation is in 2 volumes", markdown)
 
     def _parse(self, name, *volumes):
-        extract = load_module(name, REPO / "extract.py")
+        extract = load_module(name, STAGE / "extract.py")
         blocks = extract.epub_blocks(io.BytesIO(self.epub_bytes(*volumes)))
         return extract.to_markdown(blocks, self.META)
 
@@ -236,7 +242,7 @@ class VolumeGateTests(unittest.TestCase):
         trigger on it routes the volume's whole body into endnotes.md - the
         same content loss the volume gate exists to stop, wearing a different
         hat."""
-        extract = load_module("extract_volume_endnote_trigger", REPO / "extract.py")
+        extract = load_module("extract_volume_endnote_trigger", STAGE / "extract.py")
         blocks = [{"k": "file"},
                   {"k": "p", "cls": "ActHead4", "sectno": True, "text": "1 Short title"},
                   {"k": "p", "cls": "subsection", "sectno": False, "text": "Body."},
@@ -272,7 +278,7 @@ class ExtractPipelineTests(unittest.TestCase):
         build = tmp_path / "build"
         build.mkdir()
         for name in ("extract.py", "corpus_paths.py"):
-            shutil.copy2(REPO / name, build / name)
+            shutil.copy2(stage_file(name), build / name)
         epub = tmp_path / "epub" / ("%s.epub" % self.REGISTER_ID)
         epub.parent.mkdir(parents=True)
         epub.write_bytes(VolumeGateTests.epub_bytes())
@@ -402,7 +408,7 @@ class TableSplitTests(unittest.TestCase):
         + ["Signed by the Chief Executive Officer."])
 
     def test_every_segmented_line_lands_in_a_chunk(self):
-        extract = load_module("extract_table_split", REPO / "extract.py")
+        extract = load_module("extract_table_split", STAGE / "extract.py")
         chunks = extract.table_split(self.BODY, "TPB Terminations")
         self.assertTrue(chunks)
         kept = "\n".join(c["text"][0] for c in chunks)
@@ -411,14 +417,14 @@ class TableSplitTests(unittest.TestCase):
                 self.assertIn(line.strip(), kept)
 
     def test_the_completeness_guard_reports_a_dropped_line(self):
-        extract = load_module("extract_chunk_guard", REPO / "extract.py")
+        extract = load_module("extract_chunk_guard", STAGE / "extract.py")
         with self.assertRaisesRegex(RuntimeError, "C. PERTH BASIN"):
             extract.check_chunks_complete(
                 ["A table row", "C. PERTH BASIN"],
                 [{"text": ["A table row"]}])
 
     def test_the_completeness_guard_runs_on_the_split_path(self):
-        extract = load_module("extract_chunk_guard_wiring", REPO / "extract.py")
+        extract = load_module("extract_chunk_guard_wiring", STAGE / "extract.py")
         with mock.patch.object(extract, "check_chunks_complete",
                                side_effect=RuntimeError("guard ran")):
             with self.assertRaisesRegex(RuntimeError, "guard ran"):
@@ -466,7 +472,7 @@ class ChunkGuardFailureReportingTests(unittest.TestCase):
         build = tmp_path / "build"
         build.mkdir()
         for name in ("extract.py", "corpus_paths.py"):
-            shutil.copy2(REPO / name, build / name)
+            shutil.copy2(stage_file(name), build / name)
         (tmp_path / "epub").mkdir()
         (tmp_path / "epub" / ("%s.epub" % self.TABLE_ID)).write_bytes(
             self._epub(self._table_document()))
@@ -524,7 +530,7 @@ class ParserRuleTests(unittest.TestCase):
             "retrieved": "2026-08-03", "versionStart": "2026-01-01"}
 
     def markdown(self, blocks, **kwargs):
-        extract = load_module("extract_parser_rules", REPO / "extract.py")
+        extract = load_module("extract_parser_rules", STAGE / "extract.py")
         return extract.to_markdown(blocks, self.META, **kwargs)
 
     def test_a_section_id_survives_the_non_breaking_hyphen(self):
@@ -562,7 +568,7 @@ class ParserRuleTests(unittest.TestCase):
         self.assertEqual([s["section"] for s in sections], ["1"])
 
     def test_the_coat_of_arms_needs_all_three_signals(self):
-        extract = load_module("extract_arms_gate", REPO / "extract.py")
+        extract = load_module("extract_arms_gate", STAGE / "extract.py")
         document = ('<html><body>'
                     '<img src="arms.png" width="120" height="90"/>'
                     '<img src="formula.png" width="480" height="90"/>'
@@ -587,7 +593,7 @@ class ParserRuleTests(unittest.TestCase):
         self.assertEqual([s["section"] for s in sections if s["kind"] == "section"], ["3"])
 
     def test_a_spanned_cell_keeps_later_cells_in_their_column(self):
-        extract = load_module("extract_colspan", REPO / "extract.py")
+        extract = load_module("extract_colspan", STAGE / "extract.py")
         parser = extract.Doc()
         parser.feed('<html><body><table>'
                     '<tr><td colspan="2">Rate</td><td>Amount</td></tr>'
@@ -602,7 +608,7 @@ class ParserRuleTests(unittest.TestCase):
         cell. Without a stack the inner <table> clears the shared buffers, so
         every row the enclosing table has already parsed disappears and the
         cell that held the inner table merges into its first row."""
-        extract = load_module("extract_nested_table", REPO / "extract.py")
+        extract = load_module("extract_nested_table", STAGE / "extract.py")
         parser = extract.Doc()
         parser.feed('<html><body><table>'
                     '<tr><td>Item 1</td><td>Rate 5%</td></tr>'
@@ -620,7 +626,7 @@ class ParserRuleTests(unittest.TestCase):
     def test_a_nested_table_does_not_steal_the_enclosing_cell_colspan(self):
         """The inner table's own cells reset _colspan, so without saving it the
         enclosing spanned cell loses its filler columns and the row shifts."""
-        extract = load_module("extract_nested_colspan", REPO / "extract.py")
+        extract = load_module("extract_nested_colspan", STAGE / "extract.py")
         parser = extract.Doc()
         parser.feed('<html><body><table>'
                     '<tr><td colspan="2">Band'
@@ -636,7 +642,7 @@ class ParserRuleTests(unittest.TestCase):
 
 class FailureHandlingTests(unittest.TestCase):
     def test_discovery_does_not_write_a_partial_title_list(self):
-        discover = load_module("discover_regression", REPO / "discover.py")
+        discover = load_module("discover_regression", STAGE / "discover.py")
         with tempfile.TemporaryDirectory() as tmp:
             scratch = Path(tmp)
             discover.SCRATCH = str(scratch)
@@ -654,7 +660,7 @@ class FailureHandlingTests(unittest.TestCase):
             self.assertFalse((scratch / "titles_principal.json").exists())
 
     def test_versions_does_not_write_a_partial_resolution_manifest(self):
-        versions = load_module("versions_regression", REPO / "versions.py")
+        versions = load_module("versions_regression", STAGE / "versions.py")
         title = {"id": "C2004A00001", "name": "Example Tax Act", "isPrincipal": True}
         with tempfile.TemporaryDirectory() as tmp:
             scratch = Path(tmp)
@@ -670,7 +676,7 @@ class FailureHandlingTests(unittest.TestCase):
             self.assertFalse((scratch / "acts_resolved.json").exists())
 
     def test_versions_writes_a_manifest_only_after_a_complete_resolution(self):
-        versions = load_module("versions_success_regression", REPO / "versions.py")
+        versions = load_module("versions_success_regression", STAGE / "versions.py")
         title = {"id": "C2004A00001", "name": "Example Tax Act", "isPrincipal": True}
         with tempfile.TemporaryDirectory() as tmp:
             scratch = Path(tmp)
@@ -700,8 +706,8 @@ class FailureHandlingTests(unittest.TestCase):
             build = tmp_path / "build"
             build.mkdir()
             source = build / "extract.py"
-            shutil.copy2(REPO / "extract.py", source)
-            shutil.copy2(REPO / "corpus_paths.py", build / "corpus_paths.py")
+            shutil.copy2(STAGE / "extract.py", source)
+            shutil.copy2(STAGE / "corpus_paths.py", build / "corpus_paths.py")
             extract = load_module("extract_regression", source)
 
             root = tmp_path
@@ -729,8 +735,8 @@ class FailureHandlingTests(unittest.TestCase):
             build = tmp_path / "build"
             build.mkdir()
             source = build / "extract.py"
-            shutil.copy2(REPO / "extract.py", source)
-            shutil.copy2(REPO / "corpus_paths.py", build / "corpus_paths.py")
+            shutil.copy2(STAGE / "extract.py", source)
+            shutil.copy2(STAGE / "corpus_paths.py", build / "corpus_paths.py")
             extract = load_module("extract_path_regression", source)
             manifest = [{
                 "id": "F2020L01498", "name": "Example Instrument",
@@ -749,7 +755,7 @@ class FailureHandlingTests(unittest.TestCase):
 
 class FinalizePiiSummaryTests(unittest.TestCase):
     def test_readme_pii_totals_derive_from_the_scan_and_refuse_without_it(self):
-        finalize = load_module("finalize_pii_regression", REPO / "finalize.py")
+        finalize = load_module("finalize_pii_regression", STAGE / "finalize.py")
         # The committed scan: 12 titles, 5,404 name mentions, rounded to 5,400.
         self.assertEqual(finalize.pii_summary(), (12, 5400))
         with tempfile.TemporaryDirectory() as tmp:
@@ -780,7 +786,7 @@ class FinalizeMissingTitleTests(unittest.TestCase):
             for name in ("discover.py", "versions.py", "download.py",
                          "extract.py", "finalize.py", "check_current.py",
                          "corpus_paths.py", "curl_fetch.py"):
-                shutil.copy2(REPO / name, build / name)
+                shutil.copy2(stage_file(name), build / name)
             finalize = load_module("finalize_missing_reason", build / "finalize.py")
 
             ok = {"id": "C2004A00001", "name": "Example Tax Act",
@@ -827,7 +833,7 @@ class FinalizeMissingTitleTests(unittest.TestCase):
 class Retry13MergeTests(unittest.TestCase):
     def test_probe13_is_safe_to_import(self):
         with mock.patch("subprocess.run") as run:
-            module = load_module("probe13_import_safety", REPO / "probe13.py")
+            module = load_module("probe13_import_safety", STAGE / "probe13.py")
 
         run.assert_not_called()
         self.assertTrue(callable(module.main))
@@ -837,7 +843,7 @@ class Retry13MergeTests(unittest.TestCase):
         must fold successful recoveries into manifest_raw.json, keep
         retry13_patch.json as the audit record, and leave untouched titles
         exactly as the download stage wrote them."""
-        retry13 = load_module("retry13_regression", REPO / "retry13.py")
+        retry13 = load_module("retry13_regression", STAGE / "retry13.py")
         with tempfile.TemporaryDirectory() as tmp:
             scratch = Path(tmp)
             epub_dir = scratch / "corpus" / "epub"
@@ -899,7 +905,7 @@ class Retry13MergeTests(unittest.TestCase):
 
 class Retry13ManifestWriteTests(unittest.TestCase):
     def test_a_later_retry_failure_restores_every_earlier_change(self):
-        retry13 = load_module("retry13_later_failure", REPO / "retry13.py")
+        retry13 = load_module("retry13_later_failure", STAGE / "retry13.py")
         with tempfile.TemporaryDirectory() as tmp:
             scratch = Path(tmp)
             epub_dir = scratch / "corpus" / "epub"
@@ -955,7 +961,7 @@ class Retry13ManifestWriteTests(unittest.TestCase):
             self.assertEqual(list(scratch.rglob("*.rollback")), [])
 
     def test_a_failed_manifest_write_restores_the_entire_retry_graph(self):
-        retry13 = load_module("retry13_atomic", REPO / "retry13.py")
+        retry13 = load_module("retry13_atomic", STAGE / "retry13.py")
         with tempfile.TemporaryDirectory() as tmp:
             scratch = Path(tmp)
             epub_dir = scratch / "corpus" / "epub"
@@ -1023,7 +1029,7 @@ class DownloadManifestWriteTests(unittest.TestCase):
         it lands at the end of a 2h40m crawl.  Truncating it in place and then
         failing mid-dump leaves a half-written file that extract.py cannot
         json.load, with the crawl it recorded already spent."""
-        download = load_module("download_atomic_manifest", REPO / "download.py")
+        download = load_module("download_atomic_manifest", STAGE / "download.py")
         with tempfile.TemporaryDirectory() as tmp:
             scratch = Path(tmp)
             epub_dir = scratch / "corpus" / "epub"
@@ -1090,7 +1096,7 @@ class DownloadManifestWriteTests(unittest.TestCase):
             self.assertFalse(Path(str(sidecar) + ".rollback").exists())
 
     def test_a_response_error_is_logged_then_aborts_before_manifest_replacement(self):
-        download = load_module("download_response_failure", REPO / "download.py")
+        download = load_module("download_response_failure", STAGE / "download.py")
         cases = (
             ("http", b"<html>BODY_MUST_NOT_REACH_LOG</html>",
              "403|text/html\r\nX-Untrusted: value", "HTTP 403"),
@@ -1141,7 +1147,7 @@ class DownloadManifestWriteTests(unittest.TestCase):
                 self.assertEqual(lines[1], "ROLLBACK restored 1 changed title(s)")
 
     def test_a_failed_upgrade_preserves_the_prior_epub_and_sidecar(self):
-        download = load_module("download_upgrade_failure", REPO / "download.py")
+        download = load_module("download_upgrade_failure", STAGE / "download.py")
         with tempfile.TemporaryDirectory() as tmp:
             scratch = Path(tmp)
             epub_dir = scratch / "corpus" / "epub"
@@ -1183,7 +1189,7 @@ class DownloadManifestWriteTests(unittest.TestCase):
             self.assertFalse(Path(str(epub) + ".part").exists())
 
     def test_a_later_fetch_failure_rolls_back_every_earlier_upgrade(self):
-        download = load_module("download_run_rollback", REPO / "download.py")
+        download = load_module("download_run_rollback", STAGE / "download.py")
         with tempfile.TemporaryDirectory() as tmp:
             scratch = Path(tmp)
             epub_dir = scratch / "corpus" / "epub"
@@ -1236,7 +1242,7 @@ class DownloadManifestWriteTests(unittest.TestCase):
             self.assertEqual(list(epub_dir.glob("*.rollback")), [])
 
     def test_a_sidecar_failure_rolls_back_the_epub_publication(self):
-        download = load_module("download_sidecar_rollback", REPO / "download.py")
+        download = load_module("download_sidecar_rollback", STAGE / "download.py")
         for had_prior in (True, False):
             with self.subTest(had_prior=had_prior), tempfile.TemporaryDirectory() as tmp:
                 scratch = Path(tmp)
@@ -1297,7 +1303,7 @@ class DiscoveryPagingTests(unittest.TestCase):
     def test_paging_orders_by_id_and_refuses_a_page_that_repeats_one(self):
         """Unordered paging is how 142 titles, the Tax Agent Services Act 2009
         among them, went missing."""
-        discover = load_module("discover_paging", REPO / "discover.py")
+        discover = load_module("discover_paging", STAGE / "discover.py")
         patcher = mock.patch.object(discover.time, "sleep")
         patcher.start()
         self.addCleanup(patcher.stop)
@@ -1335,7 +1341,7 @@ class DownloadValidationTests(unittest.TestCase):
 
     def test_fetch_fails_closed_for_http_and_content_errors(self):
         """Access blocks and server errors must not become missing editions."""
-        download = load_module("download_fetch_validation", REPO / "download.py")
+        download = load_module("download_fetch_validation", STAGE / "download.py")
         patcher = mock.patch.object(download.time, "sleep")
         patcher.start()
         self.addCleanup(patcher.stop)
@@ -1394,7 +1400,7 @@ class DownloadValidationTests(unittest.TestCase):
             self.assertEqual(Path(dst).read_bytes(), valid_before_failure)
 
     def test_a_failed_envelope_cannot_taint_a_later_raw_epub(self):
-        download = load_module("download_retry_metadata", REPO / "download.py")
+        download = load_module("download_retry_metadata", STAGE / "download.py")
         payload = io.BytesIO()
         with zipfile.ZipFile(payload, "w") as archive:
             archive.writestr("document_1.xhtml", "<html>valid retry</html>")
@@ -1427,7 +1433,7 @@ class DownloadValidationTests(unittest.TestCase):
     def test_only_a_null_compilation_register_id_is_no_epub(self):
         """A current version with no registerId is the API's no-edition case;
         it needs no document request and stays eligible for retry13.py."""
-        download = load_module("download_no_document", REPO / "download.py")
+        download = load_module("download_no_document", STAGE / "download.py")
         with tempfile.TemporaryDirectory() as tmp:
             scratch = Path(tmp)
             epub_dir = scratch / "corpus" / "epub"
@@ -1469,7 +1475,7 @@ class DownloadValidationTests(unittest.TestCase):
     def test_no_document_count_is_not_hard_coded_in_maintained_prose(self):
         for name in ("README.md", "BUILD.md", "retry13.py", "extract.py"):
             with self.subTest(name=name):
-                text = (REPO / name).read_text(encoding="utf-8")
+                text = (stage_file(name)).read_text(encoding="utf-8")
                 self.assertNotRegex(text, r"(?i)\bthirteen titles\b")
 
 
@@ -1492,7 +1498,7 @@ class StalenessBucketTests(unittest.TestCase):
                         "compilation_number": "4", "compilation_date": "2025-06-30"}],
         }), encoding="utf-8")
         for name in ("check_current.py", "corpus_paths.py", "curl_fetch.py"):
-            shutil.copy2(REPO / name, base / name)
+            shutil.copy2(stage_file(name), base / name)
 
     def test_a_current_version_with_no_document_is_its_own_bucket(self):
         """Filing these under "re-download these" sends the reader at a URL
@@ -1586,7 +1592,7 @@ class GeneratedReadmeTests(unittest.TestCase):
         """check_current.py is a separate command run after this README is
         written, so any run's counts baked into the template go stale on the
         next rebuild while the interpolated figures beside them stay correct."""
-        source = (REPO / "finalize.py").read_text(encoding="utf-8")
+        source = (STAGE / "finalize.py").read_text(encoding="utf-8")
         stale = re.search(r"\d[\d,]* unchanged", source)
         self.assertIsNone(stale, stale.group(0) if stale else "")
         self.assertIn("{notcurrent} titles are not the current text", source)
@@ -1598,7 +1604,7 @@ class GeneratedReadmeTests(unittest.TestCase):
         the reader to re-download a document that does not exist, at a URL that
         answers 404 - the miscategorisation the pipeline was fixed to stop
         making."""
-        source = (REPO / "finalize.py").read_text(encoding="utf-8")
+        source = (STAGE / "finalize.py").read_text(encoding="utf-8")
         paragraphs = [" ".join(p.split()) for p in re.split(r"\n\s*\n", source)
                       if "`titles_not_current_version`" in p]
         self.assertTrue(paragraphs, "no README paragraph cites the bucket")
@@ -1629,7 +1635,7 @@ class ShippedIntermediateTests(unittest.TestCase):
         BUILD.md cites those same figures as the evidence of the bug.  Quote the
         manifest's own numbers here, so regenerating it fails this test rather
         than leaving BUILD.md describing a state that no longer exists."""
-        manifest = json.loads((REPO / "manifest_md.json").read_text(encoding="utf-8"))
+        manifest = json.loads((STAGE / "manifest_md.json").read_text(encoding="utf-8"))
         entry = [a for a in manifest if a["id"] == "F2025L00281"]
         self.assertEqual(len(entry), 1)
         build = " ".join((REPO / "BUILD.md").read_text(encoding="utf-8").split())
@@ -1657,7 +1663,7 @@ class PiiNameGateTests(unittest.TestCase):
                     "| O'Brien, Patrick | 34567890 | s 30-20 |")
 
     def test_caps_mac_and_apostrophe_surnames_are_visible_to_the_gate(self):
-        patterns = load_module("pii_patterns_regression", REPO / "pii_patterns.py")
+        patterns = load_module("pii_patterns_regression", STAGE / "pii_patterns.py")
         names = patterns.person_names(self.ALL_CAPS_ROW)
         self.assertIn("SMITH, John", names)
         self.assertIn("McDonald, Anne", names)
@@ -1667,7 +1673,7 @@ class PiiNameGateTests(unittest.TestCase):
             len(set(patterns.REGNO.findall(self.ALL_CAPS_ROW))), 3)
 
     def test_statutory_vocabulary_is_filtered_case_insensitively(self):
-        patterns = load_module("pii_patterns_statutory", REPO / "pii_patterns.py")
+        patterns = load_module("pii_patterns_statutory", STAGE / "pii_patterns.py")
         # The statutory list holds capitalised forms, so an all-caps candidate
         # must be checked against it case-insensitively, not waved through.
         self.assertEqual(patterns.person_names(
@@ -1677,7 +1683,7 @@ class PiiNameGateTests(unittest.TestCase):
             patterns.person_names("Deputy Commissioner of Taxation"), set())
 
     def test_one_name_and_one_registration_number_trigger_the_distribution_gate(self):
-        patterns = load_module("pii_patterns_low_density", REPO / "pii_patterns.py")
+        patterns = load_module("pii_patterns_low_density", STAGE / "pii_patterns.py")
 
         self.assertTrue(patterns.has_private_person_registration_pair(
             "| Smith, John | 12345678 | s 30-15 |"))
@@ -1685,7 +1691,7 @@ class PiiNameGateTests(unittest.TestCase):
             "Deputy Commissioner of Taxation referred to section 12345678."))
 
     def test_contact_fingerprints_are_normalised_and_tfn_shaped(self):
-        patterns = load_module("pii_patterns_contacts", REPO / "pii_patterns.py")
+        patterns = load_module("pii_patterns_contacts", STAGE / "pii_patterns.py")
         first = list(patterns.contact_fingerprints(
             "Email Privacy.Review@Example.Test or phone (02) 1234 5678. "
             "Tax file number: 123 456 789."))
@@ -1698,7 +1704,7 @@ class PiiNameGateTests(unittest.TestCase):
             "The expression tax file number 7/subsection 2 is a heading.")), [])
 
     def test_phone_gate_sees_unspaced_international_and_short_code_forms(self):
-        patterns = load_module("pii_patterns_phone_forms", REPO / "pii_patterns.py")
+        patterns = load_module("pii_patterns_phone_forms", STAGE / "pii_patterns.py")
         for text in ("0412345678", "0212345678", "0412 345 678",
                      "+61 2 1234 5678", "+61412345678", "+61 (0)2 1234 5678",
                      "+61 (02) 1234 5678", "13 24 68", "132468",
@@ -1714,7 +1720,7 @@ class PiiNameGateTests(unittest.TestCase):
                          list(patterns.contact_fingerprints("+61 2 1234 5678")))
 
     def test_tfn_gate_sees_abbreviated_labels_and_bare_nine_digit_runs(self):
-        patterns = load_module("pii_patterns_tfn_forms", REPO / "pii_patterns.py")
+        patterns = load_module("pii_patterns_tfn_forms", STAGE / "pii_patterns.py")
         labelled = list(patterns.contact_fingerprints("TFN: 123 456 782"))
         self.assertEqual([kind for kind, _ in labelled], ["tfn"])
         # The abbreviation, the full label, and the bare grouped or contiguous
@@ -1732,7 +1738,7 @@ class PiiNameGateTests(unittest.TestCase):
                              [], text)
 
     def test_contact_allowlist_is_bound_to_kind_digest_and_title(self):
-        patterns = load_module("pii_patterns_policy", REPO / "pii_patterns.py")
+        patterns = load_module("pii_patterns_policy", STAGE / "pii_patterns.py")
         rid = "C2004A00001"
         contact = "privacy-review@example.test"
         kind, digest = next(patterns.contact_fingerprints(contact))
@@ -1743,7 +1749,7 @@ class PiiNameGateTests(unittest.TestCase):
             contact, "F2026N00001", approved))
 
     def test_tfn_can_never_be_approved_as_an_organisational_contact(self):
-        patterns = load_module("pii_patterns_tfn_policy", REPO / "pii_patterns.py")
+        patterns = load_module("pii_patterns_tfn_policy", STAGE / "pii_patterns.py")
         rid = "C2004A00001"
         text = "Tax file number: 123 456 789."
         kind, digest = next(patterns.contact_fingerprints(text))
@@ -1762,7 +1768,7 @@ class PiiNameGateTests(unittest.TestCase):
                 patterns.load_contact_allowlist(policy)
 
     def test_contact_allowlist_reason_cannot_store_a_raw_identifier(self):
-        patterns = load_module("pii_patterns_reason_policy", REPO / "pii_patterns.py")
+        patterns = load_module("pii_patterns_reason_policy", STAGE / "pii_patterns.py")
         document = {"schema_version": 1, "entries": [{
             "kind": "email", "sha256": "0" * 64,
             "register_id": "C2004A00001",
@@ -1775,7 +1781,7 @@ class PiiNameGateTests(unittest.TestCase):
                 patterns.load_contact_allowlist(policy)
 
     def test_contact_allowlist_rejects_malformed_and_duplicate_entries(self):
-        patterns = load_module("pii_patterns_policy_schema", REPO / "pii_patterns.py")
+        patterns = load_module("pii_patterns_policy_schema", STAGE / "pii_patterns.py")
         valid = {
             "kind": "email", "sha256": "0" * 64,
             "register_id": "C2004A00001", "reason": "official contact",
@@ -1797,7 +1803,7 @@ class PiiNameGateTests(unittest.TestCase):
             build = base / "build"
             build.mkdir()
             for name in ("pii_scan.py", "pii_patterns.py", "corpus_paths.py"):
-                shutil.copy2(REPO / name, build / name)
+                shutil.copy2(stage_file(name), build / name)
 
             titles = [
                 {"register_id": "F2026N00001", "name": "All Caps Register",
@@ -1835,7 +1841,7 @@ class PiiNameGateTests(unittest.TestCase):
             build.mkdir()
             for name in ("pii_scan2.py", "pii_patterns.py", "corpus_paths.py",
                          "pii_contact_allowlist.json"):
-                shutil.copy2(REPO / name, build / name)
+                shutil.copy2(stage_file(name), build / name)
             (build / "pii_flagged.json").write_text("[]\n", encoding="utf-8")
 
             contact = "privacy-review@example.test"
@@ -1867,7 +1873,7 @@ class PiiNameGateTests(unittest.TestCase):
             build = base / "build"
             build.mkdir()
             for name in ("pii_scan2.py", "pii_patterns.py", "corpus_paths.py"):
-                shutil.copy2(REPO / name, build / name)
+                shutil.copy2(stage_file(name), build / name)
             (build / "pii_flagged.json").write_text("[]\n", encoding="utf-8")
 
             contact = "OFFICIAL@example.test"
@@ -1994,8 +2000,8 @@ class DistributionTests(unittest.TestCase):
         return root, build
 
     def test_distribution_rebuilds_counts_and_rates_markdown_from_filtered_rows(self):
-        dist = load_module("dist_regression", REPO / "dist.py")
-        verify = load_module("dist_verify_regression", REPO / "dist_verify.py")
+        dist = load_module("dist_regression", STAGE / "dist.py")
+        verify = load_module("dist_verify_regression", STAGE / "dist_verify.py")
         with tempfile.TemporaryDirectory() as tmp:
             root, build = self._write_fixture(Path(tmp))
             dist.ROOT = str(root)
@@ -2033,7 +2039,7 @@ class DistributionTests(unittest.TestCase):
             self.assertIn("REMOVED.md", dist_readme)
 
             policy = json.loads(
-                (REPO / "pii_contact_allowlist.json").read_text(encoding="utf-8"))
+                (STAGE / "pii_contact_allowlist.json").read_text(encoding="utf-8"))
             unique_contacts = len({
                 (entry["kind"], entry["sha256"]) for entry in policy["entries"]
             })
@@ -2085,8 +2091,8 @@ class DistributionTests(unittest.TestCase):
         """Every check in dist_verify.py passes on a clean distribution, so a
         check that has been weakened or deleted looks exactly like a check that
         is holding.  Plant the condition each one exists to catch."""
-        dist = load_module("dist_claims", REPO / "dist.py")
-        verify = load_module("dist_verify_claims", REPO / "dist_verify.py")
+        dist = load_module("dist_claims", STAGE / "dist.py")
+        verify = load_module("dist_verify_claims", STAGE / "dist_verify.py")
         with tempfile.TemporaryDirectory() as tmp:
             root, build = self._write_fixture(Path(tmp))
             dist.ROOT = str(root)
@@ -2291,8 +2297,8 @@ class DistributionTests(unittest.TestCase):
         The operator saw a traceback rather than a verdict, and nothing in the
         output said which entry caused it or whether any other check had
         passed.  Reject the name, keep it out of every path, and report it."""
-        dist = load_module("dist_stray", REPO / "dist.py")
-        verify = load_module("dist_verify_stray", REPO / "dist_verify.py")
+        dist = load_module("dist_stray", STAGE / "dist.py")
+        verify = load_module("dist_verify_stray", STAGE / "dist_verify.py")
         with tempfile.TemporaryDirectory() as tmp:
             root, build = self._write_fixture(Path(tmp))
             dist.ROOT = str(root)
@@ -2344,8 +2350,8 @@ class DistributionTests(unittest.TestCase):
             self.assertEqual(code, 0)
 
     def test_top_level_title_symlink_is_a_named_failure(self):
-        dist = load_module("dist_verify_symlink_fixture", REPO / "dist.py")
-        verify = load_module("dist_verify_top_symlink", REPO / "dist_verify.py")
+        dist = load_module("dist_verify_symlink_fixture", STAGE / "dist.py")
+        verify = load_module("dist_verify_top_symlink", STAGE / "dist_verify.py")
         with tempfile.TemporaryDirectory() as tmp:
             root, build = self._write_fixture(Path(tmp))
             dist.ROOT = str(root)
@@ -2370,8 +2376,8 @@ class DistributionTests(unittest.TestCase):
             self.assertIn("F2026N00001 [symlink]", out)
 
     def test_top_level_title_junction_is_a_named_failure(self):
-        dist = load_module("dist_verify_junction_fixture", REPO / "dist.py")
-        verify = load_module("dist_verify_top_junction", REPO / "dist_verify.py")
+        dist = load_module("dist_verify_junction_fixture", STAGE / "dist.py")
+        verify = load_module("dist_verify_top_junction", STAGE / "dist_verify.py")
         with tempfile.TemporaryDirectory() as tmp:
             root, build = self._write_fixture(Path(tmp))
             dist.ROOT = str(root)
@@ -2399,8 +2405,8 @@ class DistributionTests(unittest.TestCase):
             self.assertIn("F2026N00002 [junction]", out)
 
     def test_top_level_title_reparse_point_is_a_named_failure(self):
-        dist = load_module("dist_verify_reparse_fixture", REPO / "dist.py")
-        verify = load_module("dist_verify_top_reparse", REPO / "dist_verify.py")
+        dist = load_module("dist_verify_reparse_fixture", STAGE / "dist.py")
+        verify = load_module("dist_verify_top_reparse", STAGE / "dist_verify.py")
         with tempfile.TemporaryDirectory() as tmp:
             root, build = self._write_fixture(Path(tmp))
             dist.ROOT = str(root)
@@ -2428,8 +2434,8 @@ class DistributionTests(unittest.TestCase):
             self.assertIn("F2026N00003 [reparse point]", out)
 
     def test_nested_title_link_is_a_named_containment_failure(self):
-        dist = load_module("dist_verify_nested_link_fixture", REPO / "dist.py")
-        verify = load_module("dist_verify_nested_link", REPO / "dist_verify.py")
+        dist = load_module("dist_verify_nested_link_fixture", STAGE / "dist.py")
+        verify = load_module("dist_verify_nested_link", STAGE / "dist_verify.py")
         with tempfile.TemporaryDirectory() as tmp:
             root, build = self._write_fixture(Path(tmp))
             dist.ROOT = str(root)
@@ -2454,7 +2460,7 @@ class DistributionTests(unittest.TestCase):
             self.assertIn(self.PUBLIC_ID, out)
 
     def test_distribution_rejects_nested_symlinks_before_copying(self):
-        dist = load_module("dist_symlink_regression", REPO / "dist.py")
+        dist = load_module("dist_symlink_regression", STAGE / "dist.py")
         with tempfile.TemporaryDirectory() as tmp:
             root, build = self._write_fixture(Path(tmp))
             source = root / "markdown" / self.PUBLIC_ID
@@ -2472,7 +2478,7 @@ class DistributionTests(unittest.TestCase):
                 dist.main()
 
     def test_contact_preflight_preserves_the_existing_distribution(self):
-        dist = load_module("dist_contact_preflight", REPO / "dist.py")
+        dist = load_module("dist_contact_preflight", STAGE / "dist.py")
         with tempfile.TemporaryDirectory() as tmp:
             root, build = self._write_fixture(Path(tmp))
             policy = build / "pii_contact_allowlist.json"
@@ -2505,7 +2511,7 @@ class DistributionTests(unittest.TestCase):
         for relative in (self.PUBLIC_ID + ".md", "endnotes.md"):
             with self.subTest(relative=relative), tempfile.TemporaryDirectory() as tmp:
                 dist = load_module(
-                    "dist_contact_%s" % relative.replace(".", "_"), REPO / "dist.py")
+                    "dist_contact_%s" % relative.replace(".", "_"), STAGE / "dist.py")
                 root, build = self._write_fixture(Path(tmp))
                 policy = build / "pii_contact_allowlist.json"
                 policy.write_text(json.dumps({"schema_version": 1, "entries": []}),
@@ -2542,7 +2548,7 @@ class DistributionTests(unittest.TestCase):
         for relative in (self.PUBLIC_ID + ".md", "endnotes.md"):
             with self.subTest(relative=relative), tempfile.TemporaryDirectory() as tmp:
                 dist = load_module(
-                    "dist_private_%s" % relative.replace(".", "_"), REPO / "dist.py")
+                    "dist_private_%s" % relative.replace(".", "_"), STAGE / "dist.py")
                 root, build = self._write_fixture(Path(tmp))
                 dist.ROOT = str(root)
                 dist.HERE = str(build)
@@ -2571,7 +2577,7 @@ class DistributionTests(unittest.TestCase):
                 self.assertNotIn("Smith, John", str(raised.exception))
 
     def test_binary_control_preflight_preserves_existing_distribution(self):
-        dist = load_module("dist_binary_preflight", REPO / "dist.py")
+        dist = load_module("dist_binary_preflight", STAGE / "dist.py")
         with tempfile.TemporaryDirectory() as tmp:
             root, build = self._write_fixture(Path(tmp))
             dist.ROOT = str(root)
@@ -2591,7 +2597,7 @@ class DistributionTests(unittest.TestCase):
             self.assertEqual(self._managed_publish_paths(existing), [])
 
     def test_unexpected_title_dotfile_preflight_preserves_existing_distribution(self):
-        dist = load_module("dist_dotfile_preflight", REPO / "dist.py")
+        dist = load_module("dist_dotfile_preflight", STAGE / "dist.py")
         with tempfile.TemporaryDirectory() as tmp:
             root, build = self._write_fixture(Path(tmp))
             dist.ROOT = str(root)
@@ -2610,7 +2616,7 @@ class DistributionTests(unittest.TestCase):
             self.assertEqual(self._managed_publish_paths(existing), [])
 
     def test_mid_build_failure_preserves_the_prior_distribution(self):
-        dist = load_module("dist_atomic_mid_build", REPO / "dist.py")
+        dist = load_module("dist_atomic_mid_build", STAGE / "dist.py")
         with tempfile.TemporaryDirectory() as tmp:
             root, build = self._write_fixture(Path(tmp))
             dist.ROOT = str(root)
@@ -2632,7 +2638,7 @@ class DistributionTests(unittest.TestCase):
             self.assertEqual(self._managed_publish_paths(existing), [])
 
     def test_failed_staging_validation_preserves_the_prior_distribution(self):
-        dist = load_module("dist_atomic_validation", REPO / "dist.py")
+        dist = load_module("dist_atomic_validation", STAGE / "dist.py")
         with tempfile.TemporaryDirectory() as tmp:
             root, build = self._write_fixture(Path(tmp))
             dist.ROOT = str(root)
@@ -2658,7 +2664,7 @@ class DistributionTests(unittest.TestCase):
             self.assertEqual(self._managed_publish_paths(existing), [])
 
     def test_first_promotion_rename_failure_leaves_old_dist_untouched(self):
-        dist = load_module("dist_atomic_first_rename", REPO / "dist.py")
+        dist = load_module("dist_atomic_first_rename", STAGE / "dist.py")
         with tempfile.TemporaryDirectory() as tmp:
             root, build = self._write_fixture(Path(tmp))
             dist.ROOT = str(root)
@@ -2683,7 +2689,7 @@ class DistributionTests(unittest.TestCase):
             self.assertEqual(self._managed_publish_paths(existing), [])
 
     def test_second_promotion_rename_failure_rolls_back_old_dist(self):
-        dist = load_module("dist_atomic_second_rename", REPO / "dist.py")
+        dist = load_module("dist_atomic_second_rename", STAGE / "dist.py")
         with tempfile.TemporaryDirectory() as tmp:
             root, build = self._write_fixture(Path(tmp))
             dist.ROOT = str(root)
@@ -2714,7 +2720,7 @@ class DistributionTests(unittest.TestCase):
             self.assertEqual(self._managed_publish_paths(existing), [])
 
     def test_successful_promotion_removes_stage_and_backup(self):
-        dist = load_module("dist_atomic_success", REPO / "dist.py")
+        dist = load_module("dist_atomic_success", STAGE / "dist.py")
         with tempfile.TemporaryDirectory() as tmp:
             root, build = self._write_fixture(Path(tmp))
             dist.ROOT = str(root)
@@ -2735,7 +2741,7 @@ class DistributionTests(unittest.TestCase):
             self.assertEqual(self._managed_publish_paths(existing), [])
 
     def test_managed_cleanup_refuses_a_path_outside_the_dist_siblings(self):
-        dist = load_module("dist_atomic_path_boundary", REPO / "dist.py")
+        dist = load_module("dist_atomic_path_boundary", STAGE / "dist.py")
         with tempfile.TemporaryDirectory() as tmp:
             target = Path(tmp) / "corpus" / "dist"
             target.parent.mkdir()
@@ -2747,7 +2753,7 @@ class DistributionTests(unittest.TestCase):
             self.assertTrue(unrelated.is_dir())
 
     def test_readme_count_replacement_is_precise_and_linear(self):
-        dist = load_module("dist_count_regression", REPO / "dist.py")
+        dist = load_module("dist_count_regression", STAGE / "dist.py")
         text = ("1 Acts and 2 legislative and notifiable instruments. "
                 "3 Acts and 4 legislative and notifiable instruments.")
         self.assertEqual(
@@ -2765,7 +2771,7 @@ class DistributionTests(unittest.TestCase):
 
 class PathBoundaryTests(unittest.TestCase):
     def test_distribution_boundary_rejects_a_root_directory_junction(self):
-        paths = load_module("corpus_paths_root_junction", REPO / "corpus_paths.py")
+        paths = load_module("corpus_paths_root_junction", STAGE / "corpus_paths.py")
         with (
             mock.patch.object(paths.os.path, "islink", return_value=False),
             mock.patch.object(paths.os.path, "isjunction", return_value=True, create=True),
@@ -2776,7 +2782,7 @@ class PathBoundaryTests(unittest.TestCase):
         walk.assert_not_called()
 
     def test_distribution_boundary_rejects_windows_directory_junctions(self):
-        paths = load_module("corpus_paths_junction", REPO / "corpus_paths.py")
+        paths = load_module("corpus_paths_junction", STAGE / "corpus_paths.py")
         with (
             mock.patch.object(paths.os, "walk", return_value=[("corpus", ["junction"], [])]) as walk,
             mock.patch.object(paths.os.path, "islink", return_value=False),
@@ -2793,7 +2799,7 @@ class PathBoundaryTests(unittest.TestCase):
         walk.assert_called_once_with("corpus", followlinks=False)
 
     def test_distribution_boundary_rejects_other_windows_reparse_points(self):
-        paths = load_module("corpus_paths_reparse", REPO / "corpus_paths.py")
+        paths = load_module("corpus_paths_reparse", STAGE / "corpus_paths.py")
         with (
             mock.patch.object(paths.os.path, "islink", return_value=False),
             mock.patch.object(paths.os.path, "isjunction", return_value=False, create=True),
@@ -2805,7 +2811,7 @@ class PathBoundaryTests(unittest.TestCase):
         walk.assert_not_called()
 
     def test_register_id_and_contained_child_reject_traversal(self):
-        paths = load_module("corpus_paths_regression", REPO / "corpus_paths.py")
+        paths = load_module("corpus_paths_regression", STAGE / "corpus_paths.py")
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp) / "corpus"
             root.mkdir()
@@ -2819,7 +2825,7 @@ class PathBoundaryTests(unittest.TestCase):
                 paths.child(root, ".")
 
     def test_root_layout_supports_checkout_and_deployed_build(self):
-        paths = load_module("corpus_paths_layout", REPO / "corpus_paths.py")
+        paths = load_module("corpus_paths_layout", STAGE / "corpus_paths.py")
         with tempfile.TemporaryDirectory() as tmp:
             base = Path(tmp)
             checkout_script = base / "checkout" / "extract.py"
@@ -2827,10 +2833,20 @@ class PathBoundaryTests(unittest.TestCase):
             checkout_script.write_text("# placeholder\n", encoding="utf-8")
             self.assertEqual(Path(paths.corpus_root(checkout_script)), checkout_script.parent / "corpus")
 
+            packaged = base / "checkout-pkg" / "fadden" / "extract.py"
+            packaged.parent.mkdir(parents=True)
+            packaged.write_text("# placeholder\n", encoding="utf-8")
+            self.assertEqual(Path(paths.corpus_root(packaged)), packaged.parent.parent / "corpus")
+
             deployed_script = base / "corpus-root" / "build" / "extract.py"
             deployed_script.parent.mkdir(parents=True)
             deployed_script.write_text("# placeholder\n", encoding="utf-8")
             self.assertEqual(Path(paths.corpus_root(deployed_script)), deployed_script.parent.parent)
+
+            deployed_pkg = base / "corpus-root-pkg" / "build" / "fadden" / "extract.py"
+            deployed_pkg.parent.mkdir(parents=True)
+            deployed_pkg.write_text("# placeholder\n", encoding="utf-8")
+            self.assertEqual(Path(paths.corpus_root(deployed_pkg)), deployed_pkg.parent.parent.parent)
 
     def test_check_current_uses_checkout_output_or_deployed_root(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -2838,7 +2854,7 @@ class PathBoundaryTests(unittest.TestCase):
             checkout = base / "checkout"
             checkout.mkdir()
             for name in ("check_current.py", "corpus_paths.py", "curl_fetch.py"):
-                shutil.copy2(REPO / name, checkout / name)
+                shutil.copy2(stage_file(name), checkout / name)
             checkout_module = load_module("check_current_checkout", checkout / "check_current.py")
             self.assertEqual(Path(checkout_module.ROOT), checkout / "corpus")
 
@@ -2846,14 +2862,14 @@ class PathBoundaryTests(unittest.TestCase):
             deployed.mkdir()
             (deployed / "sources.json").write_text("{}", encoding="utf-8")
             for name in ("check_current.py", "corpus_paths.py", "curl_fetch.py"):
-                shutil.copy2(REPO / name, deployed / name)
+                shutil.copy2(stage_file(name), deployed / name)
             deployed_module = load_module("check_current_deployed", deployed / "check_current.py")
             self.assertEqual(Path(deployed_module.ROOT), deployed)
 
 
 class RateParsingTests(unittest.TestCase):
     def test_sentence_boundaries_and_percentage_pattern_remain_precise(self):
-        rates = load_module("rates_regression", REPO / "rates.py")
+        rates = load_module("rates_regression", STAGE / "rates.py")
         text = "The first rule applies.  Next sentence carries 10%.\n\nThird sentence is here."
         self.assertEqual(list(rates.sentences(text)), [
             "The first rule applies.",
@@ -2863,7 +2879,7 @@ class RateParsingTests(unittest.TestCase):
         self.assertEqual(rates.percentage_values("10% and 12.5 %"), ["10%", "12.5 %"])
 
     def test_amount_scanners_keep_tax_formats_and_ownership_tests(self):
-        rates = load_module("rates_amount_regression", REPO / "rates.py")
+        rates = load_module("rates_amount_regression", STAGE / "rates.py")
         self.assertEqual(rates.money_values("$1,234.50 and $ 20"), ["$1,234.50", "$ 20"])
         self.assertEqual(rates.percentage_values("10% and 12.5 %"), ["10%", "12.5 %"])
         self.assertTrue(rates.is_rate_table(["| $1,000 | 12.5 % |"]))
@@ -2872,7 +2888,7 @@ class RateParsingTests(unittest.TestCase):
         self.assertFalse(rates.is_ownership_test("The tax rate is 10%."))
 
     def test_numeric_scanners_complete_linearly_on_long_digit_runs(self):
-        rates = load_module("rates_linear_regression", REPO / "rates.py")
+        rates = load_module("rates_linear_regression", STAGE / "rates.py")
         digits = "9" * 200_000
         started = time.perf_counter()
         self.assertEqual(rates.percentage_values(digits + "."), [])
@@ -2888,7 +2904,7 @@ class PreSectionTextTests(unittest.TestCase):
             "retrieved": "2026-08-11", "versionStart": "2026-01-01"}
 
     def markdown(self, blocks, **kwargs):
-        extract = load_module("extract_presection", REPO / "extract.py")
+        extract = load_module("extract_presection", STAGE / "extract.py")
         return extract.to_markdown(blocks, self.META, **kwargs)
 
     def test_text_before_the_first_bare_section_reaches_the_jsonl(self):
@@ -2973,7 +2989,7 @@ class BareModeFallbackTests(unittest.TestCase):
         build = tmp_path / "build"
         build.mkdir()
         for name in ("extract.py", "corpus_paths.py"):
-            shutil.copy2(REPO / name, build / name)
+            shutil.copy2(stage_file(name), build / name)
         epub = tmp_path / "epub" / ("%s.epub" % self.REGISTER_ID)
         epub.parent.mkdir(parents=True)
         epub.write_bytes(self.epub_bytes())
@@ -3019,7 +3035,7 @@ class ExtractManifestWriteTests(unittest.TestCase):
         truncate the raw manifest. extract.py opened manifest_md.json directly,
         so a full disk during the dump destroyed it after the whole markdown
         tree had already been written."""
-        extract = load_module("extract_manifest_write", REPO / "extract.py")
+        extract = load_module("extract_manifest_write", STAGE / "extract.py")
         with tempfile.TemporaryDirectory() as tmp:
             scratch = Path(tmp)
             target = scratch / "manifest_md.json"
@@ -3054,12 +3070,12 @@ class DistTableBlockParagraphTests(unittest.TestCase):
     )
 
     def _dist(self):
-        return load_module("dist_table_block", REPO / "dist.py")
+        return load_module("dist_table_block", STAGE / "dist.py")
 
     def test_finalize_still_writes_the_paragraph_dist_rewrites(self):
         """If finalize.py rewords the lead, the rewrite silently stops firing
         and the subset ships the full corpus's claim."""
-        finalize = (REPO / "finalize.py").read_text(encoding="utf-8")
+        finalize = (STAGE / "finalize.py").read_text(encoding="utf-8")
         self.assertIn(self._dist().TABLE_BLOCK_LEAD, finalize)
 
     def test_the_paragraph_is_replaced_with_the_subset_figure(self):

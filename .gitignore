@@ -9,13 +9,18 @@ LICENCE-NOTICE.md
 corpus/
 
 # Pipeline intermediates: build outputs the pipeline regenerates, not shipped.
-# manifest_md.json stays committed because tests/test_regressions.py pins the
-# 4 August run's pre-fix figures against BUILD.md.
+# fadden/manifest_md.json stays committed because tests/test_regressions.py pins
+# the 4 August run's pre-fix figures against BUILD.md.
 titles_all.json
 acts_resolved.json
 manifest_raw.json
 probe13.json
 retry13_patch.json
+fadden/titles_all.json
+fadden/acts_resolved.json
+fadden/manifest_raw.json
+fadden/probe13.json
+fadden/retry13_patch.json
 
 # Run artefacts
 *.log
