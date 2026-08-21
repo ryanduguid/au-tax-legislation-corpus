@@ -22,6 +22,43 @@ python finalize.py      # -> ../sources.json, ../INDEX.md, ../README.md, ../LICE
 python rates.py         # -> ../rates/rates.jsonl, ../rates/RATES.md
 ```
 
+## Exporting monitor inputs
+
+After `finalize.py` has written a completed `sources.json`, a separately
+collected fabricated or reviewed observation-facts document can be projected
+for `au-tax-change-impact-monitor` without giving that project access to this
+build tree:
+
+```bash
+python export_monitor_contract.py ../sources.json observation-facts.json --out monitor-input
+```
+
+The facts document must use `au-tax-register-observation-facts.v1`. The command
+writes the deterministic, exact monitor inputs `monitor-baseline.json` and
+`register-observation.json` with duplicate-member, control-character and
+resolved input/output-collision checks. Existing output names must be ordinary
+files, never directories, links, junctions or other special paths. Exactly one writer
+can publish to a given output directory at a time. Any existing lock
+fails closed; if it has no recovery artefacts, an operator may remove
+`.monitor-contract.publish.lock` after confirming its owner is no longer running.
+If rollback itself fails,
+the exporter retains that lock and every unrecovered `.bak` file, so no later publisher
+proceeds. The operator must restore or deliberately retire the old/new pair and its
+recovery artefacts before removing the lock. It never queries the Register:
+`check_current.py` remains the read-only Register lookup stage, and the adapter
+only validates and projects facts a caller has already collected.
+
+The two names are replaced individually after staging and backup. An ordinary
+promotion failure restores the prior pair, but a process or power loss between
+the replacements can leave an old/new pair and lock or rollback evidence for
+recovery. This is not a cross-file crash-atomic publication; that would require
+versioned outputs plus an atomic generation pointer.
+
+`complete: true` requires every title in `sources.json` exactly once. A partial
+observation is allowed only with `complete: false`, so the monitor blocks rather
+than inferring that unobserved titles are unchanged. The output is a review
+queue input, not an authorised-text claim, legal conclusion or workflow change.
+
 The intermediate files shipped here are the ones that produced the current
 corpus, so any single stage can be re-run without repeating the earlier ones.
 
