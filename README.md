@@ -2,7 +2,7 @@
 
 ### Commonwealth tax legislation: a corpus builder
 
-[![Verify](https://github.com/ryanduguid/au-tax-legislation-corpus/actions/workflows/verify.yml/badge.svg)](https://github.com/ryanduguid/au-tax-legislation-corpus/actions/workflows/verify.yml) [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
+[![Verify](https://github.com/ryanduguid/au-tax-legislation-corpus/actions/workflows/verify.yml/badge.svg)](https://github.com/ryanduguid/au-tax-legislation-corpus/actions/workflows/verify.yml) [![License: MIT](https://img.shields.io/badge/License-MIT-4F485E.svg?labelColor=04001F)](LICENSE)
 
 A packaged pipeline (`python -m fadden <stage>`) that downloads every in-force principal
 Commonwealth tax title from the Federal Register of Legislation and turns it
