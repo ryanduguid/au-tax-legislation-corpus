@@ -1,5 +1,5 @@
 # Tax Radar AU
-> High-density context for LLM agents, legislative researchers, and tax compliance monitors.
+> High-density context for LLM agents. Synthetic review-queue demo — not a live tax monitor.
 
 ## Package Overview
 - **Repository**: https://github.com/ryanduguid/tax-radar-au
