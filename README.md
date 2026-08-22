@@ -1,4 +1,4 @@
-# Sir Arthur Fadden
+# au-tax-legislation-corpus
 
 ### Commonwealth tax legislation: a corpus builder
 
@@ -155,9 +155,11 @@ python -m fadden dist_verify   # check the built subset against its own claims, 
 ```
 
 `fadden/corpus_paths.py`, `fadden/curl_fetch.py` and `fadden/pii_patterns.py` are shared modules the
-stages import; they are not run directly. `finalize.py` still copies the runnable
-stages into a completed corpus `build/` directory as flat scripts so a deployed
-corpus keeps the historical `python discover.py` layout.
+stages import; they are not run directly. `finalize.py` still copies the
+discover-through-finalize loop plus `check_current.py` and the shared modules
+into a completed corpus `build/` directory as flat scripts so a deployed
+corpus keeps the historical `python discover.py` layout; the probe, PII, rates,
+dist and export stages run from the source checkout.
 
 The intermediate JSON files (`titles_all.json`, `acts_resolved.json`,
 `manifest_raw.json`, `probe13.json`, `retry13_patch.json`) are build outputs
