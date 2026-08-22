@@ -1,4 +1,6 @@
-# Commonwealth tax legislation: a corpus builder
+# Sir Arthur Fadden
+
+### Commonwealth tax legislation: a corpus builder
 
 [![Verify](https://github.com/ryanduguid/SirArthurFadden/actions/workflows/verify.yml/badge.svg)](https://github.com/ryanduguid/SirArthurFadden/actions/workflows/verify.yml) [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 
