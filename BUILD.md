@@ -19,6 +19,8 @@ python -m fadden download      # -> ./corpus/epub/*.epub, fadden/manifest_raw.js
 python -m fadden probe13       # -> fadden/probe13.json      (only if download reports no_epub)
 python -m fadden retry13       # -> fadden/retry13_patch.json; patches manifest_raw.json in place
 python -m fadden extract       # -> ./corpus/markdown/**, fadden/manifest_md.json
+python -m fadden pii_scan      # -> fadden/pii_flagged.json   (mandatory; finalize refuses without it)
+python -m fadden pii_scan2     # -> refines fadden/pii_flagged.json
 python -m fadden finalize      # -> ./corpus/sources.json, INDEX.md, README.md, LICENCE-NOTICE.md
 python -m fadden rates         # -> ./corpus/rates/rates.jsonl, RATES.md
 
@@ -31,11 +33,11 @@ python discover.py
 
 After `finalize.py` has written a completed `sources.json`, a separately
 collected fabricated or reviewed observation-facts document can be projected
-by `export_monitor_contract.py` for `au-tax-change-impact-monitor` without
+by `export_monitor_contract.py` for `tax-radar-au` (formerly `au-tax-change-impact-monitor`) without
 giving that project access to this build tree:
 
 ```bash
-python -m fadden export_monitor_contract -- ../sources.json observation-facts.json --out monitor-input
+python -m fadden export_monitor_contract -- corpus/sources.json observation-facts.json --out monitor-input
 ```
 
 The facts document must use `au-tax-register-observation-facts.v1`. The command
@@ -64,16 +66,20 @@ observation is allowed only with `complete: false`, so the monitor blocks rather
 than inferring that unobserved titles are unchanged. The output is a review
 queue input, not an authorised-text claim, legal conclusion or workflow change.
 
-The intermediate files shipped here are the ones that produced the current
-corpus, so any single stage can be re-run without repeating the earlier ones.
+In a source checkout the intermediates are regenerated, not shipped: the
+.gitignore keeps titles_all.json, acts_resolved.json, manifest_raw.json and the
+probe patches out of the tree, and only manifest_md.json and the title lists
+travel with the repository. The deployed corpus at the build root carries the
+full set that produced the current corpus, and there any single stage can be
+re-run without repeating the earlier ones.
 
 **`manifest_md.json` and the published corpus predate the volume-gate fix
 below.** They were produced by the extractor as it stood before it, so
 F2025L00281 is still recorded as `sections=20, words=18583` - the lossy parse,
 not what `extract.py` now produces for it. Re-running `extract.py` changes that
 entry, and `finalize.py` reads the manifest, so the corpus README's title, row
-and word totals move with it. Re-running `finalize.py` on its own reproduces
-today's published figures, because it is fed the pre-fix manifest. The
+and word totals move with it. In the deployed corpus, re-running `finalize.py` on its own reproduces
+today's published figures, because it is fed the pre-fix manifest. Those
 intermediates are still re-runnable; they are simply not a description of what
 this code does now.
 

@@ -1,10 +1,11 @@
-"""Build release archives with explicit cross-platform Git settings."""
+"""Build deterministic source-release archives from tracked Git content."""
 
 from __future__ import annotations
 
 import argparse
 import os
-from pathlib import Path, PurePosixPath
+from pathlib import Path
+import re
 import subprocess
 from typing import Sequence
 
@@ -15,6 +16,19 @@ _GIT_CONFIG = (
     "-c",
     "core.eol=lf",
 )
+_SAFE_PREFIX = re.compile(r"[A-Za-z0-9._-]+(?:/[A-Za-z0-9._-]+)*/\Z")
+
+
+def _validate_prefix(prefix: str) -> None:
+    parts = prefix[:-1].split("/") if prefix.endswith("/") else []
+    if (
+        not _SAFE_PREFIX.fullmatch(prefix)
+        or not parts
+        or any(part in {"", ".", ".."} for part in parts)
+    ):
+        raise ValueError(
+            "prefix must be a safe relative POSIX path ending in '/'"
+        )
 
 
 def build_release_archives(
@@ -26,40 +40,63 @@ def build_release_archives(
 ) -> tuple[Path, Path]:
     """Build ZIP and tar.gz archives with stable text and time metadata."""
 
-    prefix_parts = PurePosixPath(prefix).parts
-    if (
-        not prefix.endswith("/")
-        or prefix.startswith("/")
-        or ".." in prefix_parts
-    ):
-        raise ValueError("prefix must be a safe relative POSIX path ending in '/'")
+    _validate_prefix(prefix)
+    if not commit or any(character.isspace() for character in commit):
+        raise ValueError("commit must be a non-empty Git revision without whitespace")
 
-    output_base = Path(output_base)
+    repository = (Path.cwd() if cwd is None else Path(cwd)).resolve()
+    supplied_output_base = Path(output_base)
+    output_base = (
+        supplied_output_base
+        if supplied_output_base.is_absolute()
+        else repository / supplied_output_base
+    )
+    lexical_parent = output_base.parent.absolute()
+    if lexical_parent.is_symlink():
+        raise ValueError("output directory must not be a symbolic link")
+    lexical_parent.mkdir(parents=True, exist_ok=True)
+    resolved_parent = lexical_parent.resolve()
+    if resolved_parent != lexical_parent:
+        raise ValueError("output directory must not traverse symbolic links")
+    if (
+        not supplied_output_base.is_absolute()
+        and resolved_parent != repository
+        and repository not in resolved_parent.parents
+    ):
+        raise ValueError("relative output directory must remain inside the repository")
+
     outputs = tuple(Path(f"{output_base}{suffix}") for _, suffix in _ARCHIVE_FORMATS)
     for output in outputs:
         if output.exists():
             raise FileExistsError(f"refusing to overwrite existing archive: {output}")
-    output_base.parent.mkdir(parents=True, exist_ok=True)
 
     environment = os.environ.copy()
     environment["TZ"] = "UTC"
-    repository = Path.cwd() if cwd is None else Path(cwd)
 
-    for (archive_format, _), output in zip(_ARCHIVE_FORMATS, outputs, strict=True):
-        subprocess.run(
-            (
-                "git",
-                *_GIT_CONFIG,
-                "archive",
-                f"--format={archive_format}",
-                f"--prefix={prefix}",
-                f"--output={output.resolve()}",
-                commit,
-            ),
-            cwd=repository,
-            env=environment,
-            check=True,
-        )
+    try:
+        for (archive_format, _), output in zip(
+            _ARCHIVE_FORMATS,
+            outputs,
+            strict=True,
+        ):
+            subprocess.run(
+                (
+                    "git",
+                    *_GIT_CONFIG,
+                    "archive",
+                    f"--format={archive_format}",
+                    f"--prefix={prefix}",
+                    f"--output={output.resolve()}",
+                    commit,
+                ),
+                cwd=repository,
+                env=environment,
+                check=True,
+            )
+    except BaseException:
+        for output in outputs:
+            output.unlink(missing_ok=True)
+        raise
 
     return outputs
 

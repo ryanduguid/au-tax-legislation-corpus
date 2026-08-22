@@ -1,3 +1,22 @@
+# v0.1.3
+
+This is a release of the corpus builder, not a prebuilt legislation corpus.
+
+First release cut from the repository's current history, restoring the full
+verification story (`gh release verify` and `gh attestation verify`) that the
+history rewrite broke for v0.1.1 and v0.1.2.
+
+- `python -m fadden <stage>` works from a source checkout: the dispatcher puts
+  the package directory on `sys.path` so the stages' flat imports resolve, and
+  a forwarded retrieval date now reaches `extract`. A real-import test over
+  every stage guards the entry point.
+- BUILD.md documents the mandatory PII scan stages and no longer claims the
+  source checkout ships the regenerated intermediates.
+- RELEASING.md and the sibling references use the current repository names;
+  the release workflow and its pinning test point at reachable
+  release-policy history; `tools/build_release_archives.py` is synchronised
+  with the shared script the release actually runs.
+
 # v0.1.2
 
 This is a release of the corpus builder, not a prebuilt legislation corpus.
