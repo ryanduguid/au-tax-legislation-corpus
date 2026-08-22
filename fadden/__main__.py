@@ -5,10 +5,20 @@ from __future__ import annotations
 import argparse
 import datetime
 import importlib
+import os
 import sys
 from typing import Sequence
 
+import fadden
 from fadden import STAGES
+
+# Stage modules import their shared helpers by bare name (corpus_paths,
+# curl_fetch, download) so the same files run unchanged in the flat deployed
+# build/ layout. Under `python -m fadden` those names are not importable until
+# the package directory itself is on sys.path.
+_PACKAGE_DIR = os.path.dirname(os.path.abspath(fadden.__file__))
+if _PACKAGE_DIR not in sys.path:
+    sys.path.insert(0, _PACKAGE_DIR)
 
 
 def main(argv: Sequence[str] | None = None) -> int:
@@ -36,6 +46,11 @@ def main(argv: Sequence[str] | None = None) -> int:
             result = func(datetime.date.today().isoformat())
         elif args.stage == "export_monitor_contract":
             result = func(forwarded)
+        elif args.stage == "extract" and forwarded:
+            # extract.main takes the retrieval date as a parameter and only
+            # reads sys.argv under its own __main__ guard, which never runs
+            # here; without this branch a forwarded date was silently dropped.
+            result = func(forwarded[0])
         else:
             result = func()
     finally:
