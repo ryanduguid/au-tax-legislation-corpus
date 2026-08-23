@@ -1,7 +1,7 @@
 """Stage 1: discover in-force principal tax Acts, and probe the 'latest' download alias."""
 import json, time, urllib.parse, subprocess, os
 
-from curl_fetch import curl_json as _curl_json
+from http_fetch import fetch_json
 
 API = "https://api.prod.legislation.gov.au/v1"
 SCRATCH = os.path.dirname(os.path.abspath(__file__))
@@ -10,11 +10,6 @@ KEYWORDS = ["Tax", "Excise", "Superannuation", "Customs Tariff", "Medicare Levy"
 # Acts alone leave out the operative detail: the ITAA, GST and TAA Regulations
 # and the FBT rate determinations are all legislative instruments.
 COLLECTIONS = ["Act", "LegislativeInstrument", "NotifiableInstrument"]
-
-
-def curl_json(url, tries=3):
-    """This stage's temp file and retry pace; the trap is in curl_fetch.py."""
-    return _curl_json(url, os.path.join(SCRATCH, "_tmp.json"), tries, delay=5)
 
 
 def page_titles(keyword, collection="Act"):
@@ -26,7 +21,7 @@ def page_titles(keyword, collection="Act"):
     while True:
         url = "%s/titles?$top=100&$skip=%d&$orderby=id&$filter=%s&$select=%s" % (
             API, skip, urllib.parse.quote(f), sel)
-        d = curl_json(url)
+        d = fetch_json(url)
         # A partial title list is worse than no title list: downstream stages
         # treat titles_all.json as authoritative and would build a plausible,
         # silently incomplete corpus.  Do not turn a failed page into a clean
