@@ -17,9 +17,16 @@ jobs:
       matrix:
         os: [ubuntu-latest]
         python: ["3.10", "3.11", "3.12", "3.13"]
+        tests: ["tests"]
         include:
           - os: windows-latest
             python: "3.12"   # where path handling can diverge
+            # The corpus half has never run on Windows: before the merge its
+            # only CI was the ubuntu-only verify workflow. It fails 15 tests
+            # there on 8.3 short paths (RUNNER~1 against runneradmin), NTFS
+            # junctions and reparse points. All pre-existing, none the radar's.
+            # Windows covers the radar half until someone fixes them.
+            tests: "tests/radar"
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -33,7 +40,7 @@ jobs:
       # No -q here: pyproject's addopts already sets it, and a second -q makes
       # it -qq, which drops the pass/fail count from the log. Without the count
       # a test file that stops being collected leaves every leg green.
-      - run: uv run --locked --extra dev pytest
+      - run: uv run --locked --extra dev pytest ${{ matrix.tests }}
         env:
           UV_PYTHON: ${{ matrix.python }}
 
