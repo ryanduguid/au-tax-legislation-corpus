@@ -3,7 +3,7 @@
 
 ## Package Overview
 - **Repository**: https://github.com/ryanduguid/tax-radar-au
-- **Compatibility**: The Python distribution, import package, CLI command, wheel names and existing releases remain `au-tax-change-impact-monitor` / `au_tax_change_impact_monitor`.
+- **Compatibility**: The Python distribution, import package, CLI command, wheel names and existing releases remain `tax-radar-au` / `tax_radar_au`.
 - **Domain**: Synthetic, provenance-first review-queue demonstration for supplied Commonwealth tax-source metadata.
 - **Reference Scope**: Metadata identifiers may refer to Commonwealth tax legislation, ATO public rulings, and related instruments; the package does not read or store source text.
 
