@@ -1,0 +1,90 @@
+name: tests
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    permissions:
+      contents: read
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest]
+        python: ["3.10", "3.11", "3.12", "3.13"]
+        include:
+          - os: windows-latest
+            python: "3.12"   # where path handling can diverge
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: ${{ matrix.python }}
+      - name: install the locked toolchain
+        run: python -m pip install "uv==0.12.0"
+      # No -q here: pyproject's addopts already sets it, and a second -q makes
+      # it -qq, which drops the pass/fail count from the log. Without the count
+      # a test file that stops being collected leaves every leg green.
+      - run: uv run --locked --extra dev pytest
+        env:
+          UV_PYTHON: ${{ matrix.python }}
+
+  package:
+    permissions:
+      contents: read
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.12"
+      - name: install the locked toolchain
+        run: python -m pip install "uv==0.12.0"
+      - run: uv run --locked --extra dev --python 3.12 python -m build
+      # The sample fixtures ship as package data; a wheel that cannot find
+      # them reintroduces the install-root bug where a plain 'pip install'
+      # produced a CLI that could never locate its own demo inputs.
+      - name: install the wheel and run the demo from outside the checkout
+        run: |
+          python -m venv /tmp/venv
+          # --no-index, or pip is free to resolve the name from PyPI and
+          # test a release nobody built in this job.
+          /tmp/venv/bin/pip install --no-index --find-links dist au-tax-change-impact-monitor
+          cd /tmp
+          resolve() { /tmp/venv/bin/python -c "from au_tax_change_impact_monitor.util import sample_path; print(sample_path('$1', '$2'))"; }
+          /tmp/venv/bin/au-tax-change-impact-monitor compare \
+            --baseline "$(resolve baseline sample-sources.json)" \
+            --observation "$(resolve observations sample-register-observation.json)" \
+            --map "$(resolve mappings sample-source-skill-map.json)" \
+            --out demo
+          /tmp/venv/bin/au-tax-change-impact-monitor validate-review \
+            --queue demo/impact-queue.json \
+            --decision "$(resolve decisions sample-technical-review.json)" \
+            --out demo/validation.json
+
+  lint:
+    permissions:
+      contents: read
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.12"
+      - name: install the locked toolchain
+        run: python -m pip install "uv==0.12.0"
+      - run: uv run --locked --extra dev ruff check au_tax_change_impact_monitor tests
+      - run: uv run --locked --extra dev mypy au_tax_change_impact_monitor
+        continue-on-error: true
