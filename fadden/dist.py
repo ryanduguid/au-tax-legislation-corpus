@@ -32,6 +32,12 @@ from pii_patterns import (load_contact_allowlist,
 ROOT = corpus_root(__file__)
 DIST = child(ROOT, "dist")
 HERE = os.path.dirname(os.path.abspath(__file__))
+# The regulative principle, applied to privacy: a contact identifier reaches
+# the published corpus only where a reviewed entry warrants it, and anything
+# without warrant is rejected even when no rule names it. The other choice is
+# a denylist of forbidden patterns, which fails open on the identifier nobody
+# anticipated. In a corpus that has already been published, that is not
+# recoverable.
 CONTACT_ALLOWLIST = os.path.join(HERE, "pii_contact_allowlist.json")
 
 
