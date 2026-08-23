@@ -24,7 +24,7 @@ def curl_json(url, dst, tries=3, delay=6):
                     d = json.load(f)
                 if "error" not in d:
                     return d
-            except Exception:
+            except (OSError, UnicodeDecodeError, json.JSONDecodeError):
                 pass
         time.sleep(delay)
     return None
