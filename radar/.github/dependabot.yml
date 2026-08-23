@@ -1,0 +1,24 @@
+version: 2
+updates:
+  - package-ecosystem: "uv"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+    cooldown:
+      default-days: 7
+    open-pull-requests-limit: 5
+
+  - package-ecosystem: "github-actions"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+    cooldown:
+      default-days: 7
+    open-pull-requests-limit: 5
+    groups:
+      # init and analyze are separate dependencies to Dependabot but must
+      # move together: a job running one release against the other's config
+      # fails outright. Grouped so the pair can never arrive split.
+      codeql-action:
+        patterns:
+          - "github/codeql-action*"

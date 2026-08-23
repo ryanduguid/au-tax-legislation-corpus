@@ -1,0 +1,32 @@
+{
+  "corpus": "Synthetic Commonwealth tax legislation index",
+  "retrieved": "2026-08-01",
+  "source": "Federal Register of Legislation",
+  "source_api": "https://example.test/register-api",
+  "titles": [
+    {
+      "register_id": "C2099A00001",
+      "name": "Sample Consumption Tax Act 2099",
+      "collection": "Act",
+      "compilation_number": "1",
+      "compilation_date": "2099-07-01",
+      "version_is_current": true,
+      "current_version_start": null,
+      "retrieved": "2026-08-01",
+      "source_url": "https://example.test/C2099A00001/1",
+      "register_page": "https://example.test/C2099A00001/latest/text"
+    },
+    {
+      "register_id": "F2099L00001",
+      "name": "Sample Payroll Instrument 2099",
+      "collection": "LegislativeInstrument",
+      "compilation_number": "1",
+      "compilation_date": "2099-07-01",
+      "version_is_current": true,
+      "current_version_start": null,
+      "retrieved": "2026-08-01",
+      "source_url": "https://example.test/F2099L00001/1",
+      "register_page": "https://example.test/F2099L00001/latest/text"
+    }
+  ]
+}

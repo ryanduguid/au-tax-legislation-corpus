@@ -1,0 +1,36 @@
+{
+  "schema_version": "au-tax-register-observation.v2",
+  "mode": "synthetic",
+  "observed_at": "2026-08-08T00:00:00Z",
+  "scope_id": "au-primary-tax-legislation.v2",
+  "expected_register_ids": ["C2099A00001", "F2099L00001"],
+  "complete": true,
+  "observations": [
+    {
+      "register_id": "C2099A00001",
+      "collection": "Act",
+      "state": "SUPERSEDED",
+      "evidence_id": "EV-C2099A00001-01",
+      "observed_compilation_number": "2",
+      "observed_compilation_date": "2099-08-01",
+      "observed_register_document_id": "C2099C00002",
+      "current_version_start": null,
+      "evidence_url": "https://example.test/C2099A00001/latest/text",
+      "checked_at": "2026-08-08T00:00:00Z",
+      "error_category": null
+    },
+    {
+      "register_id": "F2099L00001",
+      "collection": "LegislativeInstrument",
+      "state": "UNCHANGED",
+      "evidence_id": "EV-F2099L00001-01",
+      "observed_compilation_number": null,
+      "observed_compilation_date": null,
+      "observed_register_document_id": null,
+      "current_version_start": null,
+      "evidence_url": "https://example.test/F2099L00001/latest/text",
+      "checked_at": "2026-08-08T00:00:00Z",
+      "error_category": null
+    }
+  ]
+}
