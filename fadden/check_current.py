@@ -14,7 +14,7 @@ lookup failed. Reporting both as one number hid a repeal behind a network error.
 import json, os, sys, time, urllib.parse
 
 from corpus_paths import child, corpus_root
-from curl_fetch import curl_json as _curl_json
+from http_fetch import fetch_json
 
 API = "https://api.prod.legislation.gov.au/v1"
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -22,11 +22,6 @@ SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 # checkout, output lives under the deterministic ``corpus/`` directory instead.
 ROOT = SCRIPT_DIR if os.path.isfile(os.path.join(SCRIPT_DIR, "sources.json")) else corpus_root(__file__)
 DELAY = 1.5
-
-
-def curl_json(url, tries=3):
-    """This stage's temp file; the trap is in curl_fetch.py."""
-    return _curl_json(url, child(ROOT, "_check_tmp.json"), tries)
 
 
 def main():
@@ -47,9 +42,9 @@ def main():
     stale, unchanged, errors, gone, nodoc = [], 0, [], [], []
 
     def versions(flt, top=1):
-        d = curl_json("%s/versions?$top=%d&$filter=%s"
-                      "&$select=titleId,start,compilationNumber,registerId"
-                      % (API, top, urllib.parse.quote(flt)))
+        d = fetch_json("%s/versions?$top=%d&$filter=%s"
+                       "&$select=titleId,start,compilationNumber,registerId"
+                       % (API, top, urllib.parse.quote(flt)))
         v = (d or {}).get("value") or []
         return v if d is not None else None
 
@@ -118,9 +113,6 @@ def main():
         print("\nLOOKUP FAILED:")
         for a in errors:
             print("  %-12s %s" % (a["register_id"], a["name"][:60]))
-    tmp = child(ROOT, "_check_tmp.json")
-    if os.path.exists(tmp):
-        os.remove(tmp)
 
 
 if __name__ == "__main__":
