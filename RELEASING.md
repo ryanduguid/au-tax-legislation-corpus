@@ -46,4 +46,6 @@ plain `-R` alone fails with `verifying with issuer "sigstore.dev"`. Proven on
 v0.1.3: both attestation commands and `gh release verify`/`verify-asset` pass
 with the signer flag.
 
-If any gate fails, inspect it before touching the tag or draft. Never move a published tag.
+If any gate fails, inspect it before touching the tag or draft. Never move a
+published tag. It behaves like a boulder in a corridor: once it is rolling the
+only direction is forward, so cut a new version rather than try to get behind it.
