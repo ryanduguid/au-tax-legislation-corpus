@@ -1,0 +1,57 @@
+[build-system]
+requires = ["setuptools==84.0.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "tax-radar-au"
+version = "0.1.1"
+description = "Commonwealth tax legislation corpus builder and the provenance-first change-review queue that consumes it"
+readme = "README.md"
+requires-python = ">=3.10"
+license = "MIT"
+license-files = ["LICENSE"]
+authors = [{ name = "Ryan Duguid" }]
+keywords = ["australia", "tax", "legislation", "provenance", "ai-agents"]
+classifiers = [
+  "Development Status :: 3 - Alpha",
+  "Intended Audience :: Financial and Insurance Industry",
+  "Programming Language :: Python :: 3",
+]
+[project.urls]
+Homepage = "https://github.com/ryanduguid/au-tax-legislation-corpus"
+Repository = "https://github.com/ryanduguid/au-tax-legislation-corpus.git"
+Issues = "https://github.com/ryanduguid/au-tax-legislation-corpus/issues"
+
+[project.optional-dependencies]
+dev = [
+    "ruff>=0.11", "mypy>=1.14","build>=1.2", "pytest>=8"]
+
+[project.scripts]
+tax-radar-au = "tax_radar_au.cli:main"
+
+[tool.setuptools]
+packages = ["tax_radar_au"]
+include-package-data = false
+
+[tool.setuptools.package-data]
+tax_radar_au = ["samples/*/*.json", "py.typed"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-q"
+
+[tool.ruff]
+line-length = 100
+src = ["tax_radar_au", "fadden", "tools", "tests"]
+
+[tool.ruff.lint]
+# First-enablement set: syntax and undefined-name errors only (E9, F82).
+# Keep Decimal("10.00") money literals and existing import layout.
+select = ["E9", "F82"]
+
+[tool.mypy]
+python_version = "3.10"
+packages = ["tax_radar_au"]
+ignore_missing_imports = true
+pretty = true
+

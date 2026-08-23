@@ -134,18 +134,20 @@ def observation_facts_v2(*, complete: bool = True) -> dict:
 
 
 def _local_monitor_repository() -> Path:
-    """Return the fixed local checkout used by the optional compatibility test."""
-    return (
-        Path(__file__).resolve().parents[3]
-        / "github-build-audit"
-        / "au-tax-change-impact-monitor"
-    )
+    """Return the checkout holding the monitor.
+
+    Before the merge this reached sideways into a separate clone of
+    tax-radar-au, so the compatibility test only ran on a machine that
+    happened to have one. The monitor now lives in this repository, so the
+    answer is the repository root and the test always runs.
+    """
+    return Path(__file__).resolve().parents[2]
 
 
 @contextmanager
 def _import_optional_monitor():
     """Import the consumer from a fixed checkout or the interpreter environment."""
-    package_name = "au_tax_change_impact_monitor"
+    package_name = "tax_radar_au"
     module_name = f"{package_name}.monitor"
     fixed_repository = _local_monitor_repository()
     fixed_package = fixed_repository / package_name
@@ -181,7 +183,7 @@ def _import_optional_monitor():
 
 class MonitorContractTests(unittest.TestCase):
     def test_optional_monitor_import_falls_back_to_the_existing_interpreter_path(self):
-        package_name = "au_tax_change_impact_monitor"
+        package_name = "tax_radar_au"
         prior_modules = {
             name: module
             for name, module in sys.modules.items()
@@ -189,7 +191,7 @@ class MonitorContractTests(unittest.TestCase):
         }
         with tempfile.TemporaryDirectory() as temporary:
             import_root = Path(temporary) / "interpreter-path"
-            package = import_root / "au_tax_change_impact_monitor"
+            package = import_root / "tax_radar_au"
             package.mkdir(parents=True)
             (package / "__init__.py").write_text("", encoding="utf-8")
             (package / "monitor.py").write_text(
@@ -223,7 +225,7 @@ class MonitorContractTests(unittest.TestCase):
                     self.assertIs(module, restored_modules[name])
 
     def test_optional_monitor_import_prefers_fixed_checkout_and_restores_import_state(self):
-        package_name = "au_tax_change_impact_monitor"
+        package_name = "tax_radar_au"
         modules_before_test = {
             name: module
             for name, module in sys.modules.items()
@@ -240,7 +242,7 @@ class MonitorContractTests(unittest.TestCase):
                 (fallback_root, "interpreter-path"),
                 (fixed_root, "fixed-checkout"),
             ):
-                package = package_root / "au_tax_change_impact_monitor"
+                package = package_root / "tax_radar_au"
                 package.mkdir(parents=True)
                 (package / "__init__.py").write_text("", encoding="utf-8")
                 (package / "monitor.py").write_text(
@@ -275,7 +277,7 @@ class MonitorContractTests(unittest.TestCase):
                 sys.modules.update(modules_before_test)
 
     def test_build_docs_state_the_adapter_is_review_only_and_never_contacts_the_register(self):
-        root = Path(__file__).resolve().parents[1]
+        root = Path(__file__).resolve().parents[2]
         readme = (root / "README.md").read_text(encoding="utf-8")
         build = (root / "BUILD.md").read_text(encoding="utf-8")
 
@@ -889,7 +891,7 @@ class MonitorContractTests(unittest.TestCase):
         with _import_optional_monitor() as monitor:
             if monitor is None:
                 self.skipTest(
-                    "au-tax-change-impact-monitor is absent from the fixed checkout "
+                    "tax-radar-au is absent from the fixed checkout "
                     "and interpreter import path"
                 )
             with tempfile.TemporaryDirectory() as temporary:

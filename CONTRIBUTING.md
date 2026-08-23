@@ -26,7 +26,7 @@ python -m unittest discover -s tests -v
 The suite carries regression tests tied to specific past defects. Do not relax one to make a change pass. Each assertion records something that went wrong here.
 
 The monitor-contract suite includes an optional compatibility assertion against
-`tax-radar-au` (formerly `au-tax-change-impact-monitor`). It first uses the audit workspace's fixed sibling
+`tax-radar-au` (formerly `tax-radar-au`). It first uses the audit workspace's fixed sibling
 checkout when that checkout exists. In an ordinary clone, install the monitor
 package or put its checkout root on Python's existing import path before launching
 the test; for example, in PowerShell:
