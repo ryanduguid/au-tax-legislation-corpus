@@ -6,7 +6,7 @@ external/
 sources.json
 INDEX.md
 LICENCE-NOTICE.md
-corpus/
+/corpus/
 
 # Pipeline intermediates: build outputs the pipeline regenerates, not shipped.
 # fadden/manifest_md.json stays committed because tests/test_regressions.py pins

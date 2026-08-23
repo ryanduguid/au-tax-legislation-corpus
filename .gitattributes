@@ -1,3 +1,8 @@
+# The radar half hashes file bytes, so a CRLF checkout on Windows changes a
+# run_id and fails 27 of its tests. Its own .gitattributes carried this line
+# before the merge; it has to survive here.
+* text=auto eol=lf
+
 # Data files derived by the pipeline or from ATO/Register sources.
 # linguist-generated hides them from the language bar and diff stats,
 # so the repository reads as the Python pipeline it is.
