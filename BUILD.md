@@ -115,7 +115,8 @@ prints a progress line every 25 titles.
 - **`curl` does not truncate `-o` on transport failure.** A shared temp file
   silently re-reads the previous response. On the paging path that dropped 142
   titles; on version lookup it gave one Act another Act's compilation. Every
-  `curl_json` deletes its temp file per attempt and checks the return code.
+  `fetch_json` reads each response off the socket, so no attempt can
+  inherit a file from the one before it.
 - **Unordered `$skip`/`$top` paging drops rows.** `$orderby=id` is mandatory,
   and `discover.py` raises if paged ids are not unique.
 - **`$top` is capped at 100.** Above that the API returns 400.

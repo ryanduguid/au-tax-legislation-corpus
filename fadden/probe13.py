@@ -3,14 +3,10 @@ as no_epub, and write probe13.json so retry13.py can recover the ones that
 have an older published compilation."""
 import json, os, time, urllib.parse
 
-from curl_fetch import curl_json as _curl_json
+from http_fetch import fetch_json
 
 API = "https://api.prod.legislation.gov.au/v1"
 SCRATCH = os.path.dirname(os.path.abspath(__file__))
-
-
-def curl_json(url, tries=3):
-    return _curl_json(url, os.path.join(SCRATCH, "_p13.json"), tries)
 
 
 def main():
@@ -23,7 +19,7 @@ def main():
         # Descending by start: $top caps the page, so ascending order would
         # return the 60 OLDEST versions and a long-history title would resolve
         # to a decades-old compilation.
-        response = curl_json(
+        response = fetch_json(
             "%s/versions?$top=60&$orderby=start%%20desc&$filter=%s&$select=titleId,start,end,isCurrent,compilationNumber,registerId"
             % (API, urllib.parse.quote("titleId eq '%s'" % rid))
         )

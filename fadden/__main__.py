@@ -13,7 +13,7 @@ import fadden
 from fadden import STAGES
 
 # Stage modules import their shared helpers by bare name (corpus_paths,
-# curl_fetch, download) so the same files run unchanged in the flat deployed
+# http_fetch, download) so the same files run unchanged in the flat deployed
 # build/ layout. Under `python -m fadden` those names are not importable until
 # the package directory itself is on sys.path.
 _PACKAGE_DIR = os.path.dirname(os.path.abspath(fadden.__file__))
