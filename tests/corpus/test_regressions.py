@@ -648,7 +648,7 @@ class FailureHandlingTests(unittest.TestCase):
             discover.SCRATCH = str(scratch)
             discover.COLLECTIONS = ["Act"]
             discover.KEYWORDS = ["Tax"]
-            discover.curl_json = lambda _url: None
+            discover.fetch_json = lambda _url: None
 
             # module.time is the process-wide time module: patch, never assign.
             with mock.patch.object(discover.time, "sleep"), \
@@ -666,7 +666,7 @@ class FailureHandlingTests(unittest.TestCase):
             scratch = Path(tmp)
             (scratch / "titles_all.json").write_text(json.dumps([title]), encoding="utf-8")
             versions.SCRATCH = str(scratch)
-            versions.curl_json = lambda _url: None
+            versions.fetch_json = lambda _url: None
 
             with mock.patch.object(versions.time, "sleep"), \
                     contextlib.redirect_stdout(io.StringIO()):
@@ -691,7 +691,7 @@ class FailureHandlingTests(unittest.TestCase):
                     "compilationNumber": "7", "registerId": "F2026C00001",
                 }]}
 
-            versions.curl_json = response
+            versions.fetch_json = response
             with mock.patch.object(versions.time, "sleep"), \
                     contextlib.redirect_stdout(io.StringIO()):
                 versions.main()
@@ -785,7 +785,7 @@ class FinalizeMissingTitleTests(unittest.TestCase):
             build.mkdir()
             for name in ("discover.py", "versions.py", "download.py",
                          "extract.py", "finalize.py", "check_current.py",
-                         "corpus_paths.py", "curl_fetch.py"):
+                         "corpus_paths.py", "http_fetch.py"):
                 shutil.copy2(stage_file(name), build / name)
             finalize = load_module("finalize_missing_reason", build / "finalize.py")
 
@@ -1314,13 +1314,13 @@ class DiscoveryPagingTests(unittest.TestCase):
             requested.append(url)
             return first if "$skip=0" in url else {"value": [{"id": "C2004A00200"}]}
 
-        discover.curl_json = responses
+        discover.fetch_json = responses
         rows = discover.page_titles("Tax", "Act")
         self.assertEqual(len(rows), 101)
         self.assertEqual(len(requested), 2)
         self.assertTrue(all("$orderby=id" in url for url in requested), requested)
 
-        discover.curl_json = lambda url: (
+        discover.fetch_json = lambda url: (
             first if "$skip=0" in url else {"value": [{"id": "C2004A00007"}]})
         with self.assertRaises(SystemExit):
             discover.page_titles("Tax", "Act")
@@ -1482,7 +1482,7 @@ class DownloadValidationTests(unittest.TestCase):
 class StalenessBucketTests(unittest.TestCase):
     def _run(self, base, response):
         module = load_module("check_current_buckets", base / "check_current.py")
-        module.curl_json = response if callable(response) else lambda _url: response
+        module.fetch_json = response if callable(response) else lambda _url: response
         buffer = io.StringIO()
         with mock.patch.object(module.sys, "argv", ["check_current.py"]), \
                 mock.patch.object(module.time, "sleep"):
@@ -1497,7 +1497,7 @@ class StalenessBucketTests(unittest.TestCase):
                         "collection": "LegislativeInstrument",
                         "compilation_number": "4", "compilation_date": "2025-06-30"}],
         }), encoding="utf-8")
-        for name in ("check_current.py", "corpus_paths.py", "curl_fetch.py"):
+        for name in ("check_current.py", "corpus_paths.py", "http_fetch.py"):
             shutil.copy2(stage_file(name), base / name)
 
     def test_a_current_version_with_no_document_is_its_own_bucket(self):
@@ -1537,7 +1537,7 @@ class StalenessBucketTests(unittest.TestCase):
                 calls.append(_url)
                 return responses.pop(0)
 
-            module.curl_json = response
+            module.fetch_json = response
             buffer = io.StringIO()
             with mock.patch.object(module.sys, "argv", ["check_current.py"]), \
                     mock.patch.object(module.time, "sleep"):
@@ -2853,7 +2853,7 @@ class PathBoundaryTests(unittest.TestCase):
             base = Path(tmp)
             checkout = base / "checkout"
             checkout.mkdir()
-            for name in ("check_current.py", "corpus_paths.py", "curl_fetch.py"):
+            for name in ("check_current.py", "corpus_paths.py", "http_fetch.py"):
                 shutil.copy2(stage_file(name), checkout / name)
             checkout_module = load_module("check_current_checkout", checkout / "check_current.py")
             self.assertEqual(Path(checkout_module.ROOT), checkout / "corpus")
@@ -2861,7 +2861,7 @@ class PathBoundaryTests(unittest.TestCase):
             deployed = base / "deployed"
             deployed.mkdir()
             (deployed / "sources.json").write_text("{}", encoding="utf-8")
-            for name in ("check_current.py", "corpus_paths.py", "curl_fetch.py"):
+            for name in ("check_current.py", "corpus_paths.py", "http_fetch.py"):
                 shutil.copy2(stage_file(name), deployed / name)
             deployed_module = load_module("check_current_deployed", deployed / "check_current.py")
             self.assertEqual(Path(deployed_module.ROOT), deployed)

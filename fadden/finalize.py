@@ -449,11 +449,11 @@ survives a nested paragraph.
 
     build_dir = child(ROOT, "build")
     os.makedirs(build_dir, exist_ok=True)
-    for name in ("check_current.py", "corpus_paths.py", "curl_fetch.py"):
+    for name in ("check_current.py", "corpus_paths.py", "http_fetch.py"):
         copy_if_different(os.path.join(SCRATCH, name), child(ROOT, name))
     for name in ("discover.py", "versions.py", "download.py", "extract.py",
                  "finalize.py", "check_current.py", "corpus_paths.py",
-                 "curl_fetch.py"):
+                 "http_fetch.py"):
         copy_if_different(os.path.join(SCRATCH, name),
                           child(build_dir, name))
 

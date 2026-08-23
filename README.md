@@ -171,7 +171,7 @@ python -m fadden dist          # build the redistributable subset -> ./corpus/di
 python -m fadden dist_verify   # check the built subset against its own claims, exits non-zero on failure
 ```
 
-`fadden/corpus_paths.py`, `fadden/curl_fetch.py` and `fadden/pii_patterns.py` are shared modules the
+`fadden/corpus_paths.py`, `fadden/http_fetch.py` and `fadden/pii_patterns.py` are shared modules the
 stages import; they are not run directly. `finalize.py` still copies the
 discover-through-finalize loop plus `check_current.py` and the shared modules
 into a completed corpus `build/` directory as flat scripts so a deployed
@@ -199,7 +199,9 @@ real defect. The short version:
 - **Unordered `$skip`/`$top` paging silently drops rows.** No `$orderby` meant
   142 of 813 titles vanished, including the Tax Agent Services Act 2009.
 - **`curl` does not truncate `-o` on transport failure**, so a shared temp file
-  re-reads the previous response and hands one Act another Act's compilation.
+  re-read the previous response and handed one Act another Act's compilation.
+  The JSON stages read the response off the socket now, so they carry no temp
+  file to inherit; `download.py` still uses `curl`, to a per-title path.
 - **The download endpoint answers in two shapes**, raw EPUB bytes or a JSON
   envelope with the file base64 inside. Sniff the first byte.
 - **HTTP errors and non-EPUB responses stop the download stage.** They are not
