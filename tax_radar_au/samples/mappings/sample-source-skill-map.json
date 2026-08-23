@@ -1,0 +1,16 @@
+{
+  "schema_version": "au-tax-source-skill-map.v1",
+  "mapping_version": "2026-08-demo.1",
+  "entries": [
+    {
+      "mapping_id": "map:sample-consumption-tax-to-bas",
+      "register_id": "C2099A00001",
+      "collection": "Act",
+      "source_kind": "legislation",
+      "skill_ref": "bas-preparation",
+      "skill_path": ".claude/skills/bas-preparation/SKILL.md",
+      "owner_role": "tax technical reviewer",
+      "review_question": "Assess whether the changed compilation affects the BAS workflow or its cited source requirements."
+    }
+  ]
+}

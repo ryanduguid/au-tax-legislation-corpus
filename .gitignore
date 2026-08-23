@@ -6,7 +6,7 @@ external/
 sources.json
 INDEX.md
 LICENCE-NOTICE.md
-corpus/
+/corpus/
 
 # Pipeline intermediates: build outputs the pipeline regenerates, not shipped.
 # fadden/manifest_md.json stays committed because tests/test_regressions.py pins
@@ -30,3 +30,9 @@ _*.txt
 download_log.txt
 __pycache__/
 *.pyc
+
+# Wheel and sdist output from `python -m build`, added when the radar
+# half merged in and the repository started producing distributions.
+build/
+dist/
+*.egg-info/

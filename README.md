@@ -12,6 +12,21 @@ JSONL row per section, and a derived rates-and-thresholds index.
 No dependencies beyond the standard library and `curl`. No API key: the
 Register's API is free and unauthenticated.
 
+## Two halves
+
+This repository holds a producer and the consumer written against it.
+
+- **The corpus builder**, described below and in [BUILD.md](BUILD.md). Standard
+  library and `curl` only.
+- **The change-review queue**, described in [RADAR.md](RADAR.md). Installs as
+  `tax-radar-au` and reads the builder's reviewed observation output.
+
+They arrived here as separate repositories with a written contract between
+them, `fadden/export_monitor_contract.py` on one side and a baseline source
+index on the other. Nothing enforced that contract across the repository
+boundary. Now `tests/corpus/test_monitor_contract.py` does, on every run,
+instead of only on a machine that happened to have both clones.
+
 ## For practitioners
 
 Run the pipeline and you get the current compilations of 946 tax titles as
