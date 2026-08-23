@@ -36,3 +36,11 @@ __pycache__/
 build/
 dist/
 *.egg-info/
+
+# Credentials must never be committed.
+.env
+.env.*
+!.env.example
+*.token
+*.tokens
+*.pem
