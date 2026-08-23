@@ -9,7 +9,7 @@ from __future__ import annotations
 from pathlib import Path
 
 
-ROOT = Path(__file__).resolve().parents[1]
+ROOT = Path(__file__).resolve().parents[2]
 
 BLOCKED_CHANGE_KINDS = (
     "INCOMPLETE_SCOPE",
@@ -33,7 +33,7 @@ def test_readme_names_every_blocked_change_kind() -> None:
     # compare() blocks for five distinct reasons. A reader who meets
     # BASELINE_NOT_CURRENT or MISSING_OBSERVATION on a stale baseline needs the
     # README to say what the label and the non-zero exit mean.
-    readme = (ROOT / "README.md").read_text(encoding="utf-8")
+    readme = (ROOT / "RADAR.md").read_text(encoding="utf-8")
 
     for change_kind in BLOCKED_CHANGE_KINDS:
         assert change_kind in readme, f"README does not document {change_kind}"
@@ -44,7 +44,7 @@ def test_readme_describes_both_rejection_shapes_not_one() -> None:
     # block and no "blocked:" line, so the README must not promise that prefix
     # for every rejected input. tests/test_cli.py pins the behaviour; this pins
     # the sentence that describes it.
-    readme = (ROOT / "README.md").read_text(encoding="utf-8")
+    readme = (ROOT / "RADAR.md").read_text(encoding="utf-8")
 
     assert "Every rejected input also exits 2" not in readme
     assert "rejected by argparse" in readme
@@ -56,7 +56,7 @@ def test_readme_states_that_an_unwritable_stdout_keeps_the_run_exit_status() -> 
     # interpreter's exit-time flush replaced the status with 120 - so the
     # README has to say what happens now instead. tests/test_cli.py pins the
     # behaviour; this pins the sentence.
-    readme = (ROOT / "README.md").read_text(encoding="utf-8")
+    readme = (ROOT / "RADAR.md").read_text(encoding="utf-8")
 
     assert "the exit status is still the one the run decided" in readme
 
@@ -64,7 +64,7 @@ def test_readme_states_that_an_unwritable_stdout_keeps_the_run_exit_status() -> 
 def test_readme_states_the_pinned_timestamp_grammar() -> None:
     # The grammar is narrower than datetime.fromisoformat's on every supported
     # interpreter, so a user with a stored artefact needs it written down.
-    readme = (ROOT / "README.md").read_text(encoding="utf-8")
+    readme = (ROOT / "RADAR.md").read_text(encoding="utf-8")
 
     assert "YYYY-MM-DDThh:mm:ss[.ffffff][Z|+hh:mm|-hh:mm]" in readme
     assert "or a single space allowed in place of `T`" in readme

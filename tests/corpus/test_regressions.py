@@ -22,7 +22,7 @@ import zipfile
 from unittest import mock
 
 
-REPO = Path(__file__).resolve().parents[1]
+REPO = Path(__file__).resolve().parents[2]
 STAGE = REPO / "fadden"
 
 

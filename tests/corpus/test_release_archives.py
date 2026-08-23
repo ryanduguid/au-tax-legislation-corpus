@@ -10,7 +10,7 @@ import unittest
 from unittest import mock
 import zipfile
 
-ROOT = Path(__file__).resolve().parents[1]
+ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT / "tools"))
 
 import build_release_archives as release_archives  # noqa: E402
