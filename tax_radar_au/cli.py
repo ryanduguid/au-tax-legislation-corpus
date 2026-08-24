@@ -55,7 +55,7 @@ def _say(line: str) -> None:
         )
 
 
-def _abandon_stdout(exc: OSError) -> None:
+def _abandon_stdout(exc: OSError | ValueError) -> None:
     """Stop using a stdout that cannot be written, without changing the exit status.
 
     Closing it is the whole point. CPython flushes sys.stdout once more while
