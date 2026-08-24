@@ -1,5 +1,19 @@
 # au-tax-legislation-corpus
 
+```
++----------------------------------------------------------------------+
+|                      au-tax-legislation-corpus                       |
++----------------------------------------------------------------------+
+|        Provenance-rich corpus of Commonwealth tax legislation        |
++----------------------------------+-----------------------------------+
+| DR  what it gives you            | CR  what it needs                 |
++----------------------------------+-----------------------------------+
+| 946 tax titles as markdown       | curl and internet access          |
+| JSONL rows with provenance       | Federal Register API access       |
+| rates and thresholds index       | -                                 |
++----------------------------------+-----------------------------------+
+```
+
 ### Commonwealth tax legislation: a corpus builder
 
 [![Verify](https://github.com/ryanduguid/au-tax-legislation-corpus/actions/workflows/verify.yml/badge.svg)](https://github.com/ryanduguid/au-tax-legislation-corpus/actions/workflows/verify.yml) [![License: MIT](https://img.shields.io/badge/License-MIT-4F485E.svg?labelColor=04001F)](LICENSE)
