@@ -106,7 +106,7 @@ class ReleaseArchiveTests(unittest.TestCase):
         )
         self.assertIn(
             "ryanduguid/release-policy/.github/workflows/release-archive.yml@"
-            "1637bebd06c06a4606efdaa5fea6d88ddd546b38",
+            "47480b782926179b621ec1c6643ef88c80fc8fd4",
             workflow,
         )
         self.assertIn("artifact-stem: au-tax-legislation-corpus-builder", workflow)
