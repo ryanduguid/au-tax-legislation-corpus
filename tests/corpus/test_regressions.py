@@ -3,7 +3,6 @@
 These tests use only the standard library and temporary directories.  They do
 not call the Register API or require a built corpus.
 """
-import ast
 import contextlib
 import datetime
 import hashlib

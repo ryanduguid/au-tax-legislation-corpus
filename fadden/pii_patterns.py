@@ -193,20 +193,6 @@ def unapproved_contact_fingerprints(text, register_id, approved):
     }
 
 
-def unapproved_contact_fingerprints_in_file(path, register_id, approved):
-    """Return safe fingerprints from one redistributed UTF-8 text file.
-
-    A title ships both human-readable Markdown and machine-readable JSONL.
-    Checking only the JSONL leaves the other published representation outside
-    the privacy gate, even though a future extraction change could make those
-    representations differ.  Callers deliberately let decoding and I/O errors
-    fail closed rather than treating an unreadable file as contact-free.
-    """
-    _private_pair, unexpected = privacy_findings_in_file(
-        path, register_id, approved)
-    return unexpected
-
-
 def privacy_findings_in_file(path, register_id, approved):
     """Return both privacy predicates for one validated UTF-8 text file.
 
