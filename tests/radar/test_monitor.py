@@ -9,6 +9,7 @@ from pathlib import Path
 import pytest
 
 import tax_radar_au.monitor as monitor_module
+import tax_radar_au.persist as persist_module
 from tax_radar_au.errors import MonitorError
 from tax_radar_au.monitor import _https_url, _iso_date, _iso_timestamp, _load_observation, compare, render_markdown, validate_review, write_queue
 from tax_radar_au.util import SourceSnapshot, sample_path, sha256_json
@@ -1100,7 +1101,7 @@ def test_second_queue_commit_failure_restores_the_previous_pair(
     replacement_queue = _queue()
     replacement_queue["baseline"]["source"] = "Replacement source"
 
-    real_replace = monitor_module.os.replace
+    real_replace = persist_module.os.replace
     failed = {"value": False}
 
     def fail_markdown_commit(source: Path, destination: Path) -> None:
@@ -1115,7 +1116,7 @@ def test_second_queue_commit_failure_restores_the_previous_pair(
             raise OSError(5, "simulated second queue commit failure")
         real_replace(source, destination)
 
-    monkeypatch.setattr(monitor_module.os, "replace", fail_markdown_commit)
+    monkeypatch.setattr(persist_module.os, "replace", fail_markdown_commit)
 
     with pytest.raises(OSError, match="second queue commit failure"):
         write_queue(replacement_queue, output)
