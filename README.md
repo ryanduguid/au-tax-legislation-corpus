@@ -26,6 +26,10 @@ JSONL row per section, and a derived rates-and-thresholds index.
 No dependencies beyond the standard library and `curl`. No API key: the
 Register's API is free and unauthenticated.
 
+**Package lifecycle:** source-only. Install the Python package from this
+repository; it is not published to PyPI. GitHub Releases carry corpus archives,
+not a wheel.
+
 ## Two halves
 
 This repository holds a producer and the consumer written against it.
