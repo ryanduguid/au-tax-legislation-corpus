@@ -138,6 +138,85 @@ class PublicationBundleExportTests(unittest.TestCase):
         with self.assertRaises(exporter.PublicationBundleError):
             self._build(baseline, same_date)
 
+    def test_refuses_values_outside_the_publisher_contract(self):
+        baseline, observation, _, _ = self._project_inputs()
+        cases = (
+            (
+                "title length",
+                lambda candidate_baseline, _candidate_observation: candidate_baseline[
+                    "titles"
+                ][0].__setitem__("name", "x" * 201),
+            ),
+            (
+                "title XML text",
+                lambda candidate_baseline, _candidate_observation: candidate_baseline[
+                    "titles"
+                ][0].__setitem__("name", "Invalid \ufffe title"),
+            ),
+            (
+                "previous compilation number",
+                lambda candidate_baseline, _candidate_observation: candidate_baseline[
+                    "titles"
+                ][0].__setitem__("compilation_number", "1" * 81),
+            ),
+            (
+                "current compilation number",
+                lambda _candidate_baseline, candidate_observation: candidate_observation[
+                    "observations"
+                ][0].__setitem__("observed_compilation_number", "2" * 81),
+            ),
+            (
+                "canonical URL length",
+                lambda _candidate_baseline, candidate_observation: candidate_observation[
+                    "observations"
+                ][0].__setitem__(
+                    "evidence_url", "https://example.invalid/" + "x" * 2025
+                ),
+            ),
+            (
+                "canonical URL Unicode",
+                lambda _candidate_baseline, candidate_observation: candidate_observation[
+                    "observations"
+                ][0].__setitem__("evidence_url", "https://example.invalid/\ud800"),
+            ),
+            (
+                "canonical URL identity",
+                lambda _candidate_baseline, candidate_observation: candidate_observation[
+                    "observations"
+                ][0].__setitem__(
+                    "evidence_url",
+                    "https://example.invalid/C2099A99999/latest/text",
+                ),
+            ),
+            (
+                "content kind",
+                lambda _candidate_baseline, candidate_observation: candidate_observation[
+                    "observations"
+                ][0].__setitem__("content_kind", "summary"),
+            ),
+        )
+        for name, mutate in cases:
+            with self.subTest(name=name):
+                candidate_baseline = copy.deepcopy(baseline)
+                candidate_observation = copy.deepcopy(observation)
+                mutate(candidate_baseline, candidate_observation)
+                with self.assertRaises(exporter.PublicationBundleError):
+                    self._build(candidate_baseline, candidate_observation)
+
+    def test_refuses_generated_identifiers_that_exceed_the_publisher_contract(self):
+        baseline, observation, _, _ = self._project_inputs()
+        register_id = "A" * 40
+        document_id = "C" * 40
+        baseline["titles"][0]["register_id"] = register_id
+        observation["expected_register_ids"] = [register_id]
+        observation["observations"][0]["register_id"] = register_id
+        observation["observations"][0]["observed_register_document_id"] = document_id
+
+        with self.assertRaisesRegex(
+            exporter.PublicationBundleError, "publisher identifier"
+        ):
+            self._build(baseline, observation)
+
     def test_refuses_a_duplicate_output_identity(self):
         baseline, observation, _, _ = self._project_inputs()
         observation["observations"].append(copy.deepcopy(observation["observations"][0]))
@@ -155,6 +234,9 @@ class PublicationBundleExportTests(unittest.TestCase):
         second_observation["register_id"] = "C2099A00002"
         second_observation["observed_register_document_id"] = "C2099C00003"
         second_observation["evidence_id"] = "ev-c2099a00002-01"
+        second_observation["evidence_url"] = (
+            "https://example.invalid/C2099A00002/latest/text"
+        )
         observation["expected_register_ids"].append("C2099A00002")
         observation["observations"].append(second_observation)
 
@@ -178,6 +260,37 @@ class PublicationBundleExportTests(unittest.TestCase):
             self.assertEqual(written, [expected])
             self.assertEqual(expected.read_bytes(), exporter.bundle_bytes(self._build_one_bundle()))
             self.assertEqual(list(root.glob(f".{output.name}.publication-bundles-*.tmp")), [])
+
+    def test_creates_one_missing_output_parent_after_validating_inputs(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            sources = root / "sources.json"
+            facts = root / "facts.json"
+            output_parent = root / "build"
+            output = output_parent / "bundles"
+            sources.write_bytes(SOURCES.read_bytes())
+            facts.write_bytes(FACTS.read_bytes())
+
+            written = exporter.export_publication_bundles(sources, facts, output)
+
+            self.assertEqual(len(written), 1)
+            self.assertTrue(written[0].is_file())
+            self.assertTrue(output_parent.is_dir())
+
+    def test_invalid_input_does_not_create_a_missing_output_parent(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            sources = root / "sources.json"
+            facts = root / "facts.json"
+            output_parent = root / "build"
+            output = output_parent / "bundles"
+            sources.write_bytes(SOURCES.read_bytes())
+            facts.write_bytes(b'{"schema_version":"one","schema_version":"two"}\n')
+
+            with self.assertRaises(exporter.PublicationBundleError):
+                exporter.export_publication_bundles(sources, facts, output)
+
+            self.assertFalse(output_parent.exists())
 
     def test_refuses_existing_destinations_without_mutating_them(self):
         for populated in (False, True):

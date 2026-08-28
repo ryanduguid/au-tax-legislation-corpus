@@ -197,11 +197,13 @@ export. The resulting `evidence-bundle.v1` contains source metadata and exact
 input/content digests, but no source extract, practical implication or AI
 explanation.
 
-The output path must be absent and its parent must be an ordinary directory.
-Both inputs must be ordinary files outside the output. The command builds every
-bundle in a private sibling directory and promotes the complete directory with
-one rename; a failed write or promotion removes only importer-owned staging and
-leaves existing paths untouched.
+The output path must be absent. Its immediate parent may be an ordinary
+directory or one absent, safe-named directory whose parent is ordinary; the
+exporter creates that one parent only after all inputs validate. Both inputs
+must be ordinary files outside the output. The command builds every bundle in a
+private sibling directory and promotes the complete directory with one rename;
+a failed write or promotion removes only exporter-owned staging and leaves
+existing paths untouched.
 
 The fixture's `content_sha256` identifies the checked-in artificial source
 payload bytes. It is not a hash of the observation file. No live observer exists

@@ -81,12 +81,14 @@ requires complete scope; ignores `UNCHANGED`; and permits only a matching,
 newer `SUPERSEDED` compilation. Every other changed, blocked or inconsistent
 state aborts the complete run before output publication.
 
-The destination itself must not exist. Its parent and both inputs must be
-ordinary filesystem objects, not links, junctions or special files. The command
-captures both inputs once, builds all JSON files under a private sibling and
-renames that complete directory into place. A failure removes only that private
-staging directory. The bundle is metadata-only and contains no source extract,
-impact assessment or explainer.
+The destination itself must not exist. Its immediate parent may be an ordinary
+directory or one absent, safe-named directory whose parent is ordinary; that
+one parent is created only after input validation. Both inputs and every
+existing parent must be ordinary filesystem objects, not links, junctions or
+special files. The command captures both inputs once, builds all JSON files
+under a private sibling and renames that complete directory into place. A
+failure removes only that private staging directory. The bundle is metadata-only
+and contains no source extract, impact assessment or explainer.
 
 There is no live Federal Register observer in this repository. The adapter and
 its fixtures emit `mode: synthetic`; passing this contract test does not make a

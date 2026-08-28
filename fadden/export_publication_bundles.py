@@ -12,6 +12,7 @@ import stat
 import uuid
 from pathlib import Path
 from typing import Any, Sequence
+from urllib.parse import urlsplit
 
 from fadden import export_monitor_contract as monitor_contract
 from tax_radar_au.errors import MonitorError
@@ -25,6 +26,7 @@ class PublicationBundleError(ValueError):
 SHA256 = re.compile(r"[0-9a-f]{64}")
 SHA256_ID = re.compile(r"sha256:[0-9a-f]{64}")
 SAFE_UPSTREAM_ID = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,79}")
+PUBLISHER_ID = re.compile(r"[a-z0-9][a-z0-9._-]{2,79}")
 SAFE_OUTPUT_LEAF = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,99}")
 VERSION_PATH = Path(__file__).resolve().parent.parent / "VERSION"
 
@@ -38,6 +40,53 @@ def _required_text(value: Any, field: str) -> str:
     ):
         raise PublicationBundleError(f"{field} must be non-empty, trimmed text.")
     return value
+
+
+def _publisher_text(value: Any, field: str, maximum: int) -> str:
+    text = _required_text(value, field)
+    utf16_length = sum(2 if ord(character) > 0xFFFF else 1 for character in text)
+    xml_safe = all(
+        ord(character) in {0x09, 0x0A, 0x0D}
+        or 0x20 <= ord(character) <= 0xD7FF
+        or 0xE000 <= ord(character) <= 0xFFFD
+        or 0x10000 <= ord(character) <= 0x10FFFF
+        for character in text
+    )
+    if utf16_length > maximum or not xml_safe:
+        raise PublicationBundleError(
+            f"{field} must fit the publisher's XML text limit of {maximum} characters."
+        )
+    return text
+
+
+def _publisher_identifier(value: str, field: str) -> str:
+    if PUBLISHER_ID.fullmatch(value) is None:
+        raise PublicationBundleError(f"{field} is not a safe publisher identifier.")
+    return value
+
+
+def _publisher_https_url(value: Any, field: str, *, expected_path: str) -> str:
+    text = _required_text(value, field)
+    utf16_length = sum(2 if ord(character) > 0xFFFF else 1 for character in text)
+    try:
+        text.encode("utf-8")
+        parsed = urlsplit(text)
+        hostname = parsed.hostname
+        _ = parsed.port
+    except (UnicodeEncodeError, ValueError) as exc:
+        raise PublicationBundleError(f"{field} must be a permitted HTTPS URL.") from exc
+    if (
+        utf16_length > 2048
+        or parsed.scheme.lower() != "https"
+        or not hostname
+        or parsed.username is not None
+        or parsed.password is not None
+        or "\\" in parsed.netloc
+        or any(character.isspace() for character in parsed.netloc)
+        or parsed.path != expected_path
+    ):
+        raise PublicationBundleError(f"{field} must be a permitted HTTPS URL.")
+    return text
 
 
 def _safe_upstream_id(value: Any, field: str) -> str:
@@ -119,7 +168,7 @@ def build_publication_bundles(
 
     baseline_digest = _input_digest(baseline_sha256, "baseline_sha256")
     facts_digest = _input_digest(observation_facts_sha256, "observation_facts_sha256")
-    version = _required_text(producer_version, "producer_version")
+    version = _publisher_text(producer_version, "producer_version", 100)
     bundles: list[dict[str, Any]] = []
     seen_register_ids: set[str] = set()
     seen_bundle_ids: set[str] = set()
@@ -157,13 +206,16 @@ def build_publication_bundles(
             raise PublicationBundleError(
                 f"observation {index} collection does not match the baseline."
             )
+        if collection not in monitor_contract.COLLECTIONS:
+            raise PublicationBundleError(f"observation {index} collection is unsupported.")
         document_id = _safe_upstream_id(
             _required_member(observed, "observed_register_document_id", f"observation {index}"),
             f"observation {index} observed_register_document_id",
         )
-        compilation_number = _required_text(
+        compilation_number = _publisher_text(
             _required_member(observed, "observed_compilation_number", f"observation {index}"),
             f"observation {index} observed_compilation_number",
+            80,
         )
         compilation_date = _iso_date(
             _required_member(observed, "observed_compilation_date", f"observation {index}"),
@@ -179,14 +231,21 @@ def build_publication_bundles(
             _required_member(observed, "content_kind", f"observation {index}"),
             f"observation {index} content_kind",
         )
+        if content_kind not in monitor_contract.CONTENT_KINDS:
+            raise PublicationBundleError(f"observation {index} content_kind is unsupported.")
         content_media_type = _required_text(
             _required_member(observed, "content_media_type", f"observation {index}"),
             f"observation {index} content_media_type",
         )
-        title_name = _required_text(title.get("name"), "baseline title name")
-        previous_compilation_number = _required_text(
+        if content_media_type not in monitor_contract.CONTENT_MEDIA_TYPES:
+            raise PublicationBundleError(
+                f"observation {index} content_media_type is unsupported."
+            )
+        title_name = _publisher_text(title.get("name"), "baseline title name", 200)
+        previous_compilation_number = _publisher_text(
             title.get("compilation_number"),
             "baseline title compilation_number",
+            80,
         )
         previous_compilation_date = _iso_date(
             title.get("compilation_date"),
@@ -201,7 +260,15 @@ def build_publication_bundles(
             )
         published_at = f"{compilation_date}T00:00:00Z"
         identity = f"{register_id.lower()}-{document_id.lower()}"
-        bundle_id = f"bundle-frl-{identity}-r1"
+        bundle_id = _publisher_identifier(
+            f"bundle-frl-{identity}-r1", "generated bundle_id"
+        )
+        development_id = _publisher_identifier(
+            f"dev-frl-{identity}", "generated development_id"
+        )
+        source_id = _publisher_identifier(
+            f"frl-{document_id.lower()}", "generated source_id"
+        )
         if bundle_id in seen_bundle_ids:
             raise PublicationBundleError("observations produce duplicate bundle identities.")
         seen_bundle_ids.add(bundle_id)
@@ -210,7 +277,7 @@ def build_publication_bundles(
             {
                 "schema_version": "evidence-bundle.v1",
                 "bundle_id": bundle_id,
-                "development_id": f"dev-frl-{identity}",
+                "development_id": development_id,
                 "mode": "synthetic",
                 "generated_at": observation["observed_at"],
                 "producer": {
@@ -245,13 +312,14 @@ def build_publication_bundles(
                 },
                 "sources": [
                     {
-                        "source_id": f"frl-{document_id.lower()}",
+                        "source_id": source_id,
                         "publisher": "Federal Register of Legislation",
                         "document_class": "legislation",
                         "title": title_name,
-                        "canonical_url": _required_text(
+                        "canonical_url": _publisher_https_url(
                             _required_member(observed, "evidence_url", f"observation {index}"),
                             f"observation {index} evidence_url",
+                            expected_path=f"/{register_id}/latest/text",
                         ),
                         "published_at": published_at,
                         "retrieved_at": _required_text(
@@ -345,6 +413,30 @@ def _require_ordinary_parent(path: Path) -> None:
         )
 
 
+def _output_parent_needs_creation(path: Path) -> bool:
+    try:
+        details = os.lstat(path)
+    except FileNotFoundError as exc:
+        if SAFE_OUTPUT_LEAF.fullmatch(path.name) is None:
+            raise PublicationBundleError("publication bundle output parent name is unsafe.") from exc
+        _require_ordinary_parent(path.parent)
+        return True
+    except OSError as exc:
+        raise PublicationBundleError(
+            f"publication bundle output parent cannot be inspected: {path} ({exc})."
+        ) from exc
+    if (
+        not stat.S_ISDIR(details.st_mode)
+        or os.path.islink(path)
+        or _is_junction(path)
+        or _is_reparse_point(details)
+    ):
+        raise PublicationBundleError(
+            f"publication bundle output parent must be an ordinary directory: {path}."
+        )
+    return False
+
+
 def _require_absent(path: Path) -> None:
     try:
         os.lstat(path)
@@ -396,7 +488,7 @@ def export_publication_bundles(
     _require_regular_input(facts, "observation facts input")
     if _same_location(output, sources) or _same_location(output, facts):
         raise PublicationBundleError("publication bundle output would replace an input.")
-    _require_ordinary_parent(output.parent)
+    create_output_parent = _output_parent_needs_creation(output.parent)
     _require_absent(output)
 
     try:
@@ -422,6 +514,15 @@ def export_publication_bundles(
         raise PublicationBundleError(
             f"publication bundle inputs could not be read: {exc}."
         ) from exc
+
+    if create_output_parent:
+        try:
+            os.mkdir(output.parent, 0o700)
+        except OSError as exc:
+            raise PublicationBundleError(
+                f"publication bundle output parent could not be created: {output.parent} ({exc})."
+            ) from exc
+        _require_ordinary_parent(output.parent)
 
     prefix = f".{output.name}.publication-bundles-"
     staging = output.parent / f"{prefix}{uuid.uuid4().hex}.tmp"
