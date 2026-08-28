@@ -4,7 +4,7 @@
 
 **Stage:** 3A
 
-**Status:** Approved in chat; written specification awaiting user review
+**Status:** Approved
 
 **Branch base:** `feature/publication-evidence-bundle` at `093f1167956b7ad0e1df857763ca0ec08f253455`
 
