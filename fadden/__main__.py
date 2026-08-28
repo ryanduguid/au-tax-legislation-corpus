@@ -44,7 +44,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     try:
         if args.stage == "finalize":
             result = func(datetime.date.today().isoformat())
-        elif args.stage == "export_monitor_contract":
+        elif args.stage in {"export_monitor_contract", "export_publication_bundles"}:
             result = func(forwarded)
         elif args.stage == "extract" and forwarded:
             # extract.main takes the retrieval date as a parameter and only

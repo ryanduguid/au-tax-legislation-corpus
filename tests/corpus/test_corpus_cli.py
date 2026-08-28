@@ -42,13 +42,14 @@ class FaddenCliTests(unittest.TestCase):
             module.main.assert_called_once_with("2026-08-22")
 
     def test_stage_dispatch_forwards_remaining_arguments(self) -> None:
-        with mock.patch("importlib.import_module") as importer:
-            module = mock.Mock()
-            module.main.return_value = 0
-            importer.return_value = module
-            self.assertEqual(main(["export_monitor_contract", "--", "a.json", "b.json", "--out", "out"]), 0)
-            importer.assert_called_once_with("fadden.export_monitor_contract")
-            module.main.assert_called_once_with(["a.json", "b.json", "--out", "out"])
+        for stage in ("export_monitor_contract", "export_publication_bundles"):
+            with self.subTest(stage=stage), mock.patch("importlib.import_module") as importer:
+                module = mock.Mock()
+                module.main.return_value = 0
+                importer.return_value = module
+                self.assertEqual(main([stage, "--", "a.json", "b.json", "--out", "out"]), 0)
+                importer.assert_called_once_with(f"fadden.{stage}")
+                module.main.assert_called_once_with(["a.json", "b.json", "--out", "out"])
 
     def test_stage_roster_is_the_documented_pipeline(self) -> None:
         self.assertEqual(
@@ -68,6 +69,7 @@ class FaddenCliTests(unittest.TestCase):
                 "dist",
                 "dist_verify",
                 "export_monitor_contract",
+                "export_publication_bundles",
             ),
         )
 
