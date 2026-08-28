@@ -65,6 +65,7 @@ RETRY_DELAY_SECONDS = 6.0
 REQUEST_DELAY_SECONDS = 1.5
 SHA256_ID = re.compile(r"sha256:[0-9a-f]{64}\Z")
 EVIDENCE_NAME = re.compile(r"sha256-([0-9a-f]{64})\.json\Z")
+SAFE_OUTPUT_LEAF = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,99}\Z")
 OBSERVATION_STATES = {
     "UNCHANGED",
     "SUPERSEDED",
@@ -297,7 +298,53 @@ def _utc_timestamp(value: Any, field: str) -> str:
     return text
 
 
+def _details_are_reparse_point(details: os.stat_result) -> bool:
+    return bool(
+        getattr(details, "st_file_attributes", 0)
+        & getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0x400)
+    )
+
+
+def _path_is_junction(path: Path) -> bool:
+    return getattr(os.path, "isjunction", lambda _path: False)(path)
+
+
+def _require_ordinary_directory(path: Path, label: str) -> None:
+    try:
+        details = os.lstat(path)
+    except OSError as exc:
+        raise CaptureRegisterError(f"{label} must be an ordinary directory.") from exc
+    if (
+        not stat.S_ISDIR(details.st_mode)
+        or os.path.islink(path)
+        or _path_is_junction(path)
+        or _details_are_reparse_point(details)
+    ):
+        raise CaptureRegisterError(f"{label} must be an ordinary directory.")
+
+
+def _require_ordinary_ancestors(path: Path, label: str) -> None:
+    current = path
+    while True:
+        try:
+            details = os.lstat(current)
+        except OSError as exc:
+            raise CaptureRegisterError(f"{label} must have ordinary ancestors.") from exc
+        if (
+            not stat.S_ISDIR(details.st_mode)
+            or os.path.islink(current)
+            or _path_is_junction(current)
+            or _details_are_reparse_point(details)
+        ):
+            raise CaptureRegisterError(f"{label} must have ordinary ancestors.")
+        parent = current.parent
+        if parent == current:
+            return
+        current = parent
+
+
 def _load_manifest(path: Path) -> list[dict[str, Any]]:
+    _require_ordinary_ancestors(path.parent, "manifest")
     is_junction = getattr(os.path, "isjunction", lambda _path: False)
     try:
         details = os.lstat(path)
@@ -1144,6 +1191,68 @@ def _validate_staged_graph(staging: Path) -> None:
         raise CaptureRegisterError("staged capture graph is invalid") from exc
 
 
+def _require_absent_destination(path: Path) -> None:
+    try:
+        os.lstat(path)
+    except FileNotFoundError:
+        return
+    except OSError as exc:
+        raise CaptureRegisterError("capture destination could not be inspected.") from exc
+    raise CaptureRegisterError("capture destination must not exist.")
+
+
+def _same_location(left: Path, right: Path) -> bool:
+    return os.path.normcase(os.path.realpath(left)) == os.path.normcase(os.path.realpath(right))
+
+
+def _preflight_output(output: Path, manifest: Path) -> bool:
+    if SAFE_OUTPUT_LEAF.fullmatch(output.name) is None:
+        raise CaptureRegisterError("capture destination name is unsafe.")
+    _require_absent_destination(output)
+    if _same_location(output, manifest):
+        raise CaptureRegisterError("capture destination must not replace its manifest input.")
+    try:
+        os.lstat(output.parent)
+    except FileNotFoundError:
+        if SAFE_OUTPUT_LEAF.fullmatch(output.parent.name) is None:
+            raise CaptureRegisterError("capture output parent name is unsafe.")
+        try:
+            os.lstat(output.parent.parent)
+        except OSError as exc:
+            raise CaptureRegisterError(
+                "capture permits only one missing output parent."
+            ) from exc
+        _require_ordinary_ancestors(output.parent.parent, "capture output")
+        return True
+    except OSError as exc:
+        raise CaptureRegisterError("capture output parent could not be inspected.") from exc
+    _require_ordinary_directory(output.parent, "capture output parent")
+    _require_ordinary_ancestors(output.parent.parent, "capture output")
+    return False
+
+
+def _remove_owned_staging(staging: Path, *, parent: Path, prefix: str) -> None:
+    if staging.parent != parent or not staging.name.startswith(prefix):
+        raise CaptureRegisterError("refusing to remove staging outside the capture boundary")
+    try:
+        details = os.lstat(staging)
+    except FileNotFoundError:
+        return
+    except OSError as exc:
+        raise CaptureRegisterError("capture staging could not be inspected") from exc
+    if (
+        not stat.S_ISDIR(details.st_mode)
+        or os.path.islink(staging)
+        or _path_is_junction(staging)
+        or _details_are_reparse_point(details)
+    ):
+        raise CaptureRegisterError("capture staging is no longer an ordinary directory")
+    try:
+        shutil.rmtree(staging)
+    except OSError as exc:
+        raise CaptureRegisterError("capture staging could not be removed") from exc
+
+
 def _write_new(path: Path, content: bytes) -> None:
     with open(path, "xb") as target:
         target.write(content)
@@ -1162,10 +1271,7 @@ def capture_register_run(
     manifest = Path(os.path.abspath(os.fspath(manifest_path)))
     output = Path(os.path.abspath(os.fspath(destination)))
     baseline = _project_baseline(_load_manifest(manifest))
-    if output.exists() or output.is_symlink():
-        raise CaptureRegisterError(f"capture destination must not exist: {output}.")
-    if not output.parent.is_dir():
-        raise CaptureRegisterError(f"capture destination parent does not exist: {output.parent}.")
+    create_output_parent = _preflight_output(output, manifest)
 
     baseline_content = _json_bytes(baseline)
     baseline_sha256 = _sha256_id(baseline_content)
@@ -1209,26 +1315,38 @@ def capture_register_run(
     }
     observation_content = _json_bytes(observation)
 
+    if create_output_parent:
+        try:
+            os.mkdir(output.parent, 0o700)
+        except OSError as exc:
+            raise CaptureRegisterError("capture output parent could not be created.") from exc
+    _require_ordinary_directory(output.parent, "capture output parent")
+    _require_ordinary_ancestors(output.parent.parent, "capture output")
+    _require_absent_destination(output)
+
     prefix = f".{output.name}.register-capture-"
     staging = output.parent / f"{prefix}{uuid.uuid4().hex}.tmp"
     try:
-        os.mkdir(staging, 0o700)
-        evidence_directory = staging / "evidence"
-        os.mkdir(evidence_directory, 0o700)
-        _write_new(staging / "monitor-baseline.json", baseline_content)
-        for relative_path, content in evidence.items():
-            _write_new(staging / relative_path, content)
-        _write_new(staging / "register-capture.json", capture_content)
-        _write_new(staging / "register-observation.json", observation_content)
+        try:
+            os.mkdir(staging, 0o700)
+            evidence_directory = staging / "evidence"
+            os.mkdir(evidence_directory, 0o700)
+            _write_new(staging / "monitor-baseline.json", baseline_content)
+            for relative_path, content in evidence.items():
+                _write_new(staging / relative_path, content)
+            _write_new(staging / "register-capture.json", capture_content)
+            _write_new(staging / "register-observation.json", observation_content)
+        except OSError as exc:
+            raise CaptureRegisterError("capture output could not be written.") from exc
         _validate_staged_graph(staging)
-        if output.exists() or output.is_symlink():
-            raise CaptureRegisterError(f"capture destination must not exist: {output}.")
-        os.rename(staging, output)
-    except OSError as exc:
-        raise CaptureRegisterError(f"capture output could not be written: {exc}.") from exc
+        _require_ordinary_directory(output.parent, "capture output parent")
+        _require_absent_destination(output)
+        try:
+            os.rename(staging, output)
+        except OSError as exc:
+            raise CaptureRegisterError("capture output could not be promoted.") from exc
     finally:
-        if staging.is_dir() and staging.parent == output.parent and staging.name.startswith(prefix):
-            shutil.rmtree(staging)
+        _remove_owned_staging(staging, parent=output.parent, prefix=prefix)
 
     return {
         "baseline": output / "monitor-baseline.json",

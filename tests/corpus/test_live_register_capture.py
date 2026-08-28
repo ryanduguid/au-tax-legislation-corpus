@@ -5,6 +5,7 @@ from __future__ import annotations
 import hashlib
 import io
 import json
+import os
 import tempfile
 import unittest
 import urllib.error
@@ -1498,6 +1499,216 @@ class LiveRegisterEvidenceGraphTests(unittest.TestCase):
                 self.assertEqual(
                     list(root.glob(".capture.register-capture-*.tmp")), []
                 )
+
+
+class LiveRegisterCaptureFilesystemTests(unittest.TestCase):
+    def _manifest(self, root: Path, *, content: bytes | None = None) -> Path:
+        path = root / "manifest.json"
+        path.write_bytes(content or json_bytes([manifest_row()]))
+        return path
+
+    def _session(self) -> MemorySession:
+        return MemorySession(
+            {
+                CURRENT_URL: [
+                    successful_exchange(CURRENT_BODY, "2026-08-29T15:00:01Z")
+                ]
+            }
+        )
+
+    def test_creates_exactly_one_missing_output_parent_after_validation(self) -> None:
+        """One safe missing parent is supported; deeper missing ancestry must stay absent."""
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            manifest = self._manifest(root)
+            parent = root / "new-parent"
+            destination = parent / "capture"
+
+            paths = capture_register_run(manifest, destination, session=self._session())
+
+            self.assertTrue(parent.is_dir())
+            self.assertEqual(paths["capture"], destination / "register-capture.json")
+
+            deep_parent = root / "missing-one" / "missing-two"
+            with self.assertRaisesRegex(CaptureRegisterError, "one missing output parent"):
+                capture_register_run(
+                    manifest,
+                    deep_parent / "capture",
+                    session=self._session(),
+                )
+            self.assertFalse((root / "missing-one").exists())
+
+    def test_invalid_manifest_never_creates_the_permitted_missing_parent(self) -> None:
+        """Filesystem mutation must occur only after the source snapshot validates."""
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            manifest = self._manifest(root, content=b"[]")
+            parent = root / "new-parent"
+            with self.assertRaisesRegex(CaptureRegisterError, "non-empty array"):
+                capture_register_run(
+                    manifest,
+                    parent / "capture",
+                    session=self._session(),
+                )
+            self.assertFalse(parent.exists())
+
+    def test_rejects_unsafe_or_existing_destinations_without_mutation(self) -> None:
+        """No overwrite or ambiguous output name may enter the capture transaction."""
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            manifest = self._manifest(root)
+            for index, name in enumerate((".hidden", "bad name", "-option")):
+                with self.subTest(name=name):
+                    destination = root / name
+                    with self.assertRaisesRegex(CaptureRegisterError, "name is unsafe"):
+                        capture_register_run(
+                            manifest,
+                            destination,
+                            session=self._session(),
+                        )
+                    self.assertFalse(destination.exists(), index)
+
+            existing_file = root / "existing-file"
+            existing_file.write_bytes(b"prior bytes")
+            existing_directory = root / "existing-directory"
+            existing_directory.mkdir()
+            sentinel = existing_directory / "sentinel.txt"
+            sentinel.write_bytes(b"prior directory")
+            for destination in (existing_file, existing_directory, manifest):
+                with self.subTest(destination=destination.name):
+                    with self.assertRaisesRegex(CaptureRegisterError, "must not exist"):
+                        capture_register_run(
+                            manifest,
+                            destination,
+                            session=self._session(),
+                        )
+            self.assertEqual(existing_file.read_bytes(), b"prior bytes")
+            self.assertEqual(sentinel.read_bytes(), b"prior directory")
+            self.assertEqual(manifest.read_bytes(), json_bytes([manifest_row()]))
+
+    def test_rejects_linked_manifest_ancestor_and_output_parent(self) -> None:
+        """A linked ancestor must not redirect either the source or the official output."""
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            real_source = root / "real-source"
+            real_source.mkdir()
+            manifest = self._manifest(real_source)
+            source_link = root / "source-link"
+            real_output = root / "real-output"
+            real_output.mkdir()
+            output_link = root / "output-link"
+            try:
+                source_link.symlink_to(real_source, target_is_directory=True)
+                output_link.symlink_to(real_output, target_is_directory=True)
+            except OSError as exc:
+                self.skipTest(f"symbolic links are unavailable: {exc}")
+
+            with self.assertRaisesRegex(CaptureRegisterError, "ordinary ancestors"):
+                capture_register_run(
+                    source_link / "manifest.json",
+                    root / "capture-source",
+                    session=self._session(),
+                )
+            with self.assertRaisesRegex(CaptureRegisterError, "ordinary directory"):
+                capture_register_run(
+                    manifest,
+                    output_link / "capture",
+                    session=self._session(),
+                )
+            self.assertEqual(list(real_output.iterdir()), [])
+
+    def test_reparse_output_parent_is_rejected_before_network_or_write(self) -> None:
+        """Windows reparse metadata must fail even when the object otherwise looks like a directory."""
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            manifest = self._manifest(root)
+            output_parent = root / "output"
+            output_parent.mkdir()
+            real_lstat = os.lstat
+
+            def marked_lstat(path: object) -> object:
+                details = real_lstat(path)
+                if Path(path) == output_parent:
+                    marked = mock.Mock(wraps=details)
+                    marked.st_mode = details.st_mode
+                    marked.st_file_attributes = 0x400
+                    return marked
+                return details
+
+            with (
+                mock.patch.object(capture_module.os, "lstat", side_effect=marked_lstat),
+                self.assertRaisesRegex(CaptureRegisterError, "ordinary directory"),
+            ):
+                capture_register_run(
+                    manifest,
+                    output_parent / "capture",
+                    session=self._session(),
+                )
+            self.assertEqual(list(output_parent.iterdir()), [])
+
+    def test_raced_destination_is_preserved_and_staging_is_removed(self) -> None:
+        """A destination appearing before promotion belongs to another writer."""
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            manifest = self._manifest(root)
+            destination = root / "capture"
+            original_validator = capture_module._validate_staged_graph
+
+            def race_after_validation(staging: Path) -> None:
+                original_validator(staging)
+                destination.mkdir()
+                (destination / "other-writer.txt").write_bytes(b"preserve me")
+
+            with (
+                mock.patch.object(
+                    capture_module,
+                    "_validate_staged_graph",
+                    side_effect=race_after_validation,
+                ),
+                self.assertRaisesRegex(CaptureRegisterError, "must not exist"),
+            ):
+                capture_register_run(manifest, destination, session=self._session())
+            self.assertEqual(
+                (destination / "other-writer.txt").read_bytes(), b"preserve me"
+            )
+            self.assertEqual(list(root.glob(".capture.register-capture-*.tmp")), [])
+
+    def test_write_and_promotion_failures_remove_only_owned_staging(self) -> None:
+        """Handled output failures must leave unrelated siblings and the destination untouched."""
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            manifest = self._manifest(root)
+            unrelated = root / "unrelated.txt"
+            unrelated.write_bytes(b"keep")
+
+            destination = root / "write-failure"
+            with (
+                mock.patch.object(
+                    capture_module,
+                    "_write_new",
+                    side_effect=OSError("private write detail"),
+                ),
+                self.assertRaisesRegex(CaptureRegisterError, "could not be written"),
+            ):
+                capture_register_run(manifest, destination, session=self._session())
+            self.assertFalse(destination.exists())
+            self.assertEqual(list(root.glob(".write-failure.register-capture-*.tmp")), [])
+
+            destination = root / "promotion-failure"
+            with (
+                mock.patch.object(
+                    capture_module.os,
+                    "rename",
+                    side_effect=OSError("private rename detail"),
+                ),
+                self.assertRaisesRegex(CaptureRegisterError, "could not be promoted"),
+            ):
+                capture_register_run(manifest, destination, session=self._session())
+            self.assertFalse(destination.exists())
+            self.assertEqual(
+                list(root.glob(".promotion-failure.register-capture-*.tmp")), []
+            )
+            self.assertEqual(unrelated.read_bytes(), b"keep")
 
 
 if __name__ == "__main__":
