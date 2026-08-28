@@ -13,6 +13,7 @@ import hashlib
 import json
 import os
 import shutil
+import stat
 import uuid
 from collections.abc import Mapping
 from dataclasses import dataclass
@@ -20,6 +21,7 @@ from pathlib import Path
 from typing import Any, Protocol
 from urllib.parse import quote, urlencode
 
+from .corpus_paths import is_reparse_point
 from .corpus_paths import register_id as validate_register_id
 
 
@@ -51,10 +53,24 @@ RETAINED_HEADER_NAMES = {
     "x-frl-version",
 }
 MAX_RESPONSE_BYTES = 256 * 1024
+MAX_MANIFEST_BYTES = 8 * 1024 * 1024
 
 
 class CaptureRegisterError(ValueError):
     """Raised when a complete, self-consistent capture cannot be produced."""
+
+
+class _DuplicateJsonMemberError(ValueError):
+    """Internal signal for an ambiguous JSON object at any depth."""
+
+
+def _reject_duplicate_json_members(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
+    result: dict[str, Any] = {}
+    for key, value in pairs:
+        if key in result:
+            raise _DuplicateJsonMemberError
+        result[key] = value
+    return result
 
 
 @dataclass(frozen=True)
@@ -118,11 +134,37 @@ def _utc_timestamp(value: Any, field: str) -> str:
 
 
 def _load_manifest(path: Path) -> list[dict[str, Any]]:
+    is_junction = getattr(os.path, "isjunction", lambda _path: False)
     try:
-        raw = path.read_bytes()
-        value = json.loads(raw.decode("utf-8"))
-    except (OSError, UnicodeDecodeError, json.JSONDecodeError) as exc:
-        raise CaptureRegisterError(f"manifest is unreadable JSON: {exc}.") from exc
+        details = os.lstat(path)
+    except OSError as exc:
+        raise CaptureRegisterError("manifest must be an ordinary file.") from exc
+    if (
+        not stat.S_ISREG(details.st_mode)
+        or os.path.islink(path)
+        or is_junction(path)
+        or is_reparse_point(path)
+    ):
+        raise CaptureRegisterError("manifest must be an ordinary file.")
+    if details.st_size > MAX_MANIFEST_BYTES:
+        raise CaptureRegisterError("manifest exceeds the 8 MiB size limit.")
+    try:
+        with open(path, "rb") as source:
+            raw = source.read(MAX_MANIFEST_BYTES + 1)
+    except OSError as exc:
+        raise CaptureRegisterError("manifest could not be read.") from exc
+    if len(raw) > MAX_MANIFEST_BYTES:
+        raise CaptureRegisterError("manifest exceeds the 8 MiB size limit.")
+    try:
+        text = raw.decode("utf-8")
+    except UnicodeDecodeError as exc:
+        raise CaptureRegisterError("manifest must be strict UTF-8.") from exc
+    try:
+        value = json.loads(text, object_pairs_hook=_reject_duplicate_json_members)
+    except _DuplicateJsonMemberError as exc:
+        raise CaptureRegisterError("manifest contains a duplicate JSON member.") from exc
+    except json.JSONDecodeError as exc:
+        raise CaptureRegisterError("manifest is invalid JSON.") from exc
     if not isinstance(value, list) or not value:
         raise CaptureRegisterError("manifest must be a non-empty array.")
     rows: list[dict[str, Any]] = []
@@ -137,7 +179,10 @@ def _project_baseline(rows: list[dict[str, Any]]) -> dict[str, Any]:
     titles: list[dict[str, Any]] = []
     seen: set[str] = set()
     for index, row in enumerate(rows, start=1):
-        title_id = validate_register_id(row.get("id"))
+        try:
+            title_id = validate_register_id(row.get("id"))
+        except ValueError as exc:
+            raise CaptureRegisterError(str(exc)) from exc
         if title_id in seen:
             raise CaptureRegisterError("manifest contains duplicate Register identifiers.")
         seen.add(title_id)
@@ -304,12 +349,12 @@ def capture_register_run(
     observed_at = _utc_timestamp(session.observed_at, "session observed_at")
     manifest = Path(os.path.abspath(os.fspath(manifest_path)))
     output = Path(os.path.abspath(os.fspath(destination)))
+    baseline = _project_baseline(_load_manifest(manifest))
     if output.exists() or output.is_symlink():
         raise CaptureRegisterError(f"capture destination must not exist: {output}.")
     if not output.parent.is_dir():
         raise CaptureRegisterError(f"capture destination parent does not exist: {output.parent}.")
 
-    baseline = _project_baseline(_load_manifest(manifest))
     baseline_content = _json_bytes(baseline)
     baseline_sha256 = _sha256_id(baseline_content)
     evidence: dict[str, bytes] = {}
