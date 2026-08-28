@@ -23,6 +23,7 @@ python -m fadden pii_scan      # -> fadden/pii_flagged.json   (mandatory; finali
 python -m fadden pii_scan2     # -> refines fadden/pii_flagged.json
 python -m fadden finalize      # -> ./corpus/sources.json, INDEX.md, README.md, LICENCE-NOTICE.md
 python -m fadden rates         # -> ./corpus/rates/rates.jsonl, RATES.md
+python -m fadden capture_register -- fadden/manifest_md.json --out build/register-capture-20260829
 
 # deployed corpus (flat scripts copied into build/)
 cd C:\ato-kb\build
@@ -66,6 +67,49 @@ observation is allowed only with `complete: false`, so the monitor blocks rather
 than inferring that unobserved titles are unchanged. The output is a review
 queue input, not an authorised-text claim, legal conclusion or workflow change.
 
+## Capturing live Register evidence
+
+`capture_register.py` observes every title in a rich corpus manifest directly
+against the Federal Register and preserves the exact bounded HTTP 200 response
+bytes used for each decision:
+
+```bash
+python -m fadden capture_register -- fadden/manifest_md.json --out build/register-capture-20260829
+```
+
+The destination must not exist. Its immediate parent may be one absent,
+safe-named directory whose parent already exists. The command validates the
+manifest before filesystem creation, queries titles in Register-id order,
+builds under a private sibling, re-reads every output and digest, then promotes
+the four-part graph with one directory rename:
+
+```text
+register-capture-20260829/
+  monitor-baseline.json
+  register-capture.json
+  register-observation.json
+  evidence/sha256-<digest>.json
+```
+
+The current 946-title manifest requires at least 946 requests. The enforced
+1.5-second gap makes a no-retry run about 24 minutes; an empty current-version
+result adds one history request, and retryable failures add six-second waits.
+Run incremental operational work outside the Register's preferred 08:00-20:00
+Australian window. The API needs no key. The adapter refuses redirects, uses a
+90-second socket timeout and makes at most three attempts.
+
+`VERIFIED` means every manifest identifier was attempted exactly once and no
+title ended in `LOOKUP_FAILED`. A complete capture containing source or
+consistency failures is still retained, with `run_status: BLOCKED`, so the
+failure evidence is auditable. `CURRENT_NO_PUBLISHED_COMPILATION` and
+`NO_LONGER_IN_FORCE` are valid observations but never publication candidates.
+
+This is local source capture, not publication authority. Register responses
+are authenticated in transit by HTTPS but are not individually government
+signed. Do not commit raw captures. Stage 3B must transport the retained bytes
+with authenticated producer provenance, prescribed Register attribution and
+publisher-side revalidation before any live development can be admitted.
+
 ## Exporting publication evidence bundles
 
 The publisher contract currently has one synthetic conformance path:
@@ -90,9 +134,10 @@ under a private sibling and renames that complete directory into place. A
 failure removes only that private staging directory. The bundle is metadata-only
 and contains no source extract, impact assessment or explainer.
 
-There is no live Federal Register observer in this repository. The adapter and
-its fixtures emit `mode: synthetic`; passing this contract test does not make a
-development current or ready for professional publication.
+The publication adapter and its fixtures still accept only `mode: synthetic`
+v3 input. The live capture emits v4 and is deliberately incompatible; passing
+either contract test does not make a development ready for professional
+publication.
 
 In a source checkout the intermediates are regenerated, not shipped: the
 .gitignore keeps titles_all.json, acts_resolved.json, manifest_raw.json and the

@@ -8,6 +8,7 @@ this module.
 
 from __future__ import annotations
 
+import argparse
 import datetime as dt
 import hashlib
 import http.client
@@ -23,7 +24,7 @@ import uuid
 from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Protocol
+from typing import Any, Protocol, Sequence
 from urllib.parse import quote, urlencode, urlsplit
 
 from .corpus_paths import is_reparse_point
@@ -1353,3 +1354,29 @@ def capture_register_run(
         "capture": output / "register-capture.json",
         "observation": output / "register-observation.json",
     }
+
+
+def main(argv: Sequence[str] | None = None) -> int:
+    """Capture complete live Register metadata into one immutable directory."""
+    parser = argparse.ArgumentParser(
+        description="Capture complete live Federal Register metadata evidence."
+    )
+    parser.add_argument("manifest", type=Path, help="rich corpus manifest JSON")
+    parser.add_argument(
+        "--out",
+        required=True,
+        type=Path,
+        help="new immutable capture directory",
+    )
+    args = parser.parse_args(argv)
+    try:
+        paths = capture_register_run(args.manifest, args.out)
+    except CaptureRegisterError as exc:
+        parser.error(str(exc))
+    for role in ("baseline", "capture", "observation"):
+        print(f"{role}: {paths[role]}")
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

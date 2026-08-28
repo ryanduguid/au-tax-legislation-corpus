@@ -9,6 +9,8 @@ import os
 import tempfile
 import unittest
 import urllib.error
+from contextlib import redirect_stderr, redirect_stdout
+from io import StringIO
 from pathlib import Path
 from unittest import mock
 
@@ -17,6 +19,10 @@ from fadden.capture_register import (
     CaptureRegisterError,
     RegisterExchange,
     capture_register_run,
+)
+from fadden.export_publication_bundles import (
+    PublicationBundleError,
+    export_publication_bundles,
 )
 
 
@@ -1709,6 +1715,115 @@ class LiveRegisterCaptureFilesystemTests(unittest.TestCase):
                 list(root.glob(".promotion-failure.register-capture-*.tmp")), []
             )
             self.assertEqual(unrelated.read_bytes(), b"keep")
+
+
+class LiveRegisterCaptureCliTests(unittest.TestCase):
+    def test_cli_captures_and_reports_the_three_contract_paths(self) -> None:
+        """Breaking argument delegation or path reporting must fail the public command."""
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            manifest = root / "manifest.json"
+            manifest.write_bytes(json_bytes([manifest_row()]))
+            destination = root / "capture"
+            session = MemorySession(
+                {
+                    CURRENT_URL: [
+                        successful_exchange(CURRENT_BODY, "2026-08-29T16:00:01Z")
+                    ]
+                }
+            )
+            stdout = StringIO()
+            with (
+                mock.patch.object(
+                    capture_module,
+                    "_HttpsRegisterSession",
+                    return_value=session,
+                ),
+                redirect_stdout(stdout),
+            ):
+                result = capture_module.main(
+                    [str(manifest), "--out", str(destination)]
+                )
+
+            self.assertEqual(result, 0)
+            self.assertEqual(
+                stdout.getvalue().splitlines(),
+                [
+                    f"baseline: {destination / 'monitor-baseline.json'}",
+                    f"capture: {destination / 'register-capture.json'}",
+                    f"observation: {destination / 'register-observation.json'}",
+                ],
+            )
+            self.assertTrue((destination / "register-capture.json").is_file())
+
+    def test_cli_uses_exit_two_and_a_bounded_error_for_invalid_input(self) -> None:
+        """Local paths and source bytes must not leak through an argparse failure."""
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            manifest = root / "manifest.json"
+            manifest.write_bytes(b"[]")
+            stderr = StringIO()
+            with (
+                mock.patch.object(
+                    capture_module,
+                    "_HttpsRegisterSession",
+                    return_value=MemorySession({}),
+                ),
+                redirect_stderr(stderr),
+                self.assertRaises(SystemExit) as raised,
+            ):
+                capture_module.main(
+                    [str(manifest), "--out", str(root / "capture")]
+                )
+            self.assertEqual(raised.exception.code, 2)
+            self.assertIn("manifest must be a non-empty array", stderr.getvalue())
+            self.assertNotIn(str(root), stderr.getvalue())
+
+    def test_cli_requires_manifest_and_output_arguments(self) -> None:
+        """An accidental implicit source or destination would make a live run ambiguous."""
+        with redirect_stderr(StringIO()), self.assertRaises(SystemExit) as raised:
+            capture_module.main([])
+        self.assertEqual(raised.exception.code, 2)
+
+
+class LiveRegisterPublicationBoundaryTests(unittest.TestCase):
+    def test_existing_publisher_rejects_live_v4_observation(self) -> None:
+        """Stage 3A evidence must not become publishable without the Stage 3B admission seam."""
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            manifest = root / "manifest.json"
+            manifest.write_bytes(json_bytes([manifest_row()]))
+            capture_paths = capture_register_run(
+                manifest,
+                root / "capture",
+                session=MemorySession(
+                    {
+                        CURRENT_URL: [
+                            successful_exchange(
+                                version_body(
+                                    "C2004A00467",
+                                    "2026-08-01",
+                                    "33",
+                                    "C2026C00333",
+                                ),
+                                "2026-08-29T17:00:01Z",
+                            )
+                        ]
+                    }
+                ),
+            )
+            publication_output = root / "publication"
+
+            with self.assertRaisesRegex(
+                PublicationBundleError,
+                "schema_version is unsupported",
+            ):
+                export_publication_bundles(
+                    capture_paths["baseline"],
+                    capture_paths["observation"],
+                    publication_output,
+                )
+            self.assertFalse(publication_output.exists())
 
 
 if __name__ == "__main__":
