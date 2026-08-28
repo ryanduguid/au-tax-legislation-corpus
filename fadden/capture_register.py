@@ -13,6 +13,7 @@ import hashlib
 import http.client
 import json
 import os
+import re
 import shutil
 import stat
 import time
@@ -62,6 +63,27 @@ MAX_MANIFEST_BYTES = 8 * 1024 * 1024
 MAX_ATTEMPTS = 3
 RETRY_DELAY_SECONDS = 6.0
 REQUEST_DELAY_SECONDS = 1.5
+SHA256_ID = re.compile(r"sha256:[0-9a-f]{64}\Z")
+EVIDENCE_NAME = re.compile(r"sha256-([0-9a-f]{64})\.json\Z")
+OBSERVATION_STATES = {
+    "UNCHANGED",
+    "SUPERSEDED",
+    "CURRENT_NO_PUBLISHED_COMPILATION",
+    "NO_LONGER_IN_FORCE",
+    "LOOKUP_FAILED",
+}
+FAILURE_CATEGORIES = {
+    "TRANSPORT_ERROR",
+    "HTTP_STATUS",
+    "RESPONSE_TOO_LARGE",
+    "UNSUPPORTED_MEDIA_TYPE",
+    "INVALID_JSON",
+    "INVALID_ODATA_SHAPE",
+    "IDENTITY_MISMATCH",
+    "INCONSISTENT_CHRONOLOGY",
+    "INVALID_EXCHANGE",
+    "NO_VERSION_EVIDENCE",
+}
 
 
 class CaptureRegisterError(ValueError):
@@ -592,7 +614,11 @@ def _evaluate_exchange(
         ),
         "attempt_count": (
             exchange.attempts
-            if isinstance(exchange.attempts, int) and not isinstance(exchange.attempts, bool)
+            if (
+                isinstance(exchange.attempts, int)
+                and not isinstance(exchange.attempts, bool)
+                and 1 <= exchange.attempts <= MAX_ATTEMPTS
+            )
             else 0
         ),
         "response_headers": headers,
@@ -720,6 +746,404 @@ def _observe_title(
     return result, observation
 
 
+def _require_staged_directory(path: Path) -> None:
+    try:
+        details = os.lstat(path)
+    except OSError as exc:
+        raise CaptureRegisterError("staged capture directory is unavailable") from exc
+    if (
+        not stat.S_ISDIR(details.st_mode)
+        or os.path.islink(path)
+        or getattr(os.path, "isjunction", lambda _path: False)(path)
+        or is_reparse_point(path)
+    ):
+        raise CaptureRegisterError("staged capture contains a non-ordinary directory")
+
+
+def _read_staged_file(path: Path) -> bytes:
+    try:
+        details = os.lstat(path)
+    except OSError as exc:
+        raise CaptureRegisterError("staged capture file is unavailable") from exc
+    if (
+        not stat.S_ISREG(details.st_mode)
+        or os.path.islink(path)
+        or getattr(os.path, "isjunction", lambda _path: False)(path)
+        or is_reparse_point(path)
+    ):
+        raise CaptureRegisterError("staged capture contains a non-ordinary file")
+    try:
+        with open(path, "rb") as source:
+            return source.read()
+    except OSError as exc:
+        raise CaptureRegisterError("staged capture file could not be read") from exc
+
+
+def _load_generated_object(path: Path) -> tuple[bytes, dict[str, Any]]:
+    content = _read_staged_file(path)
+    try:
+        document = json.loads(
+            content.decode("utf-8"), object_pairs_hook=_reject_duplicate_json_members
+        )
+    except (UnicodeDecodeError, json.JSONDecodeError, _DuplicateJsonMemberError) as exc:
+        raise CaptureRegisterError("staged capture JSON is invalid") from exc
+    if not isinstance(document, dict) or content != _json_bytes(document):
+        raise CaptureRegisterError("staged capture JSON bytes are non-canonical")
+    return content, document
+
+
+def _require_exact_fields(value: dict[str, Any], fields: set[str]) -> None:
+    if set(value) != fields:
+        raise CaptureRegisterError("staged capture object shape is invalid")
+
+
+def _validate_staged_graph_inner(staging: Path) -> None:
+    _require_staged_directory(staging)
+    try:
+        root_entries = {path.name for path in staging.iterdir()}
+    except OSError as exc:
+        raise CaptureRegisterError("staged capture layout could not be read") from exc
+    if root_entries != {
+        "monitor-baseline.json",
+        "register-capture.json",
+        "register-observation.json",
+        "evidence",
+    }:
+        raise CaptureRegisterError("staged capture root layout is invalid")
+
+    evidence_directory = staging / "evidence"
+    _require_staged_directory(evidence_directory)
+    baseline_content, baseline = _load_generated_object(staging / "monitor-baseline.json")
+    capture_content, capture = _load_generated_object(staging / "register-capture.json")
+    _observation_content, observation = _load_generated_object(
+        staging / "register-observation.json"
+    )
+
+    _require_exact_fields(
+        baseline, {"corpus", "retrieved", "source", "source_api", "titles"}
+    )
+    if (
+        baseline["corpus"] != "Commonwealth tax statutes and legislative instruments"
+        or baseline["source"] != "Federal Register of Legislation"
+        or baseline["source_api"] != SOURCE_API
+        or not isinstance(baseline["titles"], list)
+        or not baseline["titles"]
+    ):
+        raise CaptureRegisterError("staged capture baseline is invalid")
+    _date(baseline["retrieved"], "baseline retrieved")
+    title_fields = {
+        "register_id",
+        "name",
+        "collection",
+        "compilation_number",
+        "compilation_date",
+        "version_is_current",
+        "current_version_start",
+        "retrieved",
+        "source_url",
+        "register_page",
+    }
+    titles_by_id: dict[str, dict[str, Any]] = {}
+    title_order: list[str] = []
+    for title in baseline["titles"]:
+        if not isinstance(title, dict):
+            raise CaptureRegisterError("staged capture baseline title is invalid")
+        _require_exact_fields(title, title_fields)
+        try:
+            title_id = validate_register_id(title["register_id"])
+        except ValueError as exc:
+            raise CaptureRegisterError("staged capture baseline identity is invalid") from exc
+        if title_id in titles_by_id:
+            raise CaptureRegisterError("staged capture baseline identity is duplicated")
+        if title["collection"] not in {
+            "Act",
+            "LegislativeInstrument",
+            "NotifiableInstrument",
+        }:
+            raise CaptureRegisterError("staged capture baseline collection is invalid")
+        compilation_date = _date(title["compilation_date"], "baseline compilation date")
+        _date(title["retrieved"], "baseline title retrieved")
+        if not isinstance(title["version_is_current"], bool):
+            raise CaptureRegisterError("staged capture baseline current flag is invalid")
+        current_start = title["current_version_start"]
+        if current_start is not None:
+            _date(current_start, "baseline current version start")
+        if not title["version_is_current"] and current_start is None:
+            raise CaptureRegisterError("staged capture baseline current date is missing")
+        _required_text(title["name"], "baseline title name")
+        _required_text(title["compilation_number"], "baseline compilation number")
+        expected_source = (
+            f"{REGISTER_SITE}/{title_id}/{compilation_date}/{compilation_date}/"
+            "text/original/epub"
+        )
+        if title["source_url"] != expected_source:
+            raise CaptureRegisterError("staged capture baseline source URL is invalid")
+        if title["register_page"] != f"{REGISTER_SITE}/{title_id}/latest/text":
+            raise CaptureRegisterError("staged capture baseline page URL is invalid")
+        titles_by_id[title_id] = title
+        title_order.append(title_id)
+    if title_order != sorted(title_order):
+        raise CaptureRegisterError("staged capture baseline order is invalid")
+    if baseline["retrieved"] != max(title["retrieved"] for title in baseline["titles"]):
+        raise CaptureRegisterError("staged capture baseline retrieval date is invalid")
+
+    capture_fields = {
+        "schema_version",
+        "mode",
+        "observed_at",
+        "source_api",
+        "baseline_sha256",
+        "expected_register_ids",
+        "complete",
+        "results",
+    }
+    _require_exact_fields(capture, capture_fields)
+    if (
+        capture["schema_version"] != CAPTURE_SCHEMA
+        or capture["mode"] != "live"
+        or capture["source_api"] != SOURCE_API
+        or capture["baseline_sha256"] != _sha256_id(baseline_content)
+        or capture["expected_register_ids"] != title_order
+        or capture["complete"] is not True
+        or not isinstance(capture["results"], list)
+        or len(capture["results"]) != len(title_order)
+    ):
+        raise CaptureRegisterError("staged capture manifest is inconsistent")
+    _utc_timestamp(capture["observed_at"], "capture observed_at")
+
+    result_fields = {
+        "register_id",
+        "collection",
+        "checked_at",
+        "state",
+        "error_category",
+        "requests",
+    }
+    request_fields = {
+        "role",
+        "url",
+        "checked_at",
+        "http_status",
+        "transport_error_category",
+        "attempt_count",
+        "response_headers",
+        "response_length",
+        "response_sha256",
+        "evidence_path",
+    }
+    declared_evidence: dict[str, tuple[str, int]] = {}
+    results_by_id: dict[str, dict[str, Any]] = {}
+    for index, result in enumerate(capture["results"]):
+        if not isinstance(result, dict):
+            raise CaptureRegisterError("staged capture result is invalid")
+        _require_exact_fields(result, result_fields)
+        title_id = result["register_id"]
+        if title_id != title_order[index] or title_id in results_by_id:
+            raise CaptureRegisterError("staged capture result identity is invalid")
+        title = titles_by_id[title_id]
+        if result["collection"] != title["collection"]:
+            raise CaptureRegisterError("staged capture result collection is invalid")
+        state = result["state"]
+        if state not in OBSERVATION_STATES:
+            raise CaptureRegisterError("staged capture result state is invalid")
+        error_category = result["error_category"]
+        if (state == "LOOKUP_FAILED") != (error_category in FAILURE_CATEGORIES):
+            raise CaptureRegisterError("staged capture result failure category is invalid")
+        requests = result["requests"]
+        if not isinstance(requests, list) or not 1 <= len(requests) <= 2:
+            raise CaptureRegisterError("staged capture request list is invalid")
+        if [request.get("role") for request in requests if isinstance(request, dict)] != (
+            ["current"] if len(requests) == 1 else ["current", "history"]
+        ):
+            raise CaptureRegisterError("staged capture request roles are invalid")
+        for request in requests:
+            if not isinstance(request, dict):
+                raise CaptureRegisterError("staged capture request is invalid")
+            _require_exact_fields(request, request_fields)
+            role = request["role"]
+            expected_url = _current_url(title_id) if role == "current" else _history_url(title_id)
+            if request["url"] != expected_url:
+                raise CaptureRegisterError("staged capture request URL is invalid")
+            _utc_timestamp(request["checked_at"], "request checked_at")
+            if (
+                not isinstance(request["attempt_count"], int)
+                or isinstance(request["attempt_count"], bool)
+                or not 0 <= request["attempt_count"] <= MAX_ATTEMPTS
+                or not isinstance(request["response_headers"], dict)
+                or set(request["response_headers"]) - RETAINED_HEADER_NAMES
+            ):
+                raise CaptureRegisterError("staged capture request metadata is invalid")
+            try:
+                if _normalised_headers(request["response_headers"]) != request["response_headers"]:
+                    raise CaptureRegisterError("staged capture headers are non-canonical")
+            except CaptureRegisterError as exc:
+                raise CaptureRegisterError("staged capture request headers are invalid") from exc
+            digest = request["response_sha256"]
+            evidence_path = request["evidence_path"]
+            response_length = request["response_length"]
+            if digest is None:
+                if evidence_path is not None or response_length is not None:
+                    raise CaptureRegisterError("staged capture empty response declaration is invalid")
+            else:
+                if (
+                    not isinstance(digest, str)
+                    or SHA256_ID.fullmatch(digest) is None
+                    or request["http_status"] != 200
+                    or not isinstance(response_length, int)
+                    or isinstance(response_length, bool)
+                    or not 0 <= response_length <= MAX_RESPONSE_BYTES
+                ):
+                    raise CaptureRegisterError("staged capture response declaration is invalid")
+                digest_hex = digest.removeprefix("sha256:")
+                expected_path = f"evidence/sha256-{digest_hex}.json"
+                if evidence_path != expected_path:
+                    raise CaptureRegisterError("staged capture evidence path is invalid")
+                declared_evidence[expected_path] = (digest, response_length)
+        if result["checked_at"] != requests[-1]["checked_at"]:
+            raise CaptureRegisterError("staged capture result timestamp is invalid")
+        results_by_id[title_id] = result
+
+    try:
+        evidence_files = list(evidence_directory.iterdir())
+    except OSError as exc:
+        raise CaptureRegisterError("staged capture evidence layout could not be read") from exc
+    actual_evidence = {f"evidence/{path.name}" for path in evidence_files}
+    if actual_evidence != set(declared_evidence):
+        raise CaptureRegisterError("staged capture evidence inventory is invalid")
+    for path in evidence_files:
+        match = EVIDENCE_NAME.fullmatch(path.name)
+        if match is None:
+            raise CaptureRegisterError("staged capture evidence filename is invalid")
+        content = _read_staged_file(path)
+        digest, expected_length = declared_evidence[f"evidence/{path.name}"]
+        if len(content) != expected_length or _sha256_id(content) != digest:
+            raise CaptureRegisterError("staged capture evidence digest is invalid")
+
+    observation_fields = {
+        "schema_version",
+        "mode",
+        "observed_at",
+        "scope_id",
+        "baseline_sha256",
+        "capture_sha256",
+        "expected_register_ids",
+        "complete",
+        "run_status",
+        "observations",
+    }
+    _require_exact_fields(observation, observation_fields)
+    expected_run_status = (
+        "BLOCKED"
+        if any(result["state"] == "LOOKUP_FAILED" for result in capture["results"])
+        else "VERIFIED"
+    )
+    if (
+        observation["schema_version"] != OBSERVATION_SCHEMA
+        or observation["mode"] != "live"
+        or observation["observed_at"] != capture["observed_at"]
+        or observation["scope_id"] != OBSERVATION_SCOPE
+        or observation["baseline_sha256"] != capture["baseline_sha256"]
+        or observation["capture_sha256"] != _sha256_id(capture_content)
+        or observation["expected_register_ids"] != title_order
+        or observation["complete"] is not True
+        or observation["run_status"] != expected_run_status
+        or not isinstance(observation["observations"], list)
+        or len(observation["observations"]) != len(title_order)
+    ):
+        raise CaptureRegisterError("staged capture observation is inconsistent")
+
+    item_fields = {
+        "register_id",
+        "collection",
+        "state",
+        "evidence_id",
+        "observed_compilation_number",
+        "observed_compilation_date",
+        "observed_register_document_id",
+        "current_version_start",
+        "evidence_url",
+        "checked_at",
+        "error_category",
+        "capture_result_sha256",
+        "primary_response_sha256",
+        "primary_response_media_type",
+    }
+    for index, item in enumerate(observation["observations"]):
+        if not isinstance(item, dict):
+            raise CaptureRegisterError("staged capture observation item is invalid")
+        _require_exact_fields(item, item_fields)
+        title_id = title_order[index]
+        result = results_by_id[title_id]
+        title = titles_by_id[title_id]
+        result_sha256 = _sha256_id(_json_bytes(result))
+        if (
+            item["register_id"] != title_id
+            or item["collection"] != title["collection"]
+            or item["state"] != result["state"]
+            or item["checked_at"] != result["checked_at"]
+            or item["error_category"] != result["error_category"]
+            or item["evidence_url"] != title["register_page"]
+            or item["capture_result_sha256"] != result_sha256
+            or item["evidence_id"]
+            != f"frl:{title_id}:{result_sha256.removeprefix('sha256:')[:32]}"
+        ):
+            raise CaptureRegisterError("staged capture observation item is inconsistent")
+        primary_request = result["requests"][0]
+        if item["primary_response_sha256"] != primary_request["response_sha256"]:
+            raise CaptureRegisterError("staged capture primary digest is inconsistent")
+        content_type = primary_request["response_headers"].get("content-type")
+        expected_media = (
+            content_type.split(";", 1)[0].strip().lower()
+            if primary_request["response_sha256"] is not None and content_type is not None
+            else None
+        )
+        if item["primary_response_media_type"] != expected_media:
+            raise CaptureRegisterError("staged capture primary media type is inconsistent")
+        conditional = {
+            "observed_compilation_number",
+            "observed_compilation_date",
+            "observed_register_document_id",
+            "current_version_start",
+            "error_category",
+        }
+        required = {
+            "UNCHANGED": set(),
+            "SUPERSEDED": {
+                "observed_compilation_number",
+                "observed_compilation_date",
+                "observed_register_document_id",
+            },
+            "CURRENT_NO_PUBLISHED_COMPILATION": {"current_version_start"},
+            "NO_LONGER_IN_FORCE": set(),
+            "LOOKUP_FAILED": {"error_category"},
+        }[item["state"]]
+        if any(item[field] is not None for field in conditional - required):
+            raise CaptureRegisterError("staged capture state fields are inconsistent")
+        if any(item[field] is None for field in required):
+            raise CaptureRegisterError("staged capture required state field is missing")
+        if item["observed_compilation_date"] is not None:
+            _date(item["observed_compilation_date"], "observed compilation date")
+        if item["current_version_start"] is not None:
+            _date(item["current_version_start"], "observed current version start")
+        if item["observed_register_document_id"] is not None:
+            try:
+                validate_register_id(item["observed_register_document_id"])
+            except ValueError as exc:
+                raise CaptureRegisterError("staged capture document identity is invalid") from exc
+
+
+def _validate_staged_graph(staging: Path) -> None:
+    """Re-read and prove the complete staged graph immediately before promotion."""
+    try:
+        _validate_staged_graph_inner(staging)
+    except CaptureRegisterError as exc:
+        if str(exc).startswith("staged capture"):
+            raise
+        raise CaptureRegisterError("staged capture graph is invalid") from exc
+    except (OSError, TypeError, ValueError) as exc:
+        raise CaptureRegisterError("staged capture graph is invalid") from exc
+
+
 def _write_new(path: Path, content: bytes) -> None:
     with open(path, "xb") as target:
         target.write(content)
@@ -796,6 +1220,7 @@ def capture_register_run(
             _write_new(staging / relative_path, content)
         _write_new(staging / "register-capture.json", capture_content)
         _write_new(staging / "register-observation.json", observation_content)
+        _validate_staged_graph(staging)
         if output.exists() or output.is_symlink():
             raise CaptureRegisterError(f"capture destination must not exist: {output}.")
         os.rename(staging, output)

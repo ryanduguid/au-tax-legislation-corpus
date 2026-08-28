@@ -1348,5 +1348,157 @@ class LiveRegisterProductionSessionTests(unittest.TestCase):
         self.assertEqual(len(list(evidence.iterdir())), 0)
 
 
+class LiveRegisterEvidenceGraphTests(unittest.TestCase):
+    def test_identical_failed_response_bytes_share_one_evidence_object(self) -> None:
+        """Dropping content addressing would create duplicate mutable evidence identities."""
+        malformed = b'{"same-malformed-response":'
+        later = manifest_row(
+            id="F2020L01498",
+            name="A New Tax System (Australian Business Number) Regulations 2020",
+            collection="LegislativeInstrument",
+            versionStart="2025-10-04",
+            compilationNumber="2",
+            sourceUrl=(
+                "https://www.legislation.gov.au/F2020L01498/"
+                "2025-10-04/2025-10-04/text/original/epub"
+            ),
+        )
+        session = MemorySession(
+            {
+                CURRENT_URL: [
+                    successful_exchange(malformed, "2026-08-29T12:00:01Z")
+                ],
+                INSTRUMENT_URL: [
+                    successful_exchange(malformed, "2026-08-29T12:00:02Z")
+                ],
+            }
+        )
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            manifest_path = root / "manifest.json"
+            manifest_path.write_bytes(json_bytes([later, manifest_row()]))
+            paths = capture_register_run(manifest_path, root / "capture", session=session)
+
+            capture = json.loads(paths["capture"].read_bytes())
+            evidence_files = list((root / "capture" / "evidence").iterdir())
+            self.assertEqual(len(evidence_files), 1)
+            self.assertEqual(evidence_files[0].read_bytes(), malformed)
+            declared = [
+                result["requests"][0]["response_sha256"]
+                for result in capture["results"]
+            ]
+            self.assertEqual(declared, [sha256_id(malformed), sha256_id(malformed)])
+
+    def test_repeated_inputs_exchanges_and_timestamps_are_byte_deterministic(self) -> None:
+        """Random staging names must never leak into the immutable graph bytes."""
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            manifest_path = root / "manifest.json"
+            manifest_path.write_bytes(json_bytes([manifest_row()]))
+            outputs: list[dict[str, bytes]] = []
+            for index in range(2):
+                session = MemorySession(
+                    {
+                        CURRENT_URL: [
+                            successful_exchange(CURRENT_BODY, "2026-08-29T13:00:01Z")
+                        ]
+                    }
+                )
+                destination = root / f"capture-{index}"
+                capture_register_run(manifest_path, destination, session=session)
+                outputs.append(
+                    {
+                        path.relative_to(destination).as_posix(): path.read_bytes()
+                        for path in destination.rglob("*")
+                        if path.is_file()
+                    }
+                )
+            self.assertEqual(outputs[0], outputs[1])
+
+    def test_final_revalidation_blocks_every_cross_file_tamper(self) -> None:
+        """A staged byte or declaration change must prevent the official rename."""
+        original_validator = capture_module._validate_staged_graph
+
+        def mutate_baseline(staging: Path) -> None:
+            path = staging / "monitor-baseline.json"
+            path.write_bytes(path.read_bytes() + b" ")
+
+        def mutate_capture_digest(staging: Path) -> None:
+            path = staging / "register-capture.json"
+            document = json.loads(path.read_bytes())
+            document["baseline_sha256"] = f"sha256:{'0' * 64}"
+            path.write_bytes(json_bytes(document))
+
+        def mutate_observation_digest(staging: Path) -> None:
+            path = staging / "register-observation.json"
+            document = json.loads(path.read_bytes())
+            document["capture_sha256"] = f"sha256:{'0' * 64}"
+            path.write_bytes(json_bytes(document))
+
+        def mutate_evidence(staging: Path) -> None:
+            path = next((staging / "evidence").iterdir())
+            path.write_bytes(path.read_bytes() + b"tamper")
+
+        def add_undeclared_evidence(staging: Path) -> None:
+            (staging / "evidence" / f"sha256-{'0' * 64}.json").write_bytes(b"extra")
+
+        def escape_relative_evidence_path(staging: Path) -> None:
+            capture_path = staging / "register-capture.json"
+            capture_document = json.loads(capture_path.read_bytes())
+            capture_document["results"][0]["requests"][0]["evidence_path"] = (
+                "../outside.json"
+            )
+            capture_content = json_bytes(capture_document)
+            capture_path.write_bytes(capture_content)
+            observation_path = staging / "register-observation.json"
+            observation_document = json.loads(observation_path.read_bytes())
+            observation_document["capture_sha256"] = sha256_id(capture_content)
+            observation_path.write_bytes(json_bytes(observation_document))
+
+        mutators = {
+            "baseline bytes": mutate_baseline,
+            "capture declaration": mutate_capture_digest,
+            "observation declaration": mutate_observation_digest,
+            "evidence bytes": mutate_evidence,
+            "undeclared evidence": add_undeclared_evidence,
+            "escaping evidence path": escape_relative_evidence_path,
+        }
+        for label, mutate in mutators.items():
+            with self.subTest(case=label), tempfile.TemporaryDirectory() as directory:
+                root = Path(directory)
+                manifest_path = root / "manifest.json"
+                manifest_path.write_bytes(json_bytes([manifest_row()]))
+                destination = root / "capture"
+                session = MemorySession(
+                    {
+                        CURRENT_URL: [
+                            successful_exchange(CURRENT_BODY, "2026-08-29T14:00:01Z")
+                        ]
+                    }
+                )
+
+                def tampering_validator(staging: Path) -> None:
+                    mutate(staging)
+                    original_validator(staging)
+
+                with (
+                    mock.patch.object(
+                        capture_module,
+                        "_validate_staged_graph",
+                        side_effect=tampering_validator,
+                    ),
+                    self.assertRaisesRegex(CaptureRegisterError, "staged capture"),
+                ):
+                    capture_register_run(
+                        manifest_path,
+                        destination,
+                        session=session,
+                    )
+                self.assertFalse(destination.exists())
+                self.assertEqual(
+                    list(root.glob(".capture.register-capture-*.tmp")), []
+                )
+
+
 if __name__ == "__main__":
     unittest.main()
