@@ -87,6 +87,19 @@ def _payload(kind: str, name: str) -> dict:
     return json.loads(sample_path(kind, name).read_text(encoding="utf-8"))
 
 
+def _v3_observation() -> dict:
+    observation = _payload("observations", "sample-register-observation-v2.json")
+    observation["schema_version"] = "au-tax-register-observation.v3"
+    observation["scope_id"] = "au-primary-tax-legislation.v3"
+    for item in observation["observations"]:
+        item.update(
+            content_sha256="sha256:" + "a" * 64,
+            content_kind="metadata-response",
+            content_media_type="application/json",
+        )
+    return observation
+
+
 def _compare_fixtures(tmp_path: Path, **mutated: dict) -> dict:
     """Run compare() over the shipped samples with any of the three replaced.
 
@@ -1674,6 +1687,35 @@ def test_nominal_v2_observation_loads_and_compares(tmp_path: Path) -> None:
     assert queue["items"][0]["change_kind"] == "SUPERSEDED"
 
 
+def test_nominal_v3_observation_loads_without_changing_the_queue_schema(
+    tmp_path: Path,
+) -> None:
+    queue = _compare_fixtures(tmp_path, observation=_v3_observation())
+    assert queue["schema_version"] == "au-tax-impact-queue.v2"
+    assert queue["run_status"] == "REVIEW_REQUIRED"
+    assert queue["observation"]["complete"] is True
+    assert len(queue["items"]) == 1
+    assert queue["items"][0]["change_kind"] == "SUPERSEDED"
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("content_sha256", "sha256:" + "A" * 64),
+        ("content_sha256", "sha256:" + "a" * 63),
+        ("content_kind", "web-page"),
+        ("content_media_type", "application/json; charset=utf-8"),
+    ],
+)
+def test_v3_observation_rejects_invalid_content_evidence(
+    tmp_path: Path, field: str, value: str
+) -> None:
+    observation = _v3_observation()
+    observation["observations"][0][field] = value
+    with pytest.raises(MonitorError, match=field):
+        _compare_fixtures(tmp_path, observation=observation)
+
+
 def test_v2_observation_requires_scope_id(tmp_path: Path) -> None:
     observation = _payload("observations", "sample-register-observation-v2.json")
     del observation["scope_id"]
@@ -1703,6 +1745,12 @@ def test_v2_observation_missing_evidence_id_is_rejected(tmp_path: Path) -> None:
 def test_unsupported_observation_schema_version_is_rejected(tmp_path: Path) -> None:
     observation = _payload("observations", "sample-register-observation.json")
     observation["schema_version"] = "au-tax-register-observation.v99"
-    with pytest.raises(MonitorError, match="Only au-tax-register-observation.v1 and au-tax-register-observation.v2"):
+    with pytest.raises(
+        MonitorError,
+        match=(
+            r"Only au-tax-register-observation\.v1, "
+            r"au-tax-register-observation\.v2 and "
+            r"au-tax-register-observation\.v3"
+        ),
+    ):
         _compare_fixtures(tmp_path, observation=observation)
-

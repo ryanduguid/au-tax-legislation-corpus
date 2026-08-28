@@ -57,6 +57,11 @@ OBSERVATION_FIELDS = {
     "current_version_start", "evidence_url", "checked_at", "error_category",
 }
 UTC_TIMESTAMP = re.compile(r"\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{1,6})?Z")
+SHA256_ID = re.compile(r"sha256:[0-9a-f]{64}")
+CONTENT_KINDS = {"metadata-response", "source-document"}
+CONTENT_MEDIA_TYPES = {
+    "application/json", "application/pdf", "application/xhtml+xml", "text/html",
+}
 PUBLISH_LOCK_FILENAME = ".monitor-contract.publish.lock"
 PUBLISH_LOCK_TIMEOUT_SECONDS = 30
 PUBLISH_LOCK_RETRY_SECONDS = 0.05
@@ -203,12 +208,15 @@ def project_baseline(sources: dict[str, Any]) -> dict[str, Any]:
 
 
 OBSERVATION_V2_FIELDS = OBSERVATION_FIELDS | {"evidence_id"}
+OBSERVATION_V3_FIELDS = OBSERVATION_V2_FIELDS | {
+    "content_sha256", "content_kind", "content_media_type",
+}
 
 
 def project_observation(
     baseline: dict[str, Any], facts: dict[str, Any]
 ) -> dict[str, Any]:
-    """Validate structured facts and produce the monitor's exact v1 or v2 observation."""
+    """Validate structured facts and produce the monitor's exact observation."""
     projected_baseline = project_baseline(baseline)
     raw = _object(facts, "observation facts")
     if "schema_version" not in raw:
@@ -219,17 +227,31 @@ def project_observation(
     if schema_version == "au-tax-register-observation-facts.v1":
         expected_fields = {"schema_version", "observed_at", "complete", "observations"}
         item_fields = OBSERVATION_FIELDS
-        is_v2 = False
+        has_evidence_id = False
+        is_v3 = False
+        observation_schema_version = "au-tax-register-observation.v1"
     elif schema_version == "au-tax-register-observation-facts.v2":
         expected_fields = {"schema_version", "observed_at", "scope_id", "complete", "observations"}
         item_fields = OBSERVATION_V2_FIELDS
-        is_v2 = True
+        has_evidence_id = True
+        is_v3 = False
+        observation_schema_version = "au-tax-register-observation.v2"
+    elif schema_version == "au-tax-register-observation-facts.v3":
+        expected_fields = {"schema_version", "observed_at", "scope_id", "complete", "observations"}
+        item_fields = OBSERVATION_V3_FIELDS
+        has_evidence_id = True
+        is_v3 = True
+        observation_schema_version = "au-tax-register-observation.v3"
     else:
         raise ContractError("observation facts schema_version is unsupported.")
 
     if set(raw) != expected_fields:
         raise ContractError("observation facts has an invalid shape.")
-    scope_id = _non_empty(raw["scope_id"], "observation facts scope_id") if is_v2 else None
+    scope_id = (
+        _non_empty(raw["scope_id"], "observation facts scope_id")
+        if has_evidence_id
+        else None
+    )
     observed_at = _utc_timestamp(raw["observed_at"], "observation facts observed_at")
     if not isinstance(raw["complete"], bool) or not isinstance(raw["observations"], list):
         raise ContractError("observation facts complete/observations fields are invalid.")
@@ -282,12 +304,38 @@ def project_observation(
             "checked_at": _utc_timestamp(item["checked_at"], f"observation fact {index} checked_at"),
             "error_category": None,
         }
-        if is_v2:
+        if has_evidence_id:
             evidence_id = _non_empty(item["evidence_id"], f"observation fact {index} evidence_id")
             if evidence_id in seen_evidence_ids:
                 raise ContractError(f"observation fact {index} contains duplicate evidence_id.")
             seen_evidence_ids.add(evidence_id)
             projected["evidence_id"] = evidence_id
+        if is_v3:
+            content_sha256 = _non_empty(
+                item["content_sha256"], f"observation fact {index} content_sha256"
+            )
+            if SHA256_ID.fullmatch(content_sha256) is None:
+                raise ContractError(
+                    f"observation fact {index} content_sha256 is invalid."
+                )
+            content_kind = _non_empty(
+                item["content_kind"], f"observation fact {index} content_kind"
+            )
+            if content_kind not in CONTENT_KINDS:
+                raise ContractError(
+                    f"observation fact {index} content_kind is unsupported."
+                )
+            content_media_type = _non_empty(
+                item["content_media_type"],
+                f"observation fact {index} content_media_type",
+            )
+            if content_media_type not in CONTENT_MEDIA_TYPES:
+                raise ContractError(
+                    f"observation fact {index} content_media_type is unsupported."
+                )
+            projected["content_sha256"] = content_sha256
+            projected["content_kind"] = content_kind
+            projected["content_media_type"] = content_media_type
 
         if state == "SUPERSEDED":
             projected["observed_compilation_number"] = _non_empty(
@@ -316,11 +364,11 @@ def project_observation(
         raise ContractError("a complete observation must cover every baseline register_id exactly once.")
     
     result: dict[str, Any] = {
-        "schema_version": "au-tax-register-observation.v2" if is_v2 else "au-tax-register-observation.v1",
+        "schema_version": observation_schema_version,
         "mode": "synthetic",
         "observed_at": observed_at,
     }
-    if is_v2:
+    if has_evidence_id:
         result["scope_id"] = scope_id
     result["expected_register_ids"] = sorted(expected_by_id)
     result["complete"] = raw["complete"]
