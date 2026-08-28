@@ -99,7 +99,9 @@ baseline:
 - `name`
 - `collection`
 - `versionStart`
-- `compilationNumber`
+- `compilationNumber`, whose member is required but whose value may be a
+  non-empty string or the literal `null` used by legacy unnumbered Register
+  compilations
 - `retrieved`
 - `sourceUrl`
 - optional `version_is_current`, which defaults to `true` as `finalize.py`
@@ -117,14 +119,21 @@ same title and compilation date.
 The module projects the rows into the existing monitor baseline shape. The
 baseline `retrieved` date is the latest per-title retrieval date, while every
 title retains its own retrieval date. The corpus name and source interface are
-fixed constants. Baseline titles are sorted by Register identifier and
+fixed constants. Stage 3A permits the projected `compilation_number` to be null
+only when the mandatory rich-manifest member is explicitly null; the existing
+synthetic v1-v3 monitor and publication contracts are unchanged. Baseline
+titles are sorted by Register identifier and
 collection, then serialised deterministically. The exact baseline bytes are
 hashed and bound into the observation.
 
 The checked-in `fadden/manifest_md.json` currently contains 946 titles: 175
-Acts, 675 legislative instruments and 96 notifiable instruments. These figures
-describe the current input, not hard-coded acceptance thresholds. Future
-properly curated additions must be captured automatically.
+Acts, 675 legislative instruments and 96 notifiable instruments. Forty-seven
+of those titles have an explicit null `compilationNumber`; the Register API
+uses that literal null representation for legacy unnumbered compilations. The
+projection preserves the manifest fact rather than fabricating a number, then
+requires the live row to corroborate it. These figures describe the current
+input, not hard-coded acceptance thresholds. Future properly curated additions
+must be captured automatically.
 
 ## Register requests
 
@@ -220,16 +229,19 @@ Every baseline title produces exactly one observation state:
 
 | Evidence | State | Required interpretation |
 |---|---|---|
-| One registered current version with the same compilation number and date as the baseline | `UNCHANGED` | The checked-in compilation still matches the Register. |
+| One registered current version with the same compilation number and date as the baseline, including matching explicit null numbers | `UNCHANGED` | The checked-in compilation still matches the Register. |
 | One registered current version with a different compilation number and a strictly later compilation date | `SUPERSEDED` | A newer published compilation exists and may become a Stage 3B candidate. |
 | One current version whose `registerId` is null | `CURRENT_NO_PUBLISHED_COMPILATION` | The Register reports a current version but no document is published. Never substitute an older document or create a candidate. |
 | No current version and at least one same-title historical version | `NO_LONGER_IN_FORCE` | The title has ceased or been repealed. Stage 3A records it but does not create a public development. |
 | Transport, status, media, JSON, identity, shape or chronology failure; no current or historical version; or any state outside the matrix | `LOOKUP_FAILED` | Evidence is insufficient or inconsistent. |
 
 A current row must report `isCurrent: true` and `status: InForce`. A registered
-current row must have a non-empty compilation number, canonical start date and
-Register document identifier. A superseding compilation must not move
-backwards or sideways in time. Any unexplained mismatch is
+current row must have a non-empty compilation number or the Register's literal
+null for an unnumbered legacy compilation, plus a canonical start date and
+Register document identifier. A null baseline and null current number can only
+be `UNCHANGED` on the same date; a later current version remains fail-closed
+unless it supplies a non-empty superseding number. A superseding compilation
+must not move backwards or sideways in time. Any unexplained mismatch is
 `LOOKUP_FAILED` with a fixed error category, not a guessed state.
 
 `complete` means every expected Register identifier was attempted and appears
@@ -301,6 +313,7 @@ The test matrix must cover:
 - current-version and history-query URL construction;
 - a current version with no registered document;
 - strict UTF-8, duplicate JSON members, size, media type and OData shape;
+- explicit legacy null compilation numbers without invented source facts;
 - wrong-title, wrong-status, duplicate-row and backwards-chronology responses;
 - transport and non-200 error categorisation without body or path disclosure;
 - response-byte hashing, content-addressed names, deduplication and final

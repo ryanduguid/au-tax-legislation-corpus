@@ -15,6 +15,7 @@
 - Preserve the existing v1-v3 synthetic monitor contracts and `evidence-bundle.v1` byte-for-byte.
 - Do not add a live flag, partial-scope mode, overwrite mode, scheduler, database, publisher integration, credentials or third-party dependency.
 - All automated tests must use deterministic in-memory exchanges; no test may reach the network or sleep.
+- Preserve an explicit null `compilationNumber` for the 47 legacy unnumbered titles in the checked-in manifest. The member remains mandatory; never invent a number.
 - Retain only bounded HTTP 200 bodies. Never retain, log or serialise a non-200 body, arbitrary header, exception text or absolute evidence path.
 - Perform all input and filesystem preflight before creating a missing output parent. Promote an official capture only with one rename into an absent destination.
 - Make the implementation work in both package context (`python -m fadden`) and the repository's supported Python 3.10-3.13 range.
@@ -166,6 +167,7 @@ git commit -m "feat: capture unchanged Register evidence"
 - Modify: `fadden/capture_register.py`
 
 - [ ] Add a multi-title projection test proving sort order, per-title retrieval dates, the latest top-level retrieval date, ignored rich fields, default `version_is_current: true`, and required `current_version_start` for an explicitly non-current baseline title.
+- [ ] Add a legacy unnumbered-title test proving an explicit null `compilationNumber` is preserved and can match the same null and date in a registered current row; reject a missing member.
 - [ ] Add a table-driven rejection test covering an empty array, non-array top level, over-8-MiB input, malformed UTF-8, duplicate members at the top and nested levels, duplicate IDs, invalid collections, non-canonical dates, control characters and malformed Register IDs.
 - [ ] Add exact source-URL cases. Accept only:
 
@@ -239,7 +241,7 @@ Run: `uv run --locked --extra dev python -m unittest tests.corpus.test_live_regi
 
 Expected: failures for missing fallback queries and closed-state classification.
 
-- [ ] Implement exact OData envelope validation. Require exactly `@odata.context` and `value`; require the context to equal `https://api.prod.legislation.gov.au/v1/$metadata#Versions(titleId,start,compilationNumber,registerId,isCurrent,status,registeredAt)`; require each row to contain exactly the seven selected members. Parse `start` as a valid ISO timestamp and reduce it to its canonical date. Permit `registeredAt` to be null only when `registerId` is null; otherwise require a valid ISO timestamp.
+- [ ] Implement exact OData envelope validation. Require exactly `@odata.context` and `value`; require the context to equal `https://api.prod.legislation.gov.au/v1/$metadata#Versions(titleId,start,compilationNumber,registerId,isCurrent,status,registeredAt)`; require each row to contain exactly the seven selected members. Parse `start` as a valid ISO timestamp and reduce it to its canonical date. Permit `registeredAt` to be null only when `registerId` is null; otherwise require a valid ISO timestamp. Permit a registered row's `compilationNumber` to be literal null only so an explicit null baseline can match the same date; do not treat a later null-numbered version as a guessed supersession.
 - [ ] Implement the state matrix without fall-through guesses. A current row must be `isCurrent is True` and `status == "InForce"`; a history row used for cessation must have the same title, `isCurrent is False` and a status in the official `InForce`, `Ceased`, `Repealed`, `NeverEffective` enum. Any other combination becomes `LOOKUP_FAILED`.
 - [ ] Derive v2-compatible observation fields and nullability for each state. Use the official Register version page for a registered document evidence URL and the title page for a no-document or no-longer-in-force state.
 - [ ] Set `complete` from exact attempted-ID coverage. Set `run_status` to `VERIFIED` only when complete and no observation is `LOOKUP_FAILED`.

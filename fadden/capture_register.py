@@ -27,7 +27,6 @@ from pathlib import Path
 from typing import Any, Protocol, Sequence
 from urllib.parse import quote, urlencode, urlsplit
 
-from .corpus_paths import is_reparse_point
 from .corpus_paths import register_id as validate_register_id
 from .http_fetch import TIMEOUT, UA
 
@@ -67,6 +66,13 @@ REQUEST_DELAY_SECONDS = 1.5
 SHA256_ID = re.compile(r"sha256:[0-9a-f]{64}\Z")
 EVIDENCE_NAME = re.compile(r"sha256-([0-9a-f]{64})\.json\Z")
 SAFE_OUTPUT_LEAF = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,99}\Z")
+UTC_TIMESTAMP = re.compile(
+    r"\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{1,6})?Z\Z"
+)
+VERSION_TIMESTAMP = re.compile(
+    r"\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}"
+    r"(?:\.\d{1,7})?(?:Z|[+-]\d{2}:\d{2})?\Z"
+)
 OBSERVATION_STATES = {
     "UNCHANGED",
     "SUPERSEDED",
@@ -290,7 +296,7 @@ def _date(value: Any, field: str) -> str:
 
 def _utc_timestamp(value: Any, field: str) -> str:
     text = _required_text(value, field)
-    if not text.endswith("Z"):
+    if UTC_TIMESTAMP.fullmatch(text) is None:
         raise CaptureRegisterError(f"{field} must be a UTC timestamp ending in Z.")
     try:
         dt.datetime.fromisoformat(text[:-1] + "+00:00")
@@ -344,9 +350,19 @@ def _require_ordinary_ancestors(path: Path, label: str) -> None:
         current = parent
 
 
+def _same_regular_file_identity(
+    expected: os.stat_result, observed: os.stat_result
+) -> bool:
+    """Return whether two snapshots describe the same regular filesystem object."""
+    return (
+        stat.S_ISREG(expected.st_mode)
+        and stat.S_ISREG(observed.st_mode)
+        and os.path.samestat(expected, observed)
+    )
+
+
 def _load_manifest(path: Path) -> list[dict[str, Any]]:
     _require_ordinary_ancestors(path.parent, "manifest")
-    is_junction = getattr(os.path, "isjunction", lambda _path: False)
     try:
         details = os.lstat(path)
     except OSError as exc:
@@ -354,17 +370,32 @@ def _load_manifest(path: Path) -> list[dict[str, Any]]:
     if (
         not stat.S_ISREG(details.st_mode)
         or os.path.islink(path)
-        or is_junction(path)
-        or is_reparse_point(path)
+        or _path_is_junction(path)
+        or _details_are_reparse_point(details)
     ):
         raise CaptureRegisterError("manifest must be an ordinary file.")
     if details.st_size > MAX_MANIFEST_BYTES:
         raise CaptureRegisterError("manifest exceeds the 8 MiB size limit.")
     try:
         with open(path, "rb") as source:
+            opened_details = os.fstat(source.fileno())
+            if not _same_regular_file_identity(details, opened_details):
+                raise CaptureRegisterError("manifest changed during capture.")
             raw = source.read(MAX_MANIFEST_BYTES + 1)
+            source.seek(0)
+            confirmed_raw = source.read(MAX_MANIFEST_BYTES + 1)
+            read_details = os.fstat(source.fileno())
+        final_details = os.lstat(path)
     except OSError as exc:
         raise CaptureRegisterError("manifest could not be read.") from exc
+    if not (
+        _same_regular_file_identity(opened_details, read_details)
+        and _same_regular_file_identity(read_details, final_details)
+        and raw == confirmed_raw
+        and len(raw) == read_details.st_size
+    ):
+        raise CaptureRegisterError("manifest changed during capture.")
+    _require_ordinary_ancestors(path.parent, "manifest")
     if len(raw) > MAX_MANIFEST_BYTES:
         raise CaptureRegisterError("manifest exceeds the 8 MiB size limit.")
     try:
@@ -415,6 +446,16 @@ def _project_baseline(rows: list[dict[str, Any]]) -> dict[str, Any]:
             raise CaptureRegisterError(
                 f"manifest title {index} sourceUrl does not match its title and version."
             )
+        if "compilationNumber" not in row:
+            raise CaptureRegisterError(
+                f"manifest title {index} compilationNumber is required."
+            )
+        compilation_number = row["compilationNumber"]
+        if compilation_number is not None:
+            compilation_number = _required_text(
+                compilation_number,
+                f"manifest title {index} compilationNumber",
+            )
         current = row.get("version_is_current", True)
         if not isinstance(current, bool):
             raise CaptureRegisterError(
@@ -435,10 +476,7 @@ def _project_baseline(rows: list[dict[str, Any]]) -> dict[str, Any]:
                 "register_id": title_id,
                 "name": _required_text(row.get("name"), f"manifest title {index} name"),
                 "collection": collection,
-                "compilation_number": _required_text(
-                    row.get("compilationNumber"),
-                    f"manifest title {index} compilationNumber",
-                ),
+                "compilation_number": compilation_number,
                 "compilation_date": compilation_date,
                 "version_is_current": current,
                 "current_version_start": current_start,
@@ -499,17 +537,19 @@ def _normalised_headers(headers: Mapping[str, str]) -> dict[str, str]:
 
 def _version_timestamp(value: Any, field: str) -> str:
     text = _required_text(value, field)
+    if VERSION_TIMESTAMP.fullmatch(text) is None:
+        raise CaptureRegisterError(f"{field} is invalid.")
     try:
-        dt.datetime.fromisoformat(text)
+        dt.datetime.fromisoformat(text.replace("Z", "+00:00"))
     except ValueError as exc:
         raise CaptureRegisterError(f"{field} is invalid.") from exc
     return text
 
 
 def _start_date(value: Any) -> str:
-    text = _required_text(value, "Register version start")
+    text = _version_timestamp(value, "Register version start")
     try:
-        parsed = dt.datetime.fromisoformat(text)
+        parsed = dt.datetime.fromisoformat(text.replace("Z", "+00:00"))
     except ValueError as exc:
         raise CaptureRegisterError("Register version start is invalid.") from exc
     return parsed.date().isoformat()
@@ -535,7 +575,10 @@ def _validated_row(row: Any, title_id: str, role: str) -> dict[str, Any]:
         raise CaptureRegisterError("INVALID_ODATA_SHAPE") from exc
     if not isinstance(row["isCurrent"], bool):
         raise CaptureRegisterError("INVALID_ODATA_SHAPE")
-    if row["status"] not in {"InForce", "Ceased", "Repealed", "NeverEffective"}:
+    if (
+        not isinstance(row["status"], str)
+        or row["status"] not in {"InForce", "Ceased", "Repealed", "NeverEffective"}
+    ):
         raise CaptureRegisterError("INVALID_ODATA_SHAPE")
     if role == "current" and (row["isCurrent"] is not True or row["status"] != "InForce"):
         raise CaptureRegisterError("INVALID_ODATA_SHAPE")
@@ -559,7 +602,8 @@ def _validated_row(row: Any, title_id: str, role: str) -> dict[str, Any]:
         except ValueError as exc:
             raise CaptureRegisterError("INVALID_ODATA_SHAPE") from exc
         try:
-            _required_text(compilation_number, "Register compilation number")
+            if compilation_number is not None:
+                _required_text(compilation_number, "Register compilation number")
             _version_timestamp(registered_at, "Register registration timestamp")
         except CaptureRegisterError as exc:
             raise CaptureRegisterError("INVALID_ODATA_SHAPE") from exc
@@ -742,9 +786,7 @@ def _observe_title(
                 current_version_start = current_date
                 error_category = None
             else:
-                compilation_number = _required_text(
-                    row["compilationNumber"], "Register compilation number"
-                )
+                compilation_number = row["compilationNumber"]
                 if (
                     compilation_number == title["compilation_number"]
                     and current_date == title["compilation_date"]
@@ -752,7 +794,8 @@ def _observe_title(
                     state = "UNCHANGED"
                     error_category = None
                 elif (
-                    compilation_number != title["compilation_number"]
+                    compilation_number is not None
+                    and compilation_number != title["compilation_number"]
                     and current_date > title["compilation_date"]
                 ):
                     state = "SUPERSEDED"
@@ -802,8 +845,8 @@ def _require_staged_directory(path: Path) -> None:
     if (
         not stat.S_ISDIR(details.st_mode)
         or os.path.islink(path)
-        or getattr(os.path, "isjunction", lambda _path: False)(path)
-        or is_reparse_point(path)
+        or _path_is_junction(path)
+        or _details_are_reparse_point(details)
     ):
         raise CaptureRegisterError("staged capture contains a non-ordinary directory")
 
@@ -816,15 +859,30 @@ def _read_staged_file(path: Path) -> bytes:
     if (
         not stat.S_ISREG(details.st_mode)
         or os.path.islink(path)
-        or getattr(os.path, "isjunction", lambda _path: False)(path)
-        or is_reparse_point(path)
+        or _path_is_junction(path)
+        or _details_are_reparse_point(details)
     ):
         raise CaptureRegisterError("staged capture contains a non-ordinary file")
     try:
         with open(path, "rb") as source:
-            return source.read()
+            opened_details = os.fstat(source.fileno())
+            if not _same_regular_file_identity(details, opened_details):
+                raise CaptureRegisterError("staged capture file changed during validation")
+            content = source.read(details.st_size + 1)
+            source.seek(0)
+            confirmed_content = source.read(details.st_size + 1)
+            read_details = os.fstat(source.fileno())
+        final_details = os.lstat(path)
     except OSError as exc:
         raise CaptureRegisterError("staged capture file could not be read") from exc
+    if not (
+        _same_regular_file_identity(opened_details, read_details)
+        and _same_regular_file_identity(read_details, final_details)
+        and content == confirmed_content
+        and len(content) == read_details.st_size == details.st_size
+    ):
+        raise CaptureRegisterError("staged capture file changed during validation")
+    return content
 
 
 def _load_generated_object(path: Path) -> tuple[bytes, dict[str, Any]]:
@@ -919,7 +977,8 @@ def _validate_staged_graph_inner(staging: Path) -> None:
         if not title["version_is_current"] and current_start is None:
             raise CaptureRegisterError("staged capture baseline current date is missing")
         _required_text(title["name"], "baseline title name")
-        _required_text(title["compilation_number"], "baseline compilation number")
+        if title["compilation_number"] is not None:
+            _required_text(title["compilation_number"], "baseline compilation number")
         expected_source = (
             f"{REGISTER_SITE}/{title_id}/{compilation_date}/{compilation_date}/"
             "text/original/epub"
@@ -1046,7 +1105,13 @@ def _validate_staged_graph_inner(staging: Path) -> None:
                 expected_path = f"evidence/sha256-{digest_hex}.json"
                 if evidence_path != expected_path:
                     raise CaptureRegisterError("staged capture evidence path is invalid")
-                declared_evidence[expected_path] = (digest, response_length)
+                declaration = (digest, response_length)
+                prior_declaration = declared_evidence.get(expected_path)
+                if prior_declaration is not None and prior_declaration != declaration:
+                    raise CaptureRegisterError(
+                        "staged capture evidence declarations are inconsistent"
+                    )
+                declared_evidence[expected_path] = declaration
         if result["checked_at"] != requests[-1]["checked_at"]:
             raise CaptureRegisterError("staged capture result timestamp is invalid")
         results_by_id[title_id] = result

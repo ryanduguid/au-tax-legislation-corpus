@@ -98,6 +98,11 @@ Run incremental operational work outside the Register's preferred 08:00-20:00
 Australian window. The API needs no key. The adapter refuses redirects, uses a
 90-second socket timeout and makes at most three attempts.
 
+The manifest's 47 legacy unnumbered compilations carry an explicit null
+`compilationNumber`. Capture preserves the null and verifies it against the
+same date and null in the current Register row; it never substitutes a display
+dash or synthetic number into the evidence contract.
+
 `VERIFIED` means every manifest identifier was attempted exactly once and no
 title ended in `LOOKUP_FAILED`. A complete capture containing source or
 consistency failures is still retained, with `run_status: BLOCKED`, so the

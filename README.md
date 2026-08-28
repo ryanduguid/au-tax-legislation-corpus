@@ -204,6 +204,13 @@ socket timeout, attempts a request at most three times and needs no API key.
 Operational schedulers remain out of scope; if one is added later, incremental
 work should run outside the Register's preferred 08:00-20:00 Australian window.
 
+Forty-seven legacy titles have an explicit null compilation number in the
+checked-in manifest, and the Register API uses that representation for
+unnumbered compilations. The capture preserves the manifest fact instead of
+inventing a number. It accepts an unchanged result only when the live null and
+compilation date both match; an ambiguous later null-numbered version fails
+closed as `LOOKUP_FAILED`.
+
 Every title receives one of `UNCHANGED`, `SUPERSEDED`,
 `CURRENT_NO_PUBLISHED_COMPILATION`, `NO_LONGER_IN_FORCE` or `LOOKUP_FAILED`.
 Source failures do not shrink the audit scope: the command continues, retains a

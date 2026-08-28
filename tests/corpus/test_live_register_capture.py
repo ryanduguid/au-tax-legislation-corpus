@@ -469,6 +469,50 @@ class LiveRegisterCaptureManifestTests(unittest.TestCase):
             )
             self.assertEqual(session.urls, [CURRENT_URL, INSTRUMENT_URL])
 
+    def test_projects_a_legacy_unnumbered_compilation_without_inventing_a_number(
+        self,
+    ) -> None:
+        """A Register null shared by the manifest and current row is a real baseline fact."""
+        title_id = "C2004A00460"
+        row = manifest_row(
+            id=title_id,
+            name="A New Tax System (Goods and Services Tax Imposition—Customs) Act 1999",
+            versionStart="2005-07-01",
+            compilationNumber=None,
+            sourceUrl=(
+                f"https://www.legislation.gov.au/{title_id}/"
+                "2005-07-01/2005-07-01/text/original/epub"
+            ),
+        )
+        response = version_body(
+            title_id,
+            "2005-07-01",
+            None,
+            "C2005C00389",
+            registered_at="2005-07-01T10:15:01",
+        )
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            manifest_path = root / "manifest.json"
+            manifest_path.write_bytes(json_bytes([row]))
+            paths = capture_register_run(
+                manifest_path,
+                root / "capture",
+                session=MemorySession(
+                    {
+                        current_url_for(title_id): [
+                            successful_exchange(response, "2026-08-29T00:00:03Z")
+                        ]
+                    }
+                ),
+            )
+
+            baseline = json.loads(paths["baseline"].read_bytes())
+            observation = json.loads(paths["observation"].read_bytes())
+            self.assertIsNone(baseline["titles"][0]["compilation_number"])
+            self.assertEqual(observation["observations"][0]["state"], "UNCHANGED")
+            self.assertEqual(observation["run_status"], "VERIFIED")
+
     def test_rejects_ambiguous_or_invalid_manifest_before_output_preflight(self) -> None:
         """Every invalid source snapshot must fail before a missing output parent appears."""
         valid = manifest_row()
@@ -484,6 +528,19 @@ class LiveRegisterCaptureManifestTests(unittest.TestCase):
         cases: list[tuple[str, bytes, str]] = [
             ("empty array", b"[]\n", "non-empty array"),
             ("object top level", b"{}\n", "non-empty array"),
+            (
+                "missing compilation number member",
+                json_bytes(
+                    [
+                        {
+                            key: value
+                            for key, value in valid.items()
+                            if key != "compilationNumber"
+                        }
+                    ]
+                ),
+                "compilationNumber is required",
+            ),
             ("oversized", b'["' + (b"x" * (8 * 1024 * 1024)) + b'"]', "8 MiB"),
             ("invalid utf8", b"[\xff]", "UTF-8"),
             ("duplicate title member", duplicate_member, "duplicate JSON member"),
@@ -612,6 +669,43 @@ class LiveRegisterCaptureManifestTests(unittest.TestCase):
                     session=MemorySession({}),
                 )
             self.assertEqual(target.read_bytes(), target_content)
+
+    def test_manifest_path_swap_cannot_substitute_a_different_regular_file(self) -> None:
+        """The descriptor read must still identify the file that passed lstat preflight."""
+        replacement = manifest_row(
+            id="F2020L01498",
+            name="A New Tax System (Australian Business Number) Regulations 2020",
+            collection="LegislativeInstrument",
+            versionStart="2025-10-04",
+            compilationNumber="2",
+            sourceUrl=(
+                "https://www.legislation.gov.au/F2020L01498/"
+                "2025-10-04/2025-10-04/text/original/epub"
+            ),
+        )
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            manifest = root / "manifest.json"
+            manifest.write_bytes(json_bytes([manifest_row()]))
+            alternate = root / "alternate.json"
+            alternate.write_bytes(json_bytes([replacement]))
+            original_open = open
+
+            def swapped_open(path: object, mode: str = "r", *args: object, **kwargs: object):
+                if Path(path) == manifest and mode == "rb":
+                    return original_open(alternate, mode, *args, **kwargs)
+                return original_open(path, mode, *args, **kwargs)
+
+            with (
+                mock.patch("builtins.open", side_effect=swapped_open),
+                self.assertRaisesRegex(CaptureRegisterError, "changed during capture"),
+            ):
+                capture_register_run(
+                    manifest,
+                    root / "capture",
+                    session=MemorySession({}),
+                )
+            self.assertFalse((root / "capture").exists())
 
 
 class LiveRegisterCaptureStateTests(unittest.TestCase):
@@ -1019,8 +1113,18 @@ class LiveRegisterCaptureStateTests(unittest.TestCase):
                 "INVALID_ODATA_SHAPE",
             ),
             (
+                "non-scalar status",
+                exchange(with_row({"status": []})),
+                "INVALID_ODATA_SHAPE",
+            ),
+            (
                 "malformed start",
                 exchange(with_row({"start": "not-a-date"})),
+                "INVALID_ODATA_SHAPE",
+            ),
+            (
+                "date-only start",
+                exchange(with_row({"start": "2026-06-30"})),
                 "INVALID_ODATA_SHAPE",
             ),
             (
@@ -1041,6 +1145,11 @@ class LiveRegisterCaptureStateTests(unittest.TestCase):
             (
                 "missing registration timestamp",
                 exchange(with_row({"registeredAt": None})),
+                "INVALID_ODATA_SHAPE",
+            ),
+            (
+                "date-only registration timestamp",
+                exchange(with_row({"registeredAt": "2026-07-14"})),
                 "INVALID_ODATA_SHAPE",
             ),
             (
@@ -1505,6 +1614,128 @@ class LiveRegisterEvidenceGraphTests(unittest.TestCase):
                 self.assertEqual(
                     list(root.glob(".capture.register-capture-*.tmp")), []
                 )
+
+    def test_revalidation_checks_every_declaration_of_deduplicated_evidence(self) -> None:
+        """A correct later declaration must not mask an earlier wrong length."""
+        malformed = b'{"shared-invalid-response":'
+        later = manifest_row(
+            id="F2020L01498",
+            name="A New Tax System (Australian Business Number) Regulations 2020",
+            collection="LegislativeInstrument",
+            versionStart="2025-10-04",
+            compilationNumber="2",
+            sourceUrl=(
+                "https://www.legislation.gov.au/F2020L01498/"
+                "2025-10-04/2025-10-04/text/original/epub"
+            ),
+        )
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            manifest_path = root / "manifest.json"
+            manifest_path.write_bytes(json_bytes([later, manifest_row()]))
+            destination = root / "capture"
+            original_validator = capture_module._validate_staged_graph
+
+            def inconsistent_duplicate(staging: Path) -> None:
+                capture_path = staging / "register-capture.json"
+                capture_document = json.loads(capture_path.read_bytes())
+                first_result = capture_document["results"][0]
+                first_request = first_result["requests"][0]
+                first_request["response_length"] += 1
+                capture_content = json_bytes(capture_document)
+                capture_path.write_bytes(capture_content)
+
+                observation_path = staging / "register-observation.json"
+                observation_document = json.loads(observation_path.read_bytes())
+                result_digest = sha256_id(json_bytes(first_result))
+                first_observation = observation_document["observations"][0]
+                first_observation["capture_result_sha256"] = result_digest
+                first_observation["evidence_id"] = (
+                    f"frl:C2004A00467:{result_digest.removeprefix('sha256:')[:32]}"
+                )
+                observation_document["capture_sha256"] = sha256_id(capture_content)
+                observation_path.write_bytes(json_bytes(observation_document))
+                original_validator(staging)
+
+            with (
+                mock.patch.object(
+                    capture_module,
+                    "_validate_staged_graph",
+                    side_effect=inconsistent_duplicate,
+                ),
+                self.assertRaisesRegex(CaptureRegisterError, "staged capture"),
+            ):
+                capture_register_run(
+                    manifest_path,
+                    destination,
+                    session=MemorySession(
+                        {
+                            CURRENT_URL: [
+                                successful_exchange(
+                                    malformed, "2026-08-29T14:30:01Z"
+                                )
+                            ],
+                            INSTRUMENT_URL: [
+                                successful_exchange(
+                                    malformed, "2026-08-29T14:30:02Z"
+                                )
+                            ],
+                        }
+                    ),
+                )
+            self.assertFalse(destination.exists())
+
+    def test_revalidation_binds_each_read_to_the_staged_file_it_inspected(self) -> None:
+        """A swapped descriptor must not conceal corrupt bytes that will be promoted."""
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            manifest_path = root / "manifest.json"
+            manifest_path.write_bytes(json_bytes([manifest_row()]))
+            destination = root / "capture"
+            alternate = root / "alternate-capture.json"
+            original_validator = capture_module._validate_staged_graph
+            original_open = open
+
+            def swapping_validator(staging: Path) -> None:
+                capture_path = staging / "register-capture.json"
+                alternate.write_bytes(capture_path.read_bytes())
+                capture_path.write_bytes(capture_path.read_bytes() + b" ")
+
+                def swapped_open(
+                    path: object,
+                    mode: str = "r",
+                    *args: object,
+                    **kwargs: object,
+                ):
+                    if Path(path) == capture_path and mode == "rb":
+                        return original_open(alternate, mode, *args, **kwargs)
+                    return original_open(path, mode, *args, **kwargs)
+
+                with mock.patch("builtins.open", side_effect=swapped_open):
+                    original_validator(staging)
+
+            with (
+                mock.patch.object(
+                    capture_module,
+                    "_validate_staged_graph",
+                    side_effect=swapping_validator,
+                ),
+                self.assertRaisesRegex(CaptureRegisterError, "staged capture"),
+            ):
+                capture_register_run(
+                    manifest_path,
+                    destination,
+                    session=MemorySession(
+                        {
+                            CURRENT_URL: [
+                                successful_exchange(
+                                    CURRENT_BODY, "2026-08-29T14:45:01Z"
+                                )
+                            ]
+                        }
+                    ),
+                )
+            self.assertFalse(destination.exists())
 
 
 class LiveRegisterCaptureFilesystemTests(unittest.TestCase):
