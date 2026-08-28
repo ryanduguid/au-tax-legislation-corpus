@@ -10,19 +10,24 @@ from __future__ import annotations
 
 import datetime as dt
 import hashlib
+import http.client
 import json
 import os
 import shutil
 import stat
+import time
+import urllib.error
+import urllib.request
 import uuid
 from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Protocol
-from urllib.parse import quote, urlencode
+from urllib.parse import quote, urlencode, urlsplit
 
 from .corpus_paths import is_reparse_point
 from .corpus_paths import register_id as validate_register_id
+from .http_fetch import TIMEOUT, UA
 
 
 SOURCE_API = "https://api.prod.legislation.gov.au/v1/"
@@ -54,6 +59,9 @@ RETAINED_HEADER_NAMES = {
 }
 MAX_RESPONSE_BYTES = 256 * 1024
 MAX_MANIFEST_BYTES = 8 * 1024 * 1024
+MAX_ATTEMPTS = 3
+RETRY_DELAY_SECONDS = 6.0
+REQUEST_DELAY_SECONDS = 1.5
 
 
 class CaptureRegisterError(ValueError):
@@ -92,6 +100,140 @@ class RegisterSession(Protocol):
 
     def get(self, url: str) -> RegisterExchange:
         """Return one already-retried, bounded exchange for *url*."""
+
+
+def _utc_now() -> str:
+    return (
+        dt.datetime.now(dt.timezone.utc)
+        .isoformat(timespec="seconds")
+        .replace("+00:00", "Z")
+    )
+
+
+class _NoRedirectHandler(urllib.request.HTTPRedirectHandler):
+    """Turn every redirect into its original HTTP response status."""
+
+    def redirect_request(
+        self,
+        req: urllib.request.Request,
+        fp: Any,
+        code: int,
+        msg: str,
+        headers: Any,
+        newurl: str,
+    ) -> None:
+        return None
+
+
+def _selected_response_headers(headers: Any) -> dict[str, str]:
+    """Copy only the four contract headers before a response object closes."""
+    selected: dict[str, str] = {}
+    seen: set[str] = set()
+    try:
+        items = headers.items()
+    except AttributeError:
+        return selected
+    for name, value in items:
+        if not isinstance(name, str) or name.lower() not in RETAINED_HEADER_NAMES:
+            continue
+        key = name
+        if name.lower() in seen:
+            key = name.swapcase()
+        seen.add(name.lower())
+        selected[key] = value if isinstance(value, str) else str(value)
+    return selected
+
+
+def _retryable_status(status: int) -> bool:
+    return status in {408, 429} or 500 <= status <= 599
+
+
+class _HttpsRegisterSession:
+    """Paced standard-library HTTPS adapter for the exact Register host."""
+
+    def __init__(self) -> None:
+        self.observed_at = _utc_now()
+        self._opener = urllib.request.build_opener(_NoRedirectHandler())
+        self._last_request_started: float | None = None
+
+    def _pace(self) -> None:
+        now = time.monotonic()
+        if self._last_request_started is not None:
+            remaining = REQUEST_DELAY_SECONDS - (now - self._last_request_started)
+            if remaining > 0:
+                time.sleep(remaining)
+                now = time.monotonic()
+        self._last_request_started = now
+
+    def _request(self, url: str) -> urllib.request.Request:
+        try:
+            parsed = urlsplit(url)
+            port = parsed.port
+        except ValueError as exc:
+            raise CaptureRegisterError("Register request URL is invalid.") from exc
+        if (
+            parsed.scheme != "https"
+            or parsed.hostname != "api.prod.legislation.gov.au"
+            or port is not None
+            or parsed.username is not None
+            or parsed.password is not None
+            or parsed.fragment
+            or parsed.path != "/v1/versions"
+        ):
+            raise CaptureRegisterError("Register request URL is outside the fixed API boundary.")
+        return urllib.request.Request(url, headers={"User-Agent": UA}, method="GET")
+
+    def get(self, url: str) -> RegisterExchange:
+        request = self._request(url)
+        for attempt in range(1, MAX_ATTEMPTS + 1):
+            self._pace()
+            try:
+                with self._opener.open(request, timeout=TIMEOUT) as response:
+                    status = response.status
+                    headers = _selected_response_headers(response.headers)
+                    body = (
+                        response.read(MAX_RESPONSE_BYTES + 1)
+                        if status == 200
+                        else None
+                    )
+            except urllib.error.HTTPError as exc:
+                status = exc.code
+                headers = _selected_response_headers(exc.headers)
+                exc.close()
+                if _retryable_status(status) and attempt < MAX_ATTEMPTS:
+                    time.sleep(RETRY_DELAY_SECONDS)
+                    continue
+                return RegisterExchange(
+                    checked_at=_utc_now(),
+                    status=status,
+                    headers=headers,
+                    body=None,
+                    attempts=attempt,
+                )
+            except (urllib.error.URLError, http.client.HTTPException, OSError):
+                if attempt < MAX_ATTEMPTS:
+                    time.sleep(RETRY_DELAY_SECONDS)
+                    continue
+                return RegisterExchange(
+                    checked_at=_utc_now(),
+                    status=None,
+                    headers={},
+                    body=None,
+                    attempts=attempt,
+                    error_category="TRANSPORT_ERROR",
+                )
+
+            if _retryable_status(status) and attempt < MAX_ATTEMPTS:
+                time.sleep(RETRY_DELAY_SECONDS)
+                continue
+            return RegisterExchange(
+                checked_at=_utc_now(),
+                status=status,
+                headers=headers,
+                body=body,
+                attempts=attempt,
+            )
+        raise AssertionError("bounded Register attempt loop did not return")
 
 
 def _json_bytes(value: Any) -> bytes:
@@ -591,7 +733,7 @@ def capture_register_run(
 ) -> dict[str, Path]:
     """Capture complete Register evidence into one new immutable directory."""
     if session is None:
-        raise CaptureRegisterError("the production Register session is not available yet")
+        session = _HttpsRegisterSession()
     observed_at = _utc_timestamp(session.observed_at, "session observed_at")
     manifest = Path(os.path.abspath(os.fspath(manifest_path)))
     output = Path(os.path.abspath(os.fspath(destination)))

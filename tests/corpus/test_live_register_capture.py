@@ -3,11 +3,15 @@
 from __future__ import annotations
 
 import hashlib
+import io
 import json
 import tempfile
 import unittest
+import urllib.error
 from pathlib import Path
+from unittest import mock
 
+import fadden.capture_register as capture_module
 from fadden.capture_register import (
     CaptureRegisterError,
     RegisterExchange,
@@ -145,6 +149,63 @@ class MemorySession:
         if url not in self.exchanges or not self.exchanges[url]:
             raise AssertionError(f"unexpected Register request: {url}")
         return self.exchanges[url].pop(0)
+
+
+class FakeHttpResponse:
+    """Complete HTTP surface consumed by the production session."""
+
+    def __init__(
+        self,
+        body: bytes,
+        *,
+        status: int = 200,
+        headers: dict[str, str] | None = None,
+    ) -> None:
+        self.status = status
+        self.headers = headers or {
+            "Content-Type": CONTENT_TYPE,
+            "OData-Version": "4.0",
+        }
+        self.body = body
+        self.read_sizes: list[int] = []
+
+    def __enter__(self) -> "FakeHttpResponse":
+        return self
+
+    def __exit__(self, *_args: object) -> None:
+        return None
+
+    def read(self, size: int) -> bytes:
+        self.read_sizes.append(size)
+        return self.body[:size]
+
+
+class FakeOpener:
+    def __init__(self, effects: list[FakeHttpResponse | BaseException]) -> None:
+        self.effects = list(effects)
+        self.calls: list[tuple[object, int]] = []
+
+    def open(self, request: object, *, timeout: int) -> FakeHttpResponse:
+        self.calls.append((request, timeout))
+        if not self.effects:
+            raise AssertionError("unexpected production HTTP attempt")
+        effect = self.effects.pop(0)
+        if isinstance(effect, BaseException):
+            raise effect
+        return effect
+
+
+class FakeClock:
+    def __init__(self) -> None:
+        self.now = 0.0
+        self.sleeps: list[float] = []
+
+    def monotonic(self) -> float:
+        return self.now
+
+    def sleep(self, seconds: float) -> None:
+        self.sleeps.append(seconds)
+        self.now += seconds
 
 
 class LiveRegisterCaptureTests(unittest.TestCase):
@@ -1107,6 +1168,184 @@ class LiveRegisterCaptureStateTests(unittest.TestCase):
         self.assertIsNone(item["primary_response_media_type"])
         serialised = json.dumps([capture, observation]).encode("utf-8")
         self.assertNotIn(secret_body, serialised)
+
+
+class LiveRegisterProductionSessionTests(unittest.TestCase):
+    def _run_with_production_session(
+        self,
+        opener: FakeOpener,
+        clock: FakeClock,
+        timestamps: list[str],
+        *,
+        rows: list[dict[str, object]] | None = None,
+    ) -> tuple[dict[str, object], dict[str, object], Path, list[object]]:
+        captured_handlers: list[object] = []
+
+        def build_opener(*handlers: object) -> FakeOpener:
+            captured_handlers.extend(handlers)
+            return opener
+
+        temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(temporary.cleanup)
+        root = Path(temporary.name)
+        manifest_path = root / "manifest.json"
+        manifest_path.write_bytes(json_bytes(rows or [manifest_row()]))
+        with (
+            mock.patch.object(capture_module.urllib.request, "build_opener", build_opener),
+            mock.patch.object(capture_module.time, "monotonic", clock.monotonic),
+            mock.patch.object(capture_module.time, "sleep", clock.sleep),
+            mock.patch.object(capture_module, "_utc_now", side_effect=timestamps),
+        ):
+            paths = capture_register_run(manifest_path, root / "capture")
+        return (
+            json.loads(paths["capture"].read_bytes()),
+            json.loads(paths["observation"].read_bytes()),
+            root / "capture" / "evidence",
+            captured_handlers,
+        )
+
+    def test_retries_transport_and_retryable_status_with_fixed_delays(self) -> None:
+        """Removing an attempt, timeout, identity header or retry delay must fail this case."""
+        retry_status = urllib.error.HTTPError(
+            CURRENT_URL,
+            503,
+            "Service Unavailable",
+            {"Content-Type": "text/plain", "Server": "ignored"},
+            io.BytesIO(b"server body must not be read"),
+        )
+        response = FakeHttpResponse(
+            CURRENT_BODY,
+            headers={
+                "Content-Type": CONTENT_TYPE,
+                "OData-Version": "4.0",
+                "X-Frl-Version": "2026.08.13-releaseyaml.1",
+                "Server": "must-not-be-retained",
+            },
+        )
+        opener = FakeOpener(
+            [urllib.error.URLError("private socket detail"), retry_status, response]
+        )
+        clock = FakeClock()
+
+        capture, observation, evidence, handlers = self._run_with_production_session(
+            opener,
+            clock,
+            ["2026-08-29T08:00:00Z", "2026-08-29T08:00:13Z"],
+        )
+
+        self.assertEqual(clock.sleeps, [6.0, 6.0])
+        self.assertEqual(len(opener.calls), 3)
+        self.assertEqual([timeout for _request, timeout in opener.calls], [90, 90, 90])
+        for request, _timeout in opener.calls:
+            self.assertEqual(request.full_url, CURRENT_URL)
+            self.assertEqual(
+                request.get_header("User-agent"),
+                "au-tax-legislation-corpus (+https://github.com/ryanduguid/au-tax-legislation-corpus)",
+            )
+        self.assertEqual(response.read_sizes, [(256 * 1024) + 1])
+        self.assertEqual(len(handlers), 1)
+        self.assertEqual(observation["run_status"], "VERIFIED")
+        request_record = capture["results"][0]["requests"][0]
+        self.assertEqual(request_record["attempt_count"], 3)
+        self.assertEqual(
+            request_record["response_headers"],
+            {
+                "content-type": CONTENT_TYPE,
+                "odata-version": "4.0",
+                "x-frl-version": "2026.08.13-releaseyaml.1",
+            },
+        )
+        self.assertEqual(len(list(evidence.iterdir())), 1)
+        self.assertNotIn("private socket detail", json.dumps([capture, observation]))
+
+    def test_paces_separate_register_requests_without_wall_clock_sleep(self) -> None:
+        """A second title must start no sooner than 1.5 seconds after the first request."""
+        instrument = manifest_row(
+            id="F2020L01498",
+            name="A New Tax System (Australian Business Number) Regulations 2020",
+            collection="LegislativeInstrument",
+            versionStart="2025-10-04",
+            compilationNumber="2",
+            sourceUrl=(
+                "https://www.legislation.gov.au/F2020L01498/"
+                "2025-10-04/2025-10-04/text/original/epub"
+            ),
+        )
+        second_body = version_body(
+            "F2020L01498", "2025-10-04", "2", "F2025C00987"
+        )
+        opener = FakeOpener(
+            [FakeHttpResponse(CURRENT_BODY), FakeHttpResponse(second_body)]
+        )
+        clock = FakeClock()
+
+        _capture, observation, _evidence, _handlers = self._run_with_production_session(
+            opener,
+            clock,
+            [
+                "2026-08-29T09:00:00Z",
+                "2026-08-29T09:00:01Z",
+                "2026-08-29T09:00:03Z",
+            ],
+            rows=[instrument, manifest_row()],
+        )
+
+        self.assertEqual(clock.sleeps, [1.5])
+        self.assertEqual([call[0].full_url for call in opener.calls], [CURRENT_URL, INSTRUMENT_URL])
+        self.assertEqual(observation["run_status"], "VERIFIED")
+
+    def test_redirect_is_not_followed_retried_or_retained(self) -> None:
+        """A hostile Location response must remain one failed exchange on the exact host."""
+        redirect = urllib.error.HTTPError(
+            CURRENT_URL,
+            302,
+            "Found",
+            {
+                "Location": "https://evil.example/private",
+                "Content-Type": "text/html",
+            },
+            io.BytesIO(b"redirect body must not be retained"),
+        )
+        opener = FakeOpener([redirect])
+        clock = FakeClock()
+
+        capture, observation, evidence, handlers = self._run_with_production_session(
+            opener,
+            clock,
+            ["2026-08-29T10:00:00Z", "2026-08-29T10:00:01Z"],
+        )
+
+        self.assertEqual(len(opener.calls), 1)
+        self.assertEqual(clock.sleeps, [])
+        self.assertEqual(len(list(evidence.iterdir())), 0)
+        self.assertEqual(observation["run_status"], "BLOCKED")
+        self.assertEqual(capture["results"][0]["error_category"], "HTTP_STATUS")
+        self.assertEqual(len(handlers), 1)
+        redirect_request = handlers[0].redirect_request(
+            None, None, 302, "Found", {}, CURRENT_URL
+        )
+        self.assertIsNone(redirect_request)
+        serialised = json.dumps([capture, observation])
+        self.assertNotIn("evil.example", serialised)
+        self.assertNotIn("redirect body", serialised)
+
+    def test_reads_only_one_byte_beyond_the_response_limit(self) -> None:
+        """An oversized response must be detected without reading an unbounded body."""
+        oversized = b"x" * ((256 * 1024) + 100)
+        response = FakeHttpResponse(oversized)
+        opener = FakeOpener([response])
+        clock = FakeClock()
+
+        capture, observation, evidence, _handlers = self._run_with_production_session(
+            opener,
+            clock,
+            ["2026-08-29T11:00:00Z", "2026-08-29T11:00:01Z"],
+        )
+
+        self.assertEqual(response.read_sizes, [(256 * 1024) + 1])
+        self.assertEqual(capture["results"][0]["error_category"], "RESPONSE_TOO_LARGE")
+        self.assertEqual(observation["run_status"], "BLOCKED")
+        self.assertEqual(len(list(evidence.iterdir())), 0)
 
 
 if __name__ == "__main__":
