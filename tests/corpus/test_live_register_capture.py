@@ -33,6 +33,11 @@ INSTRUMENT_URL = (
     "%24filter=titleId%20eq%20%27F2020L01498%27%20and%20isCurrent%20eq%20true&"
     "%24select=titleId%2Cstart%2CcompilationNumber%2CregisterId%2CisCurrent%2Cstatus%2CregisteredAt"
 )
+HISTORY_URL = (
+    "https://api.prod.legislation.gov.au/v1/versions?%24top=1&"
+    "%24filter=titleId%20eq%20%27C2004A00467%27&%24orderby=start%20desc&"
+    "%24select=titleId%2Cstart%2CcompilationNumber%2CregisterId%2CisCurrent%2Cstatus%2CregisteredAt"
+)
 
 
 def json_bytes(value: object) -> bytes:
@@ -64,9 +69,15 @@ def manifest_row(**changes: object) -> dict[str, object]:
 def version_body(
     title_id: str,
     start: str,
-    compilation_number: str,
-    document_id: str,
+    compilation_number: str | None,
+    document_id: str | None,
+    *,
+    is_current: bool = True,
+    status: str = "InForce",
+    registered_at: str | None = None,
 ) -> bytes:
+    if registered_at is None and document_id is not None:
+        registered_at = "2026-08-20T01:02:03.1234567"
     return json.dumps(
         {
             "@odata.context": (
@@ -77,16 +88,37 @@ def version_body(
                 {
                     "titleId": title_id,
                     "start": f"{start}T00:00:00",
-                    "isCurrent": True,
-                    "status": "InForce",
+                    "isCurrent": is_current,
+                    "status": status,
                     "registerId": document_id,
-                    "registeredAt": "2026-08-20T01:02:03.1234567",
+                    "registeredAt": registered_at,
                     "compilationNumber": compilation_number,
                 }
             ],
         },
         separators=(",", ":"),
     ).encode("utf-8")
+
+
+def empty_versions_body() -> bytes:
+    return json.dumps(
+        {
+            "@odata.context": (
+                "https://api.prod.legislation.gov.au/v1/$metadata#Versions("
+                "titleId,start,compilationNumber,registerId,isCurrent,status,registeredAt)"
+            ),
+            "value": [],
+        },
+        separators=(",", ":"),
+    ).encode("utf-8")
+
+
+def current_url_for(title_id: str) -> str:
+    return CURRENT_URL.replace("C2004A00467", title_id)
+
+
+def history_url_for(title_id: str) -> str:
+    return HISTORY_URL.replace("C2004A00467", title_id)
 
 
 def successful_exchange(body: bytes, checked_at: str) -> RegisterExchange:
@@ -512,6 +544,569 @@ class LiveRegisterCaptureManifestTests(unittest.TestCase):
                     session=MemorySession({}),
                 )
             self.assertEqual(target.read_bytes(), target_content)
+
+
+class LiveRegisterCaptureStateTests(unittest.TestCase):
+    def _capture_documents(
+        self,
+        exchanges: dict[str, list[RegisterExchange]],
+        *,
+        row: dict[str, object] | None = None,
+    ) -> tuple[dict[str, object], dict[str, object], dict[str, bytes]]:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            manifest_path = root / "manifest.json"
+            manifest_path.write_bytes(json_bytes([row or manifest_row()]))
+            paths = capture_register_run(
+                manifest_path,
+                root / "capture",
+                session=MemorySession(exchanges),
+            )
+            evidence = {
+                path.name: path.read_bytes()
+                for path in (root / "capture" / "evidence").iterdir()
+            }
+            return (
+                json.loads(paths["capture"].read_bytes()),
+                json.loads(paths["observation"].read_bytes()),
+                evidence,
+            )
+
+    def test_derives_every_source_state_and_run_decision(self) -> None:
+        """Removing or guessing any state branch must change an observable contract field."""
+        cases = [
+            {
+                "label": "unchanged",
+                "row": manifest_row(),
+                "exchanges": {
+                    CURRENT_URL: [
+                        successful_exchange(CURRENT_BODY, "2026-08-29T01:00:01Z")
+                    ]
+                },
+                "state": "UNCHANGED",
+                "run_status": "VERIFIED",
+                "conditional": {
+                    "observed_compilation_number": None,
+                    "observed_compilation_date": None,
+                    "observed_register_document_id": None,
+                    "current_version_start": None,
+                    "error_category": None,
+                },
+            },
+            {
+                "label": "superseded",
+                "row": manifest_row(
+                    id="F2020L01498",
+                    name="A New Tax System (Australian Business Number) Regulations 2020",
+                    collection="LegislativeInstrument",
+                    versionStart="2025-10-04",
+                    compilationNumber="2",
+                    sourceUrl=(
+                        "https://www.legislation.gov.au/F2020L01498/"
+                        "2025-10-04/2025-10-04/text/original/epub"
+                    ),
+                ),
+                "exchanges": {
+                    INSTRUMENT_URL: [
+                        successful_exchange(
+                            version_body(
+                                "F2020L01498", "2026-08-01", "3", "F2026C00001"
+                            ),
+                            "2026-08-29T01:00:02Z",
+                        )
+                    ]
+                },
+                "state": "SUPERSEDED",
+                "run_status": "VERIFIED",
+                "conditional": {
+                    "observed_compilation_number": "3",
+                    "observed_compilation_date": "2026-08-01",
+                    "observed_register_document_id": "F2026C00001",
+                    "current_version_start": None,
+                    "error_category": None,
+                },
+            },
+            {
+                "label": "current without published compilation",
+                "row": manifest_row(
+                    id="F2022L00764",
+                    name="ASIC Corporations Superannuation Trustees Instrument 2022/497",
+                    collection="LegislativeInstrument",
+                    versionStart="2023-09-01",
+                    compilationNumber="2",
+                    sourceUrl=(
+                        "https://www.legislation.gov.au/F2022L00764/"
+                        "2023-09-01/2023-09-01/text/original/epub"
+                    ),
+                    version_is_current=False,
+                    current_version_start="2026-07-07",
+                ),
+                "exchanges": {
+                    current_url_for("F2022L00764"): [
+                        successful_exchange(
+                            version_body("F2022L00764", "2026-07-07", None, None),
+                            "2026-08-29T01:00:03Z",
+                        )
+                    ]
+                },
+                "state": "CURRENT_NO_PUBLISHED_COMPILATION",
+                "run_status": "VERIFIED",
+                "conditional": {
+                    "observed_compilation_number": None,
+                    "observed_compilation_date": None,
+                    "observed_register_document_id": None,
+                    "current_version_start": "2026-07-07",
+                    "error_category": None,
+                },
+            },
+            {
+                "label": "no longer in force",
+                "row": manifest_row(
+                    id="F2006B07691",
+                    name="Commonwealth Places Mirror Taxes Queensland Notice 2002",
+                    collection="LegislativeInstrument",
+                    versionStart="1997-10-06",
+                    compilationNumber="0",
+                    retrieved="2026-08-03",
+                    sourceUrl=(
+                        "https://www.legislation.gov.au/F2006B07691/"
+                        "1997-10-06/1997-10-06/text/original/epub"
+                    ),
+                ),
+                "exchanges": {
+                    current_url_for("F2006B07691"): [
+                        successful_exchange(
+                            empty_versions_body(), "2026-08-29T01:00:04Z"
+                        )
+                    ],
+                    history_url_for("F2006B07691"): [
+                        successful_exchange(
+                            version_body(
+                                "F2006B07691",
+                                "1997-10-06",
+                                "0",
+                                "F2006B07691",
+                                is_current=False,
+                                status="Ceased",
+                            ),
+                            "2026-08-29T01:00:05Z",
+                        )
+                    ],
+                },
+                "state": "NO_LONGER_IN_FORCE",
+                "run_status": "VERIFIED",
+                "conditional": {
+                    "observed_compilation_number": None,
+                    "observed_compilation_date": None,
+                    "observed_register_document_id": None,
+                    "current_version_start": None,
+                    "error_category": None,
+                },
+            },
+            {
+                "label": "lookup failed",
+                "row": manifest_row(
+                    id="F2025L00178",
+                    name="Family Law Superannuation Regulations 2025",
+                    collection="LegislativeInstrument",
+                    versionStart="2025-04-01",
+                    compilationNumber="1",
+                    sourceUrl=(
+                        "https://www.legislation.gov.au/F2025L00178/"
+                        "2025-04-01/2025-04-01/text/original/epub"
+                    ),
+                ),
+                "exchanges": {
+                    current_url_for("F2025L00178"): [
+                        RegisterExchange(
+                            checked_at="2026-08-29T01:00:06Z",
+                            status=None,
+                            headers={},
+                            body=None,
+                            attempts=3,
+                            error_category="TRANSPORT_ERROR",
+                        )
+                    ]
+                },
+                "state": "LOOKUP_FAILED",
+                "run_status": "BLOCKED",
+                "conditional": {
+                    "observed_compilation_number": None,
+                    "observed_compilation_date": None,
+                    "observed_register_document_id": None,
+                    "current_version_start": None,
+                    "error_category": "TRANSPORT_ERROR",
+                },
+            },
+        ]
+
+        for case in cases:
+            with self.subTest(case=case["label"]), tempfile.TemporaryDirectory() as directory:
+                root = Path(directory)
+                manifest_path = root / "manifest.json"
+                manifest_path.write_bytes(json_bytes([case["row"]]))
+                paths = capture_register_run(
+                    manifest_path,
+                    root / "capture",
+                    session=MemorySession(case["exchanges"]),
+                )
+                observation = json.loads(paths["observation"].read_bytes())
+                self.assertTrue(observation["complete"])
+                self.assertEqual(observation["run_status"], case["run_status"])
+                item = observation["observations"][0]
+                self.assertEqual(item["state"], case["state"])
+                for field, expected in case["conditional"].items():
+                    self.assertEqual(item[field], expected, field)
+
+    def test_empty_current_result_uses_the_exact_ordered_history_query(self) -> None:
+        """Dropping or changing the fallback query would confuse repeal with lookup failure."""
+        current = successful_exchange(empty_versions_body(), "2026-08-29T02:00:01Z")
+        history = successful_exchange(
+            version_body(
+                "C2004A00467",
+                "2025-01-01",
+                "31",
+                "C2025C00001",
+                is_current=False,
+                status="Repealed",
+            ),
+            "2026-08-29T02:00:02Z",
+        )
+        session = MemorySession({CURRENT_URL: [current], HISTORY_URL: [history]})
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            manifest_path = root / "manifest.json"
+            manifest_path.write_bytes(json_bytes([manifest_row()]))
+            paths = capture_register_run(manifest_path, root / "capture", session=session)
+
+            self.assertEqual(session.urls, [CURRENT_URL, HISTORY_URL])
+            observation = json.loads(paths["observation"].read_bytes())
+            self.assertEqual(
+                observation["observations"][0]["state"], "NO_LONGER_IN_FORCE"
+            )
+
+    def test_lookup_failure_does_not_prevent_later_scope_attempts(self) -> None:
+        """A failed first title must not silently shrink or abort the audit scope."""
+        failed = manifest_row()
+        later = manifest_row(
+            id="F2020L01498",
+            name="A New Tax System (Australian Business Number) Regulations 2020",
+            collection="LegislativeInstrument",
+            versionStart="2025-10-04",
+            compilationNumber="2",
+            sourceUrl=(
+                "https://www.legislation.gov.au/F2020L01498/"
+                "2025-10-04/2025-10-04/text/original/epub"
+            ),
+        )
+        session = MemorySession(
+            {
+                CURRENT_URL: [
+                    RegisterExchange(
+                        checked_at="2026-08-29T03:00:01Z",
+                        status=None,
+                        headers={},
+                        body=None,
+                        attempts=3,
+                        error_category="TRANSPORT_ERROR",
+                    )
+                ],
+                INSTRUMENT_URL: [
+                    successful_exchange(
+                        version_body("F2020L01498", "2025-10-04", "2", "F2025C00987"),
+                        "2026-08-29T03:00:02Z",
+                    )
+                ],
+            }
+        )
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            manifest_path = root / "manifest.json"
+            manifest_path.write_bytes(json_bytes([later, failed]))
+            paths = capture_register_run(manifest_path, root / "capture", session=session)
+
+            capture = json.loads(paths["capture"].read_bytes())
+            observation = json.loads(paths["observation"].read_bytes())
+            self.assertEqual(session.urls, [CURRENT_URL, INSTRUMENT_URL])
+            self.assertTrue(capture["complete"])
+            self.assertTrue(observation["complete"])
+            self.assertEqual(observation["run_status"], "BLOCKED")
+            self.assertEqual(
+                [item["state"] for item in observation["observations"]],
+                ["LOOKUP_FAILED", "UNCHANGED"],
+            )
+
+    def test_invalid_responses_use_fixed_fail_closed_categories(self) -> None:
+        """Malformed source facts must never be coerced into a valid development state."""
+        valid_document = json.loads(CURRENT_BODY)
+        valid_row = valid_document["value"][0]
+
+        def with_row(
+            changes: dict[str, object] | None = None,
+            *,
+            remove: str | None = None,
+            extra: bool = False,
+        ) -> bytes:
+            row = dict(valid_row)
+            row.update(changes or {})
+            if remove is not None:
+                del row[remove]
+            if extra:
+                row["unexpected"] = "member"
+            return json.dumps(
+                {"@odata.context": valid_document["@odata.context"], "value": [row]},
+                separators=(",", ":"),
+            ).encode("utf-8")
+
+        def exchange(
+            body: bytes | None,
+            *,
+            status: int | None = 200,
+            content_type: str = CONTENT_TYPE,
+            checked_at: str = "2026-08-29T04:00:00Z",
+            attempts: int = 1,
+            error_category: str | None = None,
+            headers: dict[str, str] | None = None,
+        ) -> RegisterExchange:
+            return RegisterExchange(
+                checked_at=checked_at,
+                status=status,
+                headers=(
+                    {"Content-Type": content_type, "OData-Version": "4.0"}
+                    if headers is None
+                    else headers
+                ),
+                body=body,
+                attempts=attempts,
+                error_category=error_category,
+            )
+
+        two_rows = json.dumps(
+            {
+                "@odata.context": valid_document["@odata.context"],
+                "value": [valid_row, valid_row],
+            },
+            separators=(",", ":"),
+        ).encode("utf-8")
+        invalid_envelope = json.dumps(
+            {
+                "@odata.context": valid_document["@odata.context"],
+                "value": [valid_row],
+                "unexpected": True,
+            },
+            separators=(",", ":"),
+        ).encode("utf-8")
+        wrong_context = json.dumps(
+            {"@odata.context": "https://example.invalid/$metadata", "value": [valid_row]},
+            separators=(",", ":"),
+        ).encode("utf-8")
+        duplicate_json = CURRENT_BODY.replace(
+            b'"titleId":"C2004A00467",',
+            b'"titleId":"C2004A00467","titleId":"C2004A00467",',
+            1,
+        )
+        cases = [
+            (
+                "transport",
+                exchange(None, status=None, error_category="TRANSPORT_ERROR", headers={}),
+                "TRANSPORT_ERROR",
+            ),
+            ("non-200", exchange(b"not retained", status=503), "HTTP_STATUS"),
+            (
+                "oversized",
+                exchange(b"x" * ((256 * 1024) + 1)),
+                "RESPONSE_TOO_LARGE",
+            ),
+            (
+                "wrong media",
+                exchange(CURRENT_BODY, content_type="text/html; charset=utf-8"),
+                "UNSUPPORTED_MEDIA_TYPE",
+            ),
+            ("invalid utf8", exchange(b"\xff"), "INVALID_JSON"),
+            ("malformed json", exchange(b'{"value":'), "INVALID_JSON"),
+            ("duplicate json member", exchange(duplicate_json), "INVALID_JSON"),
+            ("extra envelope member", exchange(invalid_envelope), "INVALID_ODATA_SHAPE"),
+            ("wrong context", exchange(wrong_context), "INVALID_ODATA_SHAPE"),
+            ("two rows", exchange(two_rows), "INVALID_ODATA_SHAPE"),
+            ("missing row field", exchange(with_row(remove="status")), "INVALID_ODATA_SHAPE"),
+            ("extra row field", exchange(with_row(extra=True)), "INVALID_ODATA_SHAPE"),
+            (
+                "wrong title",
+                exchange(with_row({"titleId": "C2004A00468"})),
+                "IDENTITY_MISMATCH",
+            ),
+            (
+                "non-boolean current",
+                exchange(with_row({"isCurrent": "true"})),
+                "INVALID_ODATA_SHAPE",
+            ),
+            (
+                "wrong current status",
+                exchange(with_row({"status": "Repealed"})),
+                "INVALID_ODATA_SHAPE",
+            ),
+            (
+                "unknown status",
+                exchange(with_row({"status": "Current"})),
+                "INVALID_ODATA_SHAPE",
+            ),
+            (
+                "malformed start",
+                exchange(with_row({"start": "not-a-date"})),
+                "INVALID_ODATA_SHAPE",
+            ),
+            (
+                "empty compilation",
+                exchange(with_row({"compilationNumber": ""})),
+                "INVALID_ODATA_SHAPE",
+            ),
+            (
+                "non-string compilation",
+                exchange(with_row({"compilationNumber": 32})),
+                "INVALID_ODATA_SHAPE",
+            ),
+            (
+                "malformed document id",
+                exchange(with_row({"registerId": "../../document"})),
+                "INVALID_ODATA_SHAPE",
+            ),
+            (
+                "missing registration timestamp",
+                exchange(with_row({"registeredAt": None})),
+                "INVALID_ODATA_SHAPE",
+            ),
+            (
+                "registration without document",
+                exchange(with_row({"registerId": None})),
+                "INVALID_ODATA_SHAPE",
+            ),
+            (
+                "different compilation on equal date",
+                exchange(with_row({"compilationNumber": "33"})),
+                "INCONSISTENT_CHRONOLOGY",
+            ),
+            (
+                "same compilation on later date",
+                exchange(with_row({"start": "2026-07-01T00:00:00"})),
+                "INCONSISTENT_CHRONOLOGY",
+            ),
+            (
+                "backwards date",
+                exchange(
+                    with_row(
+                        {
+                            "start": "2026-06-29T00:00:00",
+                            "compilationNumber": "33",
+                        }
+                    )
+                ),
+                "INCONSISTENT_CHRONOLOGY",
+            ),
+            (
+                "malformed checked timestamp",
+                exchange(CURRENT_BODY, checked_at="local-time"),
+                "INVALID_EXCHANGE",
+            ),
+            ("zero attempts", exchange(CURRENT_BODY, attempts=0), "INVALID_EXCHANGE"),
+            ("too many attempts", exchange(CURRENT_BODY, attempts=4), "INVALID_EXCHANGE"),
+            (
+                "unsafe selected header",
+                exchange(
+                    CURRENT_BODY,
+                    headers={"Content-Type": "application/json\r\nInjected: yes"},
+                ),
+                "INVALID_EXCHANGE",
+            ),
+            (
+                "ambiguous selected header",
+                exchange(
+                    CURRENT_BODY,
+                    headers={
+                        "Content-Type": "application/json",
+                        "content-type": "text/html",
+                    },
+                ),
+                "INVALID_EXCHANGE",
+            ),
+            (
+                "status and transport contradiction",
+                exchange(CURRENT_BODY, error_category="TRANSPORT_ERROR"),
+                "INVALID_EXCHANGE",
+            ),
+            (
+                "unbounded transport category",
+                exchange(None, status=None, error_category="socket exploded", headers={}),
+                "INVALID_EXCHANGE",
+            ),
+        ]
+
+        for label, source_exchange, expected_category in cases:
+            with self.subTest(case=label):
+                capture, observation, _evidence = self._capture_documents(
+                    {CURRENT_URL: [source_exchange]}
+                )
+                result = capture["results"][0]
+                item = observation["observations"][0]
+                self.assertEqual(result["state"], "LOOKUP_FAILED")
+                self.assertEqual(result["error_category"], expected_category)
+                self.assertEqual(item["state"], "LOOKUP_FAILED")
+                self.assertEqual(item["error_category"], expected_category)
+                self.assertEqual(observation["run_status"], "BLOCKED")
+
+    def test_no_current_or_historical_version_is_insufficient_evidence(self) -> None:
+        """Two successful empty responses must not be reported as a legal cessation fact."""
+        current = successful_exchange(empty_versions_body(), "2026-08-29T05:00:01Z")
+        history = successful_exchange(empty_versions_body(), "2026-08-29T05:00:02Z")
+        capture, observation, evidence = self._capture_documents(
+            {CURRENT_URL: [current], HISTORY_URL: [history]}
+        )
+        self.assertEqual(capture["results"][0]["error_category"], "NO_VERSION_EVIDENCE")
+        self.assertEqual(observation["observations"][0]["state"], "LOOKUP_FAILED")
+        self.assertEqual(len(evidence), 1)
+
+    def test_bounded_malformed_200_body_is_retained_as_failure_evidence(self) -> None:
+        """Removing malformed source bytes would make the closed decision unauditable."""
+        malformed = b'{"value":'
+        source_exchange = successful_exchange(malformed, "2026-08-29T06:00:01Z")
+        capture, observation, evidence = self._capture_documents(
+            {CURRENT_URL: [source_exchange]}
+        )
+        request = capture["results"][0]["requests"][0]
+        digest = sha256_id(malformed)
+        self.assertEqual(request["response_sha256"], digest)
+        self.assertEqual(request["response_length"], len(malformed))
+        self.assertEqual(
+            request["evidence_path"],
+            f"evidence/sha256-{digest.removeprefix('sha256:')}.json",
+        )
+        self.assertEqual(list(evidence.values()), [malformed])
+        item = observation["observations"][0]
+        self.assertEqual(item["primary_response_sha256"], digest)
+        self.assertEqual(item["primary_response_media_type"], "application/json")
+
+    def test_non_200_body_is_neither_retained_nor_disclosed(self) -> None:
+        """A server error body must not cross the capture's bounded evidence contract."""
+        secret_body = b"PRIVATE-SERVER-BODY-MUST-NOT-APPEAR"
+        source_exchange = RegisterExchange(
+            checked_at="2026-08-29T07:00:01Z",
+            status=503,
+            headers={"Content-Type": "text/plain", "Server": "ignored"},
+            body=secret_body,
+            attempts=3,
+        )
+        capture, observation, evidence = self._capture_documents(
+            {CURRENT_URL: [source_exchange]}
+        )
+        request = capture["results"][0]["requests"][0]
+        self.assertIsNone(request["response_length"])
+        self.assertIsNone(request["response_sha256"])
+        self.assertIsNone(request["evidence_path"])
+        self.assertEqual(evidence, {})
+        item = observation["observations"][0]
+        self.assertIsNone(item["primary_response_sha256"])
+        self.assertIsNone(item["primary_response_media_type"])
+        serialised = json.dumps([capture, observation]).encode("utf-8")
+        self.assertNotIn(secret_body, serialised)
 
 
 if __name__ == "__main__":

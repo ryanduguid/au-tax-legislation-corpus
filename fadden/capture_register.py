@@ -259,46 +259,39 @@ def _current_url(title_id: str) -> str:
     return f"{SOURCE_API}versions?{query}"
 
 
+def _history_url(title_id: str) -> str:
+    query = urlencode(
+        [
+            ("$top", "1"),
+            ("$filter", f"titleId eq '{title_id}'"),
+            ("$orderby", "start desc"),
+            ("$select", SELECT_FIELDS),
+        ],
+        quote_via=quote,
+    )
+    return f"{SOURCE_API}versions?{query}"
+
+
 def _normalised_headers(headers: Mapping[str, str]) -> dict[str, str]:
     selected: dict[str, str] = {}
     for name, value in headers.items():
+        if not isinstance(name, str):
+            raise CaptureRegisterError("response header names must be strings.")
         lower_name = name.lower()
         if lower_name in RETAINED_HEADER_NAMES:
+            if lower_name in selected:
+                raise CaptureRegisterError("response contains an ambiguous selected header.")
             selected[lower_name] = _required_text(value, f"response header {lower_name}")
     return {name: selected[name] for name in sorted(selected)}
 
 
-def _version_row(exchange: RegisterExchange, title_id: str) -> dict[str, Any]:
-    _utc_timestamp(exchange.checked_at, "exchange checked_at")
-    if exchange.status != 200 or exchange.error_category is not None:
-        raise CaptureRegisterError("Register current-version lookup failed.")
-    if not isinstance(exchange.attempts, int) or isinstance(exchange.attempts, bool) or exchange.attempts < 1:
-        raise CaptureRegisterError("Register exchange attempt count is invalid.")
-    if not isinstance(exchange.body, bytes) or len(exchange.body) > MAX_RESPONSE_BYTES:
-        raise CaptureRegisterError("Register response body is missing or too large.")
-    headers = _normalised_headers(exchange.headers)
-    content_type = headers.get("content-type", "").split(";", 1)[0].strip().lower()
-    if content_type != "application/json":
-        raise CaptureRegisterError("Register response media type is unsupported.")
+def _version_timestamp(value: Any, field: str) -> str:
+    text = _required_text(value, field)
     try:
-        document = json.loads(exchange.body.decode("utf-8"))
-    except (UnicodeDecodeError, json.JSONDecodeError) as exc:
-        raise CaptureRegisterError("Register response is invalid JSON.") from exc
-    if not isinstance(document, dict) or set(document) != {"@odata.context", "value"}:
-        raise CaptureRegisterError("Register response has an invalid OData envelope.")
-    if document["@odata.context"] != ODATA_CONTEXT:
-        raise CaptureRegisterError("Register response has an invalid OData context.")
-    values = document["value"]
-    if not isinstance(values, list) or len(values) != 1 or not isinstance(values[0], dict):
-        raise CaptureRegisterError("Register response has an invalid version row count.")
-    row = values[0]
-    if set(row) != ROW_FIELDS:
-        raise CaptureRegisterError("Register response version row has an invalid shape.")
-    if row["titleId"] != title_id:
-        raise CaptureRegisterError("Register response title does not match the request.")
-    if row["isCurrent"] is not True or row["status"] != "InForce":
-        raise CaptureRegisterError("Register response does not contain an in-force current version.")
-    return row
+        dt.datetime.fromisoformat(text)
+    except ValueError as exc:
+        raise CaptureRegisterError(f"{field} is invalid.") from exc
+    return text
 
 
 def _start_date(value: Any) -> str:
@@ -310,26 +303,279 @@ def _start_date(value: Any) -> str:
     return parsed.date().isoformat()
 
 
-def _request_record(
+@dataclass(frozen=True)
+class _EvaluatedExchange:
+    request: dict[str, Any]
+    rows: list[dict[str, Any]] | None
+    error_category: str | None
+    retained_body: bytes | None
+    media_type: str | None
+
+
+def _validated_row(row: Any, title_id: str, role: str) -> dict[str, Any]:
+    if not isinstance(row, dict) or set(row) != ROW_FIELDS:
+        raise CaptureRegisterError("INVALID_ODATA_SHAPE")
+    if row["titleId"] != title_id:
+        raise CaptureRegisterError("IDENTITY_MISMATCH")
+    try:
+        _start_date(row["start"])
+    except CaptureRegisterError as exc:
+        raise CaptureRegisterError("INVALID_ODATA_SHAPE") from exc
+    if not isinstance(row["isCurrent"], bool):
+        raise CaptureRegisterError("INVALID_ODATA_SHAPE")
+    if row["status"] not in {"InForce", "Ceased", "Repealed", "NeverEffective"}:
+        raise CaptureRegisterError("INVALID_ODATA_SHAPE")
+    if role == "current" and (row["isCurrent"] is not True or row["status"] != "InForce"):
+        raise CaptureRegisterError("INVALID_ODATA_SHAPE")
+    if role == "history" and row["isCurrent"] is not False:
+        raise CaptureRegisterError("INVALID_ODATA_SHAPE")
+
+    document_id = row["registerId"]
+    compilation_number = row["compilationNumber"]
+    registered_at = row["registeredAt"]
+    if document_id is None:
+        if registered_at is not None:
+            raise CaptureRegisterError("INVALID_ODATA_SHAPE")
+        if compilation_number is not None:
+            try:
+                _required_text(compilation_number, "Register compilation number")
+            except CaptureRegisterError as exc:
+                raise CaptureRegisterError("INVALID_ODATA_SHAPE") from exc
+    else:
+        try:
+            validate_register_id(document_id)
+        except ValueError as exc:
+            raise CaptureRegisterError("INVALID_ODATA_SHAPE") from exc
+        try:
+            _required_text(compilation_number, "Register compilation number")
+            _version_timestamp(registered_at, "Register registration timestamp")
+        except CaptureRegisterError as exc:
+            raise CaptureRegisterError("INVALID_ODATA_SHAPE") from exc
+    return row
+
+
+def _parse_odata_rows(body: bytes, title_id: str, role: str) -> list[dict[str, Any]]:
+    try:
+        text = body.decode("utf-8")
+        document = json.loads(text, object_pairs_hook=_reject_duplicate_json_members)
+    except (UnicodeDecodeError, json.JSONDecodeError, _DuplicateJsonMemberError) as exc:
+        raise CaptureRegisterError("INVALID_JSON") from exc
+    if not isinstance(document, dict) or set(document) != {"@odata.context", "value"}:
+        raise CaptureRegisterError("INVALID_ODATA_SHAPE")
+    if document["@odata.context"] != ODATA_CONTEXT:
+        raise CaptureRegisterError("INVALID_ODATA_SHAPE")
+    values = document["value"]
+    if not isinstance(values, list) or len(values) > 1:
+        raise CaptureRegisterError("INVALID_ODATA_SHAPE")
+    return [_validated_row(row, title_id, role) for row in values]
+
+
+def _evaluate_exchange(
+    exchange: RegisterExchange,
     *,
     role: str,
     url: str,
-    exchange: RegisterExchange,
-    evidence_path: str,
-    response_sha256: str,
-) -> dict[str, Any]:
-    return {
+    title_id: str,
+) -> _EvaluatedExchange:
+    try:
+        checked_at = _utc_timestamp(exchange.checked_at, "exchange checked_at")
+        if (
+            not isinstance(exchange.attempts, int)
+            or isinstance(exchange.attempts, bool)
+            or not 1 <= exchange.attempts <= 3
+        ):
+            raise CaptureRegisterError("invalid attempt count")
+        headers = _normalised_headers(exchange.headers)
+    except (AttributeError, CaptureRegisterError):
+        checked_at = "1970-01-01T00:00:00Z"
+        headers = {}
+        problem = "INVALID_EXCHANGE"
+    else:
+        problem = None
+
+    response_sha256: str | None = None
+    evidence_path: str | None = None
+    response_length: int | None = None
+    retained_body: bytes | None = None
+    media_type: str | None = None
+    rows: list[dict[str, Any]] | None = None
+
+    status = exchange.status
+    transport_error = exchange.error_category
+    if problem is None:
+        if status is None:
+            if transport_error != "TRANSPORT_ERROR" or exchange.body is not None:
+                problem = "INVALID_EXCHANGE"
+            else:
+                problem = "TRANSPORT_ERROR"
+        elif (
+            not isinstance(status, int)
+            or isinstance(status, bool)
+            or not 100 <= status <= 599
+            or transport_error is not None
+        ):
+            problem = "INVALID_EXCHANGE"
+        elif status != 200:
+            problem = "HTTP_STATUS"
+        elif not isinstance(exchange.body, bytes):
+            problem = "INVALID_EXCHANGE"
+        elif len(exchange.body) > MAX_RESPONSE_BYTES:
+            problem = "RESPONSE_TOO_LARGE"
+        else:
+            retained_body = exchange.body
+            response_length = len(retained_body)
+            response_sha256 = _sha256_id(retained_body)
+            evidence_path = (
+                "evidence/sha256-"
+                f"{response_sha256.removeprefix('sha256:')}.json"
+            )
+            raw_content_type = headers.get("content-type")
+            if raw_content_type is not None:
+                media_type = raw_content_type.split(";", 1)[0].strip().lower()
+            if media_type != "application/json":
+                problem = "UNSUPPORTED_MEDIA_TYPE"
+            else:
+                try:
+                    rows = _parse_odata_rows(retained_body, title_id, role)
+                except CaptureRegisterError as exc:
+                    problem = str(exc)
+
+    request = {
         "role": role,
         "url": url,
-        "checked_at": exchange.checked_at,
-        "http_status": exchange.status,
-        "transport_error_category": exchange.error_category,
-        "attempt_count": exchange.attempts,
-        "response_headers": _normalised_headers(exchange.headers),
-        "response_length": len(exchange.body or b""),
+        "checked_at": checked_at,
+        "http_status": status if isinstance(status, int) and not isinstance(status, bool) else None,
+        "transport_error_category": (
+            "TRANSPORT_ERROR" if problem == "TRANSPORT_ERROR" else None
+        ),
+        "attempt_count": (
+            exchange.attempts
+            if isinstance(exchange.attempts, int) and not isinstance(exchange.attempts, bool)
+            else 0
+        ),
+        "response_headers": headers,
+        "response_length": response_length,
         "response_sha256": response_sha256,
         "evidence_path": evidence_path,
     }
+    return _EvaluatedExchange(
+        request=request,
+        rows=rows,
+        error_category=problem,
+        retained_body=retained_body,
+        media_type=media_type,
+    )
+
+
+def _retain_exchange_evidence(
+    evaluated: _EvaluatedExchange, evidence: dict[str, bytes]
+) -> None:
+    path = evaluated.request["evidence_path"]
+    body = evaluated.retained_body
+    if path is None or body is None:
+        return
+    prior = evidence.setdefault(path, body)
+    if prior != body:
+        raise CaptureRegisterError("response digest collision detected")
+
+
+def _observe_title(
+    title: dict[str, Any],
+    session: RegisterSession,
+    evidence: dict[str, bytes],
+) -> tuple[dict[str, Any], dict[str, Any]]:
+    title_id = title["register_id"]
+    current_url = _current_url(title_id)
+    current = _evaluate_exchange(
+        session.get(current_url), role="current", url=current_url, title_id=title_id
+    )
+    _retain_exchange_evidence(current, evidence)
+    requests = [current.request]
+    state = "LOOKUP_FAILED"
+    error_category = current.error_category
+    observed_number: str | None = None
+    observed_date: str | None = None
+    observed_document_id: str | None = None
+    current_version_start: str | None = None
+
+    if error_category is None and current.rows is not None:
+        if not current.rows:
+            history_url = _history_url(title_id)
+            history = _evaluate_exchange(
+                session.get(history_url),
+                role="history",
+                url=history_url,
+                title_id=title_id,
+            )
+            _retain_exchange_evidence(history, evidence)
+            requests.append(history.request)
+            if history.error_category is not None:
+                error_category = history.error_category
+            elif not history.rows:
+                error_category = "NO_VERSION_EVIDENCE"
+            else:
+                state = "NO_LONGER_IN_FORCE"
+                error_category = None
+        else:
+            row = current.rows[0]
+            current_date = _start_date(row["start"])
+            if current_date < title["compilation_date"]:
+                error_category = "INCONSISTENT_CHRONOLOGY"
+            elif row["registerId"] is None:
+                state = "CURRENT_NO_PUBLISHED_COMPILATION"
+                current_version_start = current_date
+                error_category = None
+            else:
+                compilation_number = _required_text(
+                    row["compilationNumber"], "Register compilation number"
+                )
+                if (
+                    compilation_number == title["compilation_number"]
+                    and current_date == title["compilation_date"]
+                ):
+                    state = "UNCHANGED"
+                    error_category = None
+                elif (
+                    compilation_number != title["compilation_number"]
+                    and current_date > title["compilation_date"]
+                ):
+                    state = "SUPERSEDED"
+                    error_category = None
+                    observed_number = compilation_number
+                    observed_date = current_date
+                    observed_document_id = row["registerId"]
+                else:
+                    error_category = "INCONSISTENT_CHRONOLOGY"
+
+    checked_at = requests[-1]["checked_at"]
+    result = {
+        "register_id": title_id,
+        "collection": title["collection"],
+        "checked_at": checked_at,
+        "state": state,
+        "error_category": error_category,
+        "requests": requests,
+    }
+    result_sha256 = _sha256_id(_json_bytes(result))
+    observation = {
+        "register_id": title_id,
+        "collection": title["collection"],
+        "state": state,
+        "evidence_id": f"frl:{title_id}:{result_sha256.removeprefix('sha256:')[:32]}",
+        "observed_compilation_number": observed_number,
+        "observed_compilation_date": observed_date,
+        "observed_register_document_id": observed_document_id,
+        "current_version_start": current_version_start,
+        "evidence_url": title["register_page"],
+        "checked_at": checked_at,
+        "error_category": error_category,
+        "capture_result_sha256": result_sha256,
+        "primary_response_sha256": current.request["response_sha256"],
+        "primary_response_media_type": (
+            current.media_type if current.request["response_sha256"] is not None else None
+        ),
+    }
+    return result, observation
 
 
 def _write_new(path: Path, content: bytes) -> None:
@@ -362,66 +608,9 @@ def capture_register_run(
     observations: list[dict[str, Any]] = []
 
     for title in baseline["titles"]:
-        title_id = title["register_id"]
-        url = _current_url(title_id)
-        exchange = session.get(url)
-        row = _version_row(exchange, title_id)
-        observed_date = _start_date(row["start"])
-        observed_number = _required_text(
-            row["compilationNumber"], "Register compilation number"
-        )
-        document_id = validate_register_id(row["registerId"])
-        _required_text(row["registeredAt"], "Register registration timestamp")
-        if (
-            observed_number != title["compilation_number"]
-            or observed_date != title["compilation_date"]
-        ):
-            raise CaptureRegisterError("Register compilation does not match the baseline yet.")
-
-        body = exchange.body
-        assert body is not None
-        response_sha256 = _sha256_id(body)
-        response_hex = response_sha256.removeprefix("sha256:")
-        relative_evidence = f"evidence/sha256-{response_hex}.json"
-        evidence[relative_evidence] = body
-        result = {
-            "register_id": title_id,
-            "collection": title["collection"],
-            "checked_at": exchange.checked_at,
-            "state": "UNCHANGED",
-            "error_category": None,
-            "requests": [
-                _request_record(
-                    role="current",
-                    url=url,
-                    exchange=exchange,
-                    evidence_path=relative_evidence,
-                    response_sha256=response_sha256,
-                )
-            ],
-        }
+        result, item = _observe_title(title, session, evidence)
         results.append(result)
-        result_sha256 = _sha256_id(_json_bytes(result))
-        observations.append(
-            {
-                "register_id": title_id,
-                "collection": title["collection"],
-                "state": "UNCHANGED",
-                "evidence_id": (
-                    f"frl:{title_id}:{result_sha256.removeprefix('sha256:')[:32]}"
-                ),
-                "observed_compilation_number": None,
-                "observed_compilation_date": None,
-                "observed_register_document_id": None,
-                "current_version_start": None,
-                "evidence_url": title["register_page"],
-                "checked_at": exchange.checked_at,
-                "error_category": None,
-                "capture_result_sha256": result_sha256,
-                "primary_response_sha256": response_sha256,
-                "primary_response_media_type": "application/json",
-            }
-        )
+        observations.append(item)
 
     expected_ids = [title["register_id"] for title in baseline["titles"]]
     capture = {
@@ -444,7 +633,12 @@ def capture_register_run(
         "capture_sha256": _sha256_id(capture_content),
         "expected_register_ids": expected_ids,
         "complete": capture["complete"],
-        "run_status": "VERIFIED",
+        "run_status": (
+            "VERIFIED"
+            if capture["complete"]
+            and all(item["state"] != "LOOKUP_FAILED" for item in observations)
+            else "BLOCKED"
+        ),
         "observations": observations,
     }
     observation_content = _json_bytes(observation)
