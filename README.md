@@ -150,9 +150,11 @@ v1 baseline and observation inputs for
 python -m fadden export_monitor_contract -- corpus/sources.json observation-facts.json --out monitor-input
 ```
 
-The facts file has schema version `au-tax-register-observation-facts.v1`. It
+The facts file may use `au-tax-register-observation-facts.v1`, v2 or v3. It
 contains the observation timestamp, whether coverage is complete, and one
-stateful result for each observed Register id. The exporter validates the
+stateful result for each observed Register id. V3 also binds every observation
+to the SHA-256 of the exact source payload used, its content kind and media
+type. The exporter validates the
 scope, collection, UTC timestamps, HTTPS evidence links and state-specific
 fields, rejects duplicate JSON members and control characters, and refuses an
 input whose resolved path is either output filename. Existing output names must
@@ -175,8 +177,36 @@ adapter does not create.
 
 It does not call the Register, download a document, decide the legal effect of
 a change, or update any workflow. `synthetic` remains the output mode because
-the monitor's current v1 schema is a provenance-first review-queue contract;
+the monitor is a provenance-first review-queue contract, not a live observer;
 the human technical review remains separate.
+
+## Exporting publication evidence bundles
+
+The publication adapter proves the next contract using checked-in synthetic
+inputs:
+
+```bash
+python -m fadden export_publication_bundles -- tests/corpus/fixtures/publication/sample-sources.json tests/corpus/fixtures/publication/sample-observation-facts-v3.json --out build/publication-bundles
+```
+
+It accepts only a complete synthetic v3 observation. `UNCHANGED` titles emit
+nothing; every changed title must be a supported `SUPERSEDED` compilation with
+a later publication date, matching collection and complete content evidence.
+Any blocked, unsupported, incomplete or inconsistent title fails the whole
+export. The resulting `evidence-bundle.v1` contains source metadata and exact
+input/content digests, but no source extract, practical implication or AI
+explanation.
+
+The output path must be absent and its parent must be an ordinary directory.
+Both inputs must be ordinary files outside the output. The command builds every
+bundle in a private sibling directory and promotes the complete directory with
+one rename; a failed write or promotion removes only importer-owned staging and
+leaves existing paths untouched.
+
+The fixture's `content_sha256` identifies the checked-in artificial source
+payload bytes. It is not a hash of the observation file. No live observer exists
+yet, so this command cannot establish current professional coverage and emits
+only `mode: synthetic`.
 
 To produce a corpus you can pass on to someone else:
 

@@ -40,7 +40,7 @@ giving that project access to this build tree:
 python -m fadden export_monitor_contract -- corpus/sources.json observation-facts.json --out monitor-input
 ```
 
-The facts document must use `au-tax-register-observation-facts.v1`. The command
+The facts document may use `au-tax-register-observation-facts.v1`, v2 or v3. The command
 writes the deterministic, exact monitor inputs `monitor-baseline.json` and
 `register-observation.json` with duplicate-member, control-character and
 resolved input/output-collision checks. Existing output names must be ordinary
@@ -65,6 +65,32 @@ versioned outputs plus an atomic generation pointer.
 observation is allowed only with `complete: false`, so the monitor blocks rather
 than inferring that unobserved titles are unchanged. The output is a review
 queue input, not an authorised-text claim, legal conclusion or workflow change.
+
+## Exporting publication evidence bundles
+
+The publisher contract currently has one synthetic conformance path:
+
+```bash
+python -m fadden export_publication_bundles -- tests/corpus/fixtures/publication/sample-sources.json tests/corpus/fixtures/publication/sample-observation-facts-v3.json --out build/publication-bundles
+```
+
+V3 content evidence records the SHA-256 of the exact artificial payload used to
+support each observation, plus its content kind and media type. It does not
+reuse the observation-file digest as if that were source evidence. The export
+requires complete scope; ignores `UNCHANGED`; and permits only a matching,
+newer `SUPERSEDED` compilation. Every other changed, blocked or inconsistent
+state aborts the complete run before output publication.
+
+The destination itself must not exist. Its parent and both inputs must be
+ordinary filesystem objects, not links, junctions or special files. The command
+captures both inputs once, builds all JSON files under a private sibling and
+renames that complete directory into place. A failure removes only that private
+staging directory. The bundle is metadata-only and contains no source extract,
+impact assessment or explainer.
+
+There is no live Federal Register observer in this repository. The adapter and
+its fixtures emit `mode: synthetic`; passing this contract test does not make a
+development current or ready for professional publication.
 
 In a source checkout the intermediates are regenerated, not shipped: the
 .gitignore keeps titles_all.json, acts_resolved.json, manifest_raw.json and the
