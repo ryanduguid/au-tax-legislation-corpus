@@ -54,16 +54,23 @@ class LiveEvidenceWorkflowPolicyTests(unittest.TestCase):
             re.findall(r"(?m)^  ([a-z][a-z0-9_-]*):$", self._top_level_block("jobs")),
             ["publish"],
         )
-        self.assertIn(
-            "  publish:\n"
-            "    if: github.repository == 'ryanduguid/au-tax-legislation-corpus' && "
-            "github.ref == 'refs/heads/main'\n"
-            "    permissions:\n"
-            "      attestations: write\n"
-            "      contents: write\n"
-            "      id-token: write",
-            workflow,
+        permission_blocks = [
+            match.rstrip()
+            for match in re.findall(
+                r"(?m)^    permissions:\n(?:      [a-z-]+: (?:read|write|none)\n?)+",
+                workflow,
+            )
+        ]
+        self.assertEqual(
+            permission_blocks,
+            [
+                "    permissions:\n"
+                "      attestations: write\n"
+                "      contents: write\n"
+                "      id-token: write"
+            ],
         )
+        self.assertEqual(len(re.findall(r"(?m)^\s*permissions:$", workflow)), 1)
         self.assertIn("runs-on: windows-latest", workflow)
         self.assertIn("timeout-minutes: 120", workflow)
         self.assertRegex(workflow, r"(?m)^    defaults:\n      run:\n        shell: pwsh$")
@@ -109,12 +116,13 @@ class LiveEvidenceWorkflowPolicyTests(unittest.TestCase):
         self.assertEqual(attest_index, count_index + 1)
 
         count_step = steps[count_index]
+        self.assertNotRegex(count_step, r"(?m)^        if:")
+        self.assertIn("^(0|[1-9][0-9]{0,3})$", count_step)
         self.assertIn("Get-ChildItem -LiteralPath $candidateDir -Filter '*.json' -File", count_step)
         self.assertIn("Sort-Object -Property Name", count_step)
         self.assertIn("$candidateFiles.Count -ne $candidateCount", count_step)
-        self.assertIn("$candidateFiles.Count -lt 1", count_step)
+        self.assertNotIn("$candidateFiles.Count -lt 1", count_step)
         self.assertIn("$candidateFiles.Count -gt 1000", count_step)
-        self.assertIn("if: steps.export.outputs.has_candidates == 'true'", count_step)
 
         attest_step = steps[attest_index]
         self.assertIn("id: attest", attest_step)
@@ -139,19 +147,52 @@ class LiveEvidenceWorkflowPolicyTests(unittest.TestCase):
 
     def test_release_is_a_two_step_draft_upload_publish_transaction(self) -> None:
         workflow = self._workflow()
+        release_step = self._step_containing("Create draft and upload candidates")
+        self.assertIn("gh api --method POST", release_step)
+        tag = workflow.index("gh api --method POST")
         create = workflow.index("gh release create")
         upload = workflow.index("gh release upload")
         publish = workflow.index("gh release edit")
+        self.assertLess(tag, create)
         self.assertLess(create, upload)
         self.assertLess(upload, publish)
-        self.assertIn("--draft --target $env:GITHUB_SHA", workflow)
-        self.assertIn("$batchSize = 64", workflow)
         self.assertIn(
-            "for ($offset = 0; $offset -lt $assetPaths.Count; $offset += $batchSize)",
-            workflow,
+            "& gh api --method POST "
+            "repos/ryanduguid/au-tax-legislation-corpus/git/refs "
+            "--raw-field \"ref=refs/tags/$releaseTag\" "
+            "--raw-field \"sha=$env:GITHUB_SHA\"",
+            release_step,
         )
-        self.assertIn("$batch = $assetPaths[$offset..$last]", workflow)
-        self.assertIn("gh release upload $releaseTag @batch", workflow)
+        self.assertIn("--draft --verify-tag", release_step)
+        self.assertNotIn("--target", release_step)
+
+        enumeration = (
+            "          $assetPaths = @(\n"
+            "            Get-ChildItem -LiteralPath $candidateDir -Filter '*.json' -File |\n"
+            "              Sort-Object -Property Name |\n"
+            "              ForEach-Object { $_.FullName }\n"
+            "          )"
+        )
+        self.assertEqual(release_step.count(enumeration), 1)
+        self.assertEqual(
+            re.findall(r"(?m)^\s*\$batchSize\s*=\s*(\d+)\s*$", release_step),
+            ["64"],
+        )
+        upload_loop = (
+            "          $batchSize = 64\n"
+            "          for ($offset = 0; $offset -lt $assetPaths.Count; "
+            "$offset += $batchSize) {\n"
+            "            $last = [Math]::Min($offset + $batchSize - 1, "
+            "$assetPaths.Count - 1)\n"
+            "            $batch = $assetPaths[$offset..$last]\n"
+            "            & gh release upload $releaseTag @batch "
+            "--repo ryanduguid/au-tax-legislation-corpus\n"
+            "            if ($LASTEXITCODE -ne 0) { throw "
+            "'GitHub CLI release operation failed.' }\n"
+            "          }"
+        )
+        self.assertIn(upload_loop, release_step)
+        self.assertNotIn("$batchSize = 65", release_step)
         self.assertNotIn("--clobber", workflow)
         self.assertIn("--draft=false --latest=false", workflow)
         self.assertIn("Capture started: $captureStarted", workflow)
@@ -173,8 +214,10 @@ class LiveEvidenceWorkflowPolicyTests(unittest.TestCase):
     def test_every_native_gh_call_has_an_immediate_failure_check(self) -> None:
         workflow = self._workflow()
         lines = workflow.splitlines()
-        gh_indexes = [index for index, line in enumerate(lines) if "gh release " in line]
-        self.assertEqual(len(gh_indexes), 3)
+        gh_indexes = [
+            index for index, line in enumerate(lines) if re.match(r"^\s*& gh(?:\s|$)", line)
+        ]
+        self.assertEqual(len(gh_indexes), 4)
         expected = (
             "if ($LASTEXITCODE -ne 0) { throw 'GitHub CLI release operation failed.' }"
         )
