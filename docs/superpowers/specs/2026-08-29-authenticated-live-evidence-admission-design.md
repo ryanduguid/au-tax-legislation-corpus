@@ -447,7 +447,7 @@ permissions:
 ```
 
 The workflow sets the `GH_TOKEN` environment variable only on the two
-release-command steps. Other shell steps do not receive that environment
+release-transaction steps. Other shell steps do not receive that environment
 variable; checkout and attestation use only the credentials their actions need
 under the declared permissions. Checkout credentials are not persisted.
 
@@ -474,30 +474,43 @@ The workflow performs these steps in order:
 7. In a normally success-gated step, require
    `steps.attest.outputs.attestation-id` to be non-empty. Neither this check nor
    any attestation or release step uses `always()`.
-8. Create one draft release at the deterministic observation-hash tag, then
-   upload the sorted candidate paths in deterministic contiguous batches of at
-   most 64 within the same token-bearing step. Every batch omits `--clobber`
-   and must pass its immediate `$LASTEXITCODE` check before the next batch. The
-   release carries deterministic attribution notes; its title is the tag and
-   its target is the exact checked-out `GITHUB_SHA`, not a later resolution of
-   the moving branch name.
-9. Publish the draft with `latest: false`. Publishing under the repository's
-   immutable-releases setting freezes the release and creates the GitHub
+8. Atomically create the exact lightweight ref `refs/tags/$releaseTag` at
+   `$env:GITHUB_SHA` with string fields and immediately check its native exit:
+
+   ```powershell
+   & gh api --method POST repos/ryanduguid/au-tax-legislation-corpus/git/refs --raw-field "ref=refs/tags/$releaseTag" --raw-field "sha=$env:GITHUB_SHA"
+   if ($LASTEXITCODE -ne 0) { throw 'GitHub CLI release operation failed.' }
+   ```
+
+   A pre-existing ref fails; the workflow never moves or replaces it.
+9. Create one draft release with `& gh release create --verify-tag` and no
+   `--target`, then upload the sorted candidate paths in deterministic
+   contiguous batches of at most 64 within the same token-bearing step. Every
+   batch omits `--clobber` and must pass its immediate `$LASTEXITCODE` check
+   before the next batch. The release carries deterministic attribution notes
+   and its title is the tag; the already-created exact ref binds it to the
+   checked-out `GITHUB_SHA` without resolving a moving branch.
+10. Publish the draft with `& gh release edit` and `latest: false`. Publishing
+   under the repository's immutable-releases setting freezes the release and
+   creates the GitHub
    release attestation used by `gh release verify`. Publication starts only
    after every upload batch succeeds.
 
 The workflow must never publish before every candidate is uploaded and the
 artifact attestation succeeds. A pre-publication failure creates no public
-release. GitHub may retain a private failed draft, including one containing
-only the batches uploaded before a later batch failed; the workflow reports it
-and does not automatically delete it. Deleting or repairing that draft is an
-explicit operator action.
+release. After exact-ref creation succeeds, a later create, upload or publish
+failure can leave an orphan public tag. GitHub may also retain a private failed
+draft, including one containing only the batches uploaded before a later batch
+failed. The workflow reports these states and never automatically deletes,
+moves, repairs or reuses any tag, draft, release or attestation.
 
 Because artifact attestation precedes release creation, a later release-command
 failure can leave an orphan public Sigstore attestation and transparency-log
 entry for the candidate bytes even though no public GitHub Release exists.
 That entry is not treated as a published evidence release or public
 development and is not an authority to retry or modify an existing release.
+Any future run with the same deterministic identity fails at ref creation until
+an operator explicitly handles the orphan tag, draft and attestation state.
 
 A pre-existing tag, draft or release for the deterministic identity is a
 bounded failure. The workflow does not modify it or treat a new run as a
@@ -858,9 +871,11 @@ draft-before-publish ordering, deterministic tag, aggregate rights summary and
 `latest: false`. They also require the `attest` step id, a non-empty
 `attestation-id` check before draft creation, normal success gating with no
 `always()`, deterministic contiguous upload batches of at most 64 in the same
-create-and-upload token-bearing step, no `--clobber`, publication only after
-the batch loop, and an immediate `$LASTEXITCODE` failure check after every
-`gh` invocation, including each upload batch.
+tag-create, release-create and upload token-bearing step, exact string-field
+creation of `refs/tags/$releaseTag` at `$env:GITHUB_SHA`, `--verify-tag` with no
+`--target`, no `--clobber`, publication only after the batch loop, and an
+immediate `$LASTEXITCODE` failure check after every `& gh` invocation,
+including ref creation and each upload batch.
 
 ### Publisher tests
 
