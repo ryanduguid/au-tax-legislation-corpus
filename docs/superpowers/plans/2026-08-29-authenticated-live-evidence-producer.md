@@ -6,7 +6,7 @@
 
 **Architecture:** One deep `fadden.export_live_evidence_bundles` module snapshots an immutable Stage 3A capture once, invokes the existing complete-graph validator on that owned snapshot, derives candidates and performs one identity-bound output promotion on Windows. It refuses official output mutation on other platforms. A dedicated GitHub-hosted Windows workflow consumes only the checked-in manifest and publishes the deterministic candidates after one multi-subject attestation. Synthetic v1 export remains byte-compatible and separate.
 
-**Tech Stack:** Python 3.10+, standard library, Windows native filesystem handles, `unittest`, `pytest`, Ruff, mypy, GitHub Actions on `windows-latest`, PowerShell, GitHub CLI and `actions/attest` v4 pinned to `1e69f48acb82d1966a394da916b4c1698aa569d6`.
+**Tech Stack:** Python 3.10+, standard library, Windows native filesystem handles, `unittest`, `pytest`, Ruff, mypy, GitHub Actions on `windows-latest`, PowerShell, GitHub CLI and `actions/attest` v4.2.2 pinned to `1e69f48acb82d1966a394da916b4c1698aa569d6`.
 
 **Spec:** `docs/superpowers/specs/2026-08-29-authenticated-live-evidence-admission-design.md` at or after commit `b5f4d23`.
 
@@ -240,7 +240,7 @@ git commit -m "feat: add atomic live evidence export command"
 
 - [ ] **Step 1: Add failing workflow policy tests**
 
-Assert exact `workflow_dispatch:`, no inputs, repository/ref guard, `windows-latest`, `defaults.run.shell: pwsh`, 120-minute timeout, concurrency `publish-live-evidence-v2`, `cancel-in-progress: false`, exact permissions, fixed manifest, `uv==0.12.0`, 1,000-candidate bound, zero-candidate gates, one `actions/attest` invocation, draft before upload before publish, exact checked-out SHA target, `latest: false`, full action SHAs and no reusable/third-party release action. Assert runner-private paths use `Join-Path` from `$env:RUNNER_TEMP`, outputs append through `$env:GITHUB_OUTPUT`, assets are enumerated with `Get-ChildItem`, and `GH_TOKEN` appears only on the two `gh release` command steps.
+Assert exact `workflow_dispatch:`, no inputs, repository/ref guard, `windows-latest`, `defaults.run.shell: pwsh`, 120-minute timeout, concurrency `publish-live-evidence-v2`, `cancel-in-progress: false`, exact permissions, fixed manifest, `uv==0.12.0`, 1,000-candidate bound, zero-candidate gates, one `actions/attest` v4.2.2 invocation, draft before upload before publish, exact checked-out SHA target, `latest: false`, full action SHAs and no reusable/third-party release action. Assert runner-private paths use `Join-Path` from `$env:RUNNER_TEMP`, outputs append through `$env:GITHUB_OUTPUT`, assets are enumerated and sorted with `Get-ChildItem`, and their actual count equals `candidate_count` and is within 1 to 1,000 immediately before attestation. Require the attest step id `attest`, a non-empty `steps.attest.outputs.attestation-id` check before draft creation, normal success gating with no `always()`, and `GH_TOKEN` only on the two `gh release` command steps. Require an immediate `$LASTEXITCODE` failure check after every `gh` invocation, especially create before upload and upload before publish.
 
 - [ ] **Step 2: Run policy tests and verify RED**
 
@@ -260,13 +260,14 @@ activation prerequisite:
   with:
     persist-credentials: false
 - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
-- uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6 # v4
+- uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6 # v4.2.2
+  id: attest
   if: steps.export.outputs.has_candidates == 'true'
   with:
     subject-path: ${{ runner.temp }}/live-evidence/*.json
 ```
 
-Set the workflow's default `run` shell to `pwsh`. Run the fixed manifest capture and exporter below paths built with `Join-Path $env:RUNNER_TEMP`. Validate the CLI's two exact summary lines before appending `has_candidates`, `candidate_count` and `release_tag` through `$env:GITHUB_OUTPUT`. Enumerate candidate files with `Get-ChildItem -LiteralPath $candidateDir -Filter '*.json' -File`, sort them by name and pass their full-path array to `gh release upload` without `--clobber`; do not rely on shell glob expansion. Create a draft release targeting `$env:GITHUB_SHA`, upload all assets, then publish with `--latest=false`. Derive deterministic aggregate notes from the validated timestamp/count and state that every immutable asset contains its own attribution.
+Set the workflow's default `run` shell to `pwsh`. Run the fixed manifest capture and exporter below paths built with `Join-Path $env:RUNNER_TEMP`. Validate the CLI's two exact summary lines before appending `has_candidates`, `candidate_count` and `release_tag` through `$env:GITHUB_OUTPUT`. Immediately before attestation, enumerate candidate files with `Get-ChildItem -LiteralPath $candidateDir -Filter '*.json' -File`, sort them by name, and require their actual count to equal `candidate_count` and be within 1 to 1,000. Give the attestation step id `attest`, then require a non-empty `${{ steps.attest.outputs.attestation-id }}` in the next normally success-gated candidate step before draft creation. Do not use `always()`. Pass the sorted files' full-path array to `gh release upload` without `--clobber`; do not rely on shell glob expansion. Create a draft release targeting `$env:GITHUB_SHA`, upload all assets, then publish with `--latest=false`. Immediately after every `gh` invocation, check `if ($LASTEXITCODE -ne 0) { throw 'GitHub CLI release operation failed.' }` before executing any later command. This must stop a failed create before upload and a failed upload before publish, so a pre-existing tag, draft or release remains untouched. A later release-command failure can still leave an orphan public Sigstore attestation and transparency-log entry without a public Release; it does not authorise a retry or release mutation. Derive deterministic aggregate notes from the validated timestamp/count and state that every immutable asset contains its own attribution.
 
 - [ ] **Step 4: Run policy tests GREEN and commit**
 

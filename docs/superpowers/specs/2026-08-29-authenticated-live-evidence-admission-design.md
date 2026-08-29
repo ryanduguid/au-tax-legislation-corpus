@@ -411,13 +411,20 @@ It has only `workflow_dispatch` and accepts no inputs. The single job:
 
 Every action reference uses a reviewed full commit SHA. The implementation may
 reuse the repository's reviewed full-SHA pins for checkout and Python setup.
-The `actions/attest` pin is reviewed before activation. Floating tags and
-third-party release actions are not accepted.
+The `actions/attest` v4.2.2 pin is reviewed before activation. Floating tags
+and third-party release actions are not accepted.
 
 All `run` steps use PowerShell (`pwsh`). Runner-private paths are constructed
 with `Join-Path` from `$env:RUNNER_TEMP`, step outputs are appended through
 `$env:GITHUB_OUTPUT`, and release assets are enumerated with `Get-ChildItem`
 rather than relying on Bash syntax or shell wildcard expansion.
+
+PowerShell does not make a native command's non-zero exit a terminating error.
+Every `gh` invocation is therefore followed immediately by an explicit
+`$LASTEXITCODE` check that throws a bounded error before any later command.
+In particular, draft creation must succeed before upload starts, and upload
+must succeed before publication starts. A failed create can never fall through
+to upload assets to a pre-existing tag, draft or release.
 
 ### Permissions
 
@@ -445,18 +452,24 @@ The workflow performs these steps in order:
 4. Generate all deterministic v2 candidates into one private directory.
 5. If the directory contains no candidates, finish successfully without a tag,
    attestation or release.
-6. Require no more than 1,000 candidates, then invoke `actions/attest` once over
-   all candidate paths. One provenance statement contains each candidate as an
-   independently verifiable subject. The lower limit comes from GitHub Releases;
-   the action itself permits 1,024 subjects. The present 946-title scope fits
-   both limits even if every title is superseded. Future scope growth fails
-   closed rather than splitting one run across releases or attestations without
-   a new design.
-7. Create one draft release at the deterministic observation-hash tag, upload
+6. Immediately before attestation, enumerate the candidate JSON files with
+   `Get-ChildItem` sorted by name and require the actual count to equal the
+   validated `candidate_count` and be between 1 and 1,000 inclusive. Then
+   invoke `actions/attest` v4.2.2 once over all candidate paths, with step id
+   `attest`. One provenance statement contains each candidate as an
+   independently verifiable subject. The lower limit comes from GitHub
+   Releases; the action itself permits 1,024 subjects. The present 946-title
+   scope fits both limits even if every title is superseded. Future scope
+   growth fails closed rather than splitting one run across releases or
+   attestations without a new design.
+7. In a normally success-gated step, require
+   `steps.attest.outputs.attestation-id` to be non-empty. Neither this check nor
+   any attestation or release step uses `always()`.
+8. Create one draft release at the deterministic observation-hash tag, upload
    all candidate assets together and attach deterministic attribution notes.
    The release title is the tag and its target is the exact checked-out
    `GITHUB_SHA`, not a later resolution of the moving branch name.
-8. Publish the draft with `latest: false`. Publishing under the repository's
+9. Publish the draft with `latest: false`. Publishing under the repository's
    immutable-releases setting freezes the release and creates the GitHub release
    attestation used by `gh release verify`.
 
@@ -465,6 +478,12 @@ artifact attestation succeeds. A pre-publication failure creates no public
 release. GitHub may retain a private failed draft; the workflow reports it and
 does not automatically delete it. Deleting or repairing that draft is an
 explicit operator action.
+
+Because artifact attestation precedes release creation, a later release-command
+failure can leave an orphan public Sigstore attestation and transparency-log
+entry for the candidate bytes even though no public GitHub Release exists.
+That entry is not treated as a published evidence release or public
+development and is not an authority to retry or modify an existing release.
 
 A pre-existing tag, draft or release for the deterministic identity is a
 bounded failure. The workflow does not modify it or treat a new run as a
@@ -807,8 +826,13 @@ Workflow policy tests inspect the checked-in YAML and require the exact manual
 trigger, no inputs, repository/ref guard, `windows-latest`, PowerShell run
 steps and Windows-safe path/output handling, 120-minute timeout, concurrency
 policy, minimal permissions, full action SHAs, fixed manifest, attest-once
-behaviour, zero-candidate exit, draft-before-publish ordering, deterministic
-tag, aggregate rights summary and `latest: false`.
+behaviour, an exact sorted subject count equal to `candidate_count` and within
+1 to 1,000 immediately before attestation, zero-candidate exit,
+draft-before-publish ordering, deterministic tag, aggregate rights summary and
+`latest: false`. They also require the `attest` step id, a non-empty
+`attestation-id` check before draft creation, normal success gating with no
+`always()`, and an immediate `$LASTEXITCODE` failure check after every `gh`
+invocation, including create before upload and upload before publish.
 
 ### Publisher tests
 
