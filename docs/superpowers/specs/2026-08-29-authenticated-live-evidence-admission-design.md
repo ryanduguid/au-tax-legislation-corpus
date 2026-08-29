@@ -367,9 +367,16 @@ observation's `checked_at`. It does not accept rights wording, a capture date or
 a licence URL from its caller. Different candidates in one run may therefore
 carry different attribution dates.
 
-The exporter captures each input file once, builds in an owned private sibling,
-revalidates every final bundle, and promotes the output by one rename. It never
-overwrites, repairs or deletes a prior output. A verified run with zero
+The exporter captures each input file once and revalidates every final bundle.
+Its official-output transaction is supported only on Windows. There it builds
+in an owned private sibling, holds the output parent and staging identities,
+and promotes the exact held staging directory with one identity-bound,
+no-replace rename. Cleanup likewise targets only the held staging object and
+its recorded children. On other platforms it fails closed before creating a
+missing output parent or staging directory because the available unprivileged
+directory operations cannot bind both final promotion and cleanup to that held
+identity. It never falls back to pathname-only mutation and never overwrites,
+repairs or deletes a prior output. On Windows, a verified run with zero
 candidates produces an empty private candidate set and returns success so the
 workflow can end without creating a release.
 
@@ -393,7 +400,7 @@ It has only `workflow_dispatch` and accepts no inputs. The single job:
 - refuses to run unless `github.repository` is exactly
   `ryanduguid/au-tax-legislation-corpus` and `github.ref` is exactly
   `refs/heads/main`;
-- runs only on a GitHub-hosted Ubuntu runner;
+- runs only on the GitHub-hosted `windows-latest` runner;
 - has a 120-minute timeout;
 - uses concurrency group `publish-live-evidence-v2` with
   `cancel-in-progress: false`;
@@ -406,6 +413,11 @@ Every action reference uses a reviewed full commit SHA. The implementation may
 reuse the repository's reviewed full-SHA pins for checkout and Python setup.
 The `actions/attest` pin is reviewed before activation. Floating tags and
 third-party release actions are not accepted.
+
+All `run` steps use PowerShell (`pwsh`). Runner-private paths are constructed
+with `Join-Path` from `$env:RUNNER_TEMP`, step outputs are appended through
+`$env:GITHUB_OUTPUT`, and release assets are enumerated with `Get-ChildItem`
+rather than relying on Bash syntax or shell wildcard expansion.
 
 ### Permissions
 
@@ -428,7 +440,7 @@ under the declared permissions. Checkout credentials are not persisted.
 The workflow performs these steps in order:
 
 1. Check out the exact `main` revision and set up the locked Python toolchain.
-2. Run the complete 946-title Stage 3A capture into private runner storage.
+2. Run the complete 946-title Stage 3A capture under `$env:RUNNER_TEMP`.
 3. Revalidate the graph and require `complete: true` and `VERIFIED`.
 4. Generate all deterministic v2 candidates into one private directory.
 5. If the directory contains no candidates, finish successfully without a tag,
@@ -786,15 +798,17 @@ The producer test surface covers:
 - every Stage 3A state, including zero candidates and mixed valid states;
 - whole-export failure when any `SUPERSEDED` candidate is inconsistent;
 - deterministic bundle identities, filenames, bytes and ordering;
-- absent-output, link, race, failure cleanup and atomic promotion behaviour;
+- Windows absent-output, link, race, exact cleanup and identity-bound promotion
+  behaviour, plus non-Windows refusal before output mutation;
 - unchanged v1 bytes and existing Stage 3A contracts; and
 - a byte-identical v2 golden fixture shared with the publisher.
 
 Workflow policy tests inspect the checked-in YAML and require the exact manual
-trigger, no inputs, repository/ref guard, one hosted runner, 120-minute timeout,
-concurrency policy, minimal permissions, full action SHAs, fixed manifest,
-attest-once behaviour, zero-candidate exit, draft-before-publish ordering,
-deterministic tag, aggregate rights summary and `latest: false`.
+trigger, no inputs, repository/ref guard, `windows-latest`, PowerShell run
+steps and Windows-safe path/output handling, 120-minute timeout, concurrency
+policy, minimal permissions, full action SHAs, fixed manifest, attest-once
+behaviour, zero-candidate exit, draft-before-publish ordering, deterministic
+tag, aggregate rights summary and `latest: false`.
 
 ### Publisher tests
 
@@ -916,6 +930,9 @@ parallel canonical record or renderer.
   publisher independently verifies and carries the same rights into its
   canonical record.
 - GitHub availability and authenticated CLI access are required for admission.
+- Official producer output publication is currently Windows-only. Supporting
+  another platform requires an equally identity-bound promotion and cleanup
+  design; pathname-only fallback remains prohibited.
 - The checked-in corpus selection is keyword-based and is not all Australian
   tax law or accounting material.
 - Stage 3B publishes only new Federal Register compilations. Other source

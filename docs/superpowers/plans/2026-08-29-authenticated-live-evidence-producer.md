@@ -4,9 +4,9 @@
 
 **Goal:** Export one deterministic, rights-bearing `evidence-bundle.v2` asset for every valid `SUPERSEDED` title in a complete Stage 3A capture and publish the candidate set only through the approved manual attested-release workflow.
 
-**Architecture:** One deep `fadden.export_live_evidence_bundles` module snapshots an immutable Stage 3A capture once, invokes the existing complete-graph validator on that owned snapshot, derives candidates and promotes one output directory atomically. A dedicated GitHub workflow consumes only the checked-in manifest and publishes the deterministic candidates after one multi-subject attestation. Synthetic v1 export remains byte-compatible and separate.
+**Architecture:** One deep `fadden.export_live_evidence_bundles` module snapshots an immutable Stage 3A capture once, invokes the existing complete-graph validator on that owned snapshot, derives candidates and performs one identity-bound output promotion on Windows. It refuses official output mutation on other platforms. A dedicated GitHub-hosted Windows workflow consumes only the checked-in manifest and publishes the deterministic candidates after one multi-subject attestation. Synthetic v1 export remains byte-compatible and separate.
 
-**Tech Stack:** Python 3.10+, standard library, `unittest`, `pytest`, Ruff, mypy, GitHub Actions, GitHub CLI and `actions/attest` v4 pinned to `1e69f48acb82d1966a394da916b4c1698aa569d6`.
+**Tech Stack:** Python 3.10+, standard library, Windows native filesystem handles, `unittest`, `pytest`, Ruff, mypy, GitHub Actions on `windows-latest`, PowerShell, GitHub CLI and `actions/attest` v4 pinned to `1e69f48acb82d1966a394da916b4c1698aa569d6`.
 
 **Spec:** `docs/superpowers/specs/2026-08-29-authenticated-live-evidence-admission-design.md` at or after commit `b5f4d23`.
 
@@ -19,7 +19,8 @@
 - Every candidate carries an exact rights object derived from its own `observation.checked_at`; callers cannot provide rights wording or dates.
 - `start` remains the compilation date. `registeredAt` remains independent and is not required to share that date.
 - The exporter performs no network request and makes no public claim.
-- The workflow has only `workflow_dispatch`, no inputs, no floating action tags and no third-party release action.
+- Official output publication is Windows-only. Other platforms fail before creating a missing output parent or staging directory; no pathname-only fallback is permitted.
+- The workflow has only `workflow_dispatch`, no inputs, runs on `windows-latest` with `pwsh`, has no floating action tags and uses no third-party release action.
 - All filesystem failure paths fail closed, clean only exporter-owned staging and never overwrite an existing output.
 - Use Australian English in prose and preserve exact code identifiers and official names.
 
@@ -200,7 +201,7 @@ git commit -m "feat: export verified live evidence candidates"
 
 - [ ] **Step 1: Add failing transaction, version and dispatcher tests**
 
-Cover absent output, one safe missing parent, input/output collision, existing output, linked ancestors, race before promotion, write/re-read/revalidation/rename failures, cleanup failure and exact owned-staging cleanup. Assert zero candidates still promotes one empty output directory and returns success. Test strict `VERSION` SemVer and equality with `pyproject.toml` project version. Pin the complete stage roster and exact argv forwarding.
+Cover Windows absent output, one safe missing parent, input/output collision, existing output, linked ancestors, race before promotion, write/re-read/revalidation/rename failures, cleanup failure and exact owned-staging cleanup. Assert zero candidates still promotes one empty output directory and returns success on Windows. Assert other platforms fail before creating an output parent or staging directory. Test strict `VERSION` SemVer and equality with `pyproject.toml` project version. Pin the complete stage roster and exact argv forwarding.
 
 - [ ] **Step 2: Run the focussed tests and verify RED**
 
@@ -212,7 +213,7 @@ Expected: failures for incomplete transaction and missing dispatcher registratio
 
 - [ ] **Step 3: Implement the transaction and CLI**
 
-Use a private sibling name beginning `.<output-name>.live-evidence-`, mode `0o700`, exclusive file creation mode `0o600`, exact re-read validation and one final rename. Before recursive cleanup, prove the path is an ordinary child of the intended parent with the owned prefix. Add `export_live_evidence_bundles` to `STAGES`; forward everything after the literal `--` exactly as `capture_register` does. CLI usage errors return 2; contract/filesystem errors return 1 with bounded messages.
+On Windows, use a private sibling name beginning `.<output-name>.live-evidence-`, mode `0o700`, exclusive file creation mode `0o600`, exact re-read validation, held output-parent and staging handles, and one native no-replace rename of the exact held staging object. Cleanup opens and disposes only the recorded children through the held directory identity, then disposes that exact staging directory. On other platforms, fail after read-only preflight but before creating a missing parent or staging directory. Add `export_live_evidence_bundles` to `STAGES`; forward everything after the literal `--` exactly as `capture_register` does. CLI usage errors return 2; contract/filesystem errors return 1 with bounded messages.
 
 - [ ] **Step 4: Update local documentation**
 
@@ -239,7 +240,7 @@ git commit -m "feat: add atomic live evidence export command"
 
 - [ ] **Step 1: Add failing workflow policy tests**
 
-Assert exact `workflow_dispatch:`, no inputs, repository/ref guard, `ubuntu-latest`, 120-minute timeout, concurrency `publish-live-evidence-v2`, `cancel-in-progress: false`, exact permissions, fixed manifest, `uv==0.12.0`, 1,000-candidate bound, zero-candidate gates, one `actions/attest` invocation, draft before upload before publish, exact checked-out SHA target, `latest: false`, full action SHAs and no reusable/third-party release action. Assert `GH_TOKEN` appears only on the two `gh release` command steps.
+Assert exact `workflow_dispatch:`, no inputs, repository/ref guard, `windows-latest`, `defaults.run.shell: pwsh`, 120-minute timeout, concurrency `publish-live-evidence-v2`, `cancel-in-progress: false`, exact permissions, fixed manifest, `uv==0.12.0`, 1,000-candidate bound, zero-candidate gates, one `actions/attest` invocation, draft before upload before publish, exact checked-out SHA target, `latest: false`, full action SHAs and no reusable/third-party release action. Assert runner-private paths use `Join-Path` from `$env:RUNNER_TEMP`, outputs append through `$env:GITHUB_OUTPUT`, assets are enumerated with `Get-ChildItem`, and `GH_TOKEN` appears only on the two `gh release` command steps.
 
 - [ ] **Step 2: Run policy tests and verify RED**
 
@@ -265,7 +266,7 @@ activation prerequisite:
     subject-path: ${{ runner.temp }}/live-evidence/*.json
 ```
 
-Run the fixed manifest capture and exporter under `${{ runner.temp }}`. Validate the CLI’s two exact summary lines before writing `has_candidates`, `candidate_count` and `release_tag` to `GITHUB_OUTPUT`. Create a draft release targeting `GITHUB_SHA`, upload all assets without the optional `--clobber` flag, then publish with `--latest=false`. Derive deterministic aggregate notes from the validated timestamp/count and state that every immutable asset contains its own attribution.
+Set the workflow's default `run` shell to `pwsh`. Run the fixed manifest capture and exporter below paths built with `Join-Path $env:RUNNER_TEMP`. Validate the CLI's two exact summary lines before appending `has_candidates`, `candidate_count` and `release_tag` through `$env:GITHUB_OUTPUT`. Enumerate candidate files with `Get-ChildItem -LiteralPath $candidateDir -Filter '*.json' -File`, sort them by name and pass their full-path array to `gh release upload` without `--clobber`; do not rely on shell glob expansion. Create a draft release targeting `$env:GITHUB_SHA`, upload all assets, then publish with `--latest=false`. Derive deterministic aggregate notes from the validated timestamp/count and state that every immutable asset contains its own attribution.
 
 - [ ] **Step 4: Run policy tests GREEN and commit**
 
