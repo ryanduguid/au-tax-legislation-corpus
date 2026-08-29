@@ -126,20 +126,6 @@ def _path_is_junction(path: Path) -> bool:
     return getattr(os.path, "isjunction", lambda _path: False)(path)
 
 
-def _require_ordinary_directory(path: Path, label: str) -> None:
-    try:
-        details = os.lstat(path)
-    except OSError as exc:
-        raise LiveEvidenceBundleError(f"{label} must be an ordinary directory.") from exc
-    if (
-        not stat.S_ISDIR(details.st_mode)
-        or os.path.islink(path)
-        or _path_is_junction(path)
-        or _details_are_reparse_point(details)
-    ):
-        raise LiveEvidenceBundleError(f"{label} must be an ordinary directory.")
-
-
 def _same_regular_file_identity(expected: os.stat_result, observed: os.stat_result) -> bool:
     return (
         stat.S_ISREG(expected.st_mode)
@@ -203,6 +189,20 @@ _FILE_NON_DIRECTORY_FILE = 0x40
 _FILE_SYNCHRONOUS_IO_NONALERT = 0x20
 
 
+def _posix_descriptor_pinning_available() -> bool:
+    """Whether this host can bind children to no-follow directory descriptors."""
+
+    return (
+        os.name == "posix"
+        and hasattr(os, "O_DIRECTORY")
+        and hasattr(os, "O_NOFOLLOW")
+        and os.open in os.supports_dir_fd
+        and os.stat in os.supports_dir_fd
+        and os.stat in os.supports_follow_symlinks
+        and os.listdir in os.supports_fd
+    )
+
+
 def _windows_handle_value(handle: wintypes.HANDLE | int | None) -> int:
     """Return a ctypes Windows handle as a stable integer value."""
 
@@ -213,7 +213,7 @@ def _windows_handle_value(handle: wintypes.HANDLE | int | None) -> int:
 
 
 class _PinnedDirectoryChain:
-    """Hold Windows directories open without delete sharing during one source copy."""
+    """Hold source directories while recognised children are copied once."""
 
     def __init__(self) -> None:
         self._handles: list[int] = []
@@ -226,59 +226,103 @@ class _PinnedDirectoryChain:
             kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
             for handle in reversed(self._handles):
                 kernel32.CloseHandle(wintypes.HANDLE(handle))
+        elif _posix_descriptor_pinning_available():
+            for handle in reversed(self._handles):
+                os.close(handle)
 
     def pin(self, path: Path, label: str, *, parent_handle: int | None = None) -> int | None:
-        if os.name != "nt":
-            _require_ordinary_directory(path, label)
-            return None
-        kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
-        kernel32.CreateFileW.argtypes = [
-            wintypes.LPCWSTR,
-            wintypes.DWORD,
-            wintypes.DWORD,
-            wintypes.LPVOID,
-            wintypes.DWORD,
-            wintypes.DWORD,
-            wintypes.HANDLE,
-        ]
-        kernel32.CreateFileW.restype = wintypes.HANDLE
-        kernel32.GetFileInformationByHandle.argtypes = [
-            wintypes.HANDLE, ctypes.POINTER(_ByHandleFileInformation)
-        ]
-        kernel32.GetFileInformationByHandle.restype = wintypes.BOOL
-        if parent_handle is None:
-            handle = kernel32.CreateFileW(
-                str(path),
-                _FILE_READ_ATTRIBUTES,
-                _FILE_SHARE_READ | _FILE_SHARE_WRITE,
-                None,
-                _OPEN_EXISTING,
-                _FILE_FLAG_BACKUP_SEMANTICS | _FILE_FLAG_OPEN_REPARSE_POINT,
-                None,
-            )
-            if _windows_handle_value(handle) == _windows_handle_value(wintypes.HANDLE(-1)):
+        if os.name == "nt":
+            kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+            kernel32.CreateFileW.argtypes = [
+                wintypes.LPCWSTR,
+                wintypes.DWORD,
+                wintypes.DWORD,
+                wintypes.LPVOID,
+                wintypes.DWORD,
+                wintypes.DWORD,
+                wintypes.HANDLE,
+            ]
+            kernel32.CreateFileW.restype = wintypes.HANDLE
+            kernel32.GetFileInformationByHandle.argtypes = [
+                wintypes.HANDLE, ctypes.POINTER(_ByHandleFileInformation)
+            ]
+            kernel32.GetFileInformationByHandle.restype = wintypes.BOOL
+            if parent_handle is None:
+                handle = kernel32.CreateFileW(
+                    str(path),
+                    _FILE_READ_ATTRIBUTES,
+                    _FILE_SHARE_READ | _FILE_SHARE_WRITE,
+                    None,
+                    _OPEN_EXISTING,
+                    _FILE_FLAG_BACKUP_SEMANTICS | _FILE_FLAG_OPEN_REPARSE_POINT,
+                    None,
+                )
+                if _windows_handle_value(handle) == _windows_handle_value(wintypes.HANDLE(-1)):
+                    raise LiveEvidenceBundleError(f"{label} could not be pinned.")
+            else:
+                handle = wintypes.HANDLE(
+                    _open_pinned_child(parent_handle, path.name, _FILE_DIRECTORY_FILE)
+                )
+            handle_value = _windows_handle_value(handle)
+            details = _ByHandleFileInformation()
+            if not kernel32.GetFileInformationByHandle(handle, ctypes.byref(details)):
+                kernel32.CloseHandle(handle)
                 raise LiveEvidenceBundleError(f"{label} could not be pinned.")
-        else:
-            handle = wintypes.HANDLE(
-                _open_pinned_child(parent_handle, path.name, _FILE_DIRECTORY_FILE)
+            if (
+                not details.file_attributes & _FILE_ATTRIBUTE_DIRECTORY
+                or details.file_attributes & _FILE_ATTRIBUTE_REPARSE_POINT
+            ):
+                kernel32.CloseHandle(handle)
+                raise LiveEvidenceBundleError(f"{label} must be an ordinary directory.")
+            self._handles.append(handle_value)
+            return handle_value
+        if not _posix_descriptor_pinning_available():
+            raise LiveEvidenceBundleError("secure directory pinning is unavailable on this platform.")
+        flags = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW
+        try:
+            handle = (
+                os.open(os.fspath(path), flags)
+                if parent_handle is None
+                else os.open(path.name, flags, dir_fd=parent_handle)
             )
-        handle_value = _windows_handle_value(handle)
-        details = _ByHandleFileInformation()
-        if not kernel32.GetFileInformationByHandle(handle, ctypes.byref(details)):
-            kernel32.CloseHandle(handle)
-            raise LiveEvidenceBundleError(f"{label} could not be pinned.")
-        if (
-            not details.file_attributes & _FILE_ATTRIBUTE_DIRECTORY
-            or details.file_attributes & _FILE_ATTRIBUTE_REPARSE_POINT
-        ):
-            kernel32.CloseHandle(handle)
+        except OSError as exc:
+            raise LiveEvidenceBundleError(f"{label} could not be pinned.") from exc
+        details = os.fstat(handle)
+        if not stat.S_ISDIR(details.st_mode):
+            os.close(handle)
             raise LiveEvidenceBundleError(f"{label} must be an ordinary directory.")
-        self._handles.append(handle_value)
-        return handle_value
+        self._handles.append(handle)
+        return handle
 
 
-def _directory_inventory(path: Path) -> dict[str, tuple[int, int, int]]:
+def _child_details(
+    source_path: Path, *, directory_handle: int | None = None
+) -> os.stat_result:
     try:
+        if _posix_descriptor_pinning_available():
+            if directory_handle is None:
+                raise LiveEvidenceBundleError("secure directory pinning is unavailable.")
+            return os.stat(source_path.name, dir_fd=directory_handle, follow_symlinks=False)
+        return os.lstat(source_path)
+    except OSError as exc:
+        raise LiveEvidenceBundleError("capture snapshot source file is unavailable.") from exc
+
+
+def _directory_inventory(
+    path: Path, *, directory_handle: int | None = None
+) -> dict[str, tuple[int, int, int]]:
+    try:
+        if _posix_descriptor_pinning_available():
+            if directory_handle is None:
+                raise LiveEvidenceBundleError("secure directory pinning is unavailable.")
+            names = os.listdir(directory_handle)
+            return {
+                name: (details.st_mode, details.st_dev, details.st_ino)
+                for name in names
+                for details in (
+                    os.stat(name, dir_fd=directory_handle, follow_symlinks=False),
+                )
+            }
         entries = list(path.iterdir())
         return {
             entry.name: (details.st_mode, details.st_dev, details.st_ino)
@@ -289,16 +333,20 @@ def _directory_inventory(path: Path) -> dict[str, tuple[int, int, int]]:
         raise LiveEvidenceBundleError("capture input inventory changed.") from exc
 
 
-def _ordinary_file_details(source_path: Path) -> os.stat_result:
-    try:
-        expected = os.lstat(source_path)
-    except OSError as exc:
-        raise LiveEvidenceBundleError("capture snapshot source file is unavailable.") from exc
+def _ordinary_file_details(
+    source_path: Path, *, directory_handle: int | None = None
+) -> os.stat_result:
+    expected = _child_details(source_path, directory_handle=directory_handle)
     if (
         not stat.S_ISREG(expected.st_mode)
-        or os.path.islink(source_path)
-        or _path_is_junction(source_path)
-        or _details_are_reparse_point(expected)
+        or (
+            not _posix_descriptor_pinning_available()
+            and (
+                os.path.islink(source_path)
+                or _path_is_junction(source_path)
+                or _details_are_reparse_point(expected)
+            )
+        )
         or getattr(expected, "st_nlink", 1) != 1
     ):
         raise LiveEvidenceBundleError("capture snapshot source file is not ordinary.")
@@ -357,11 +405,11 @@ def _copy_regular_file(
     expected: os.stat_result | None = None,
 ) -> os.stat_result:
     if expected is None:
-        expected = _ordinary_file_details(source_path)
+        expected = _ordinary_file_details(source_path, directory_handle=directory_handle)
     try:
-        if directory_handle is None:
+        if os.name == "nt" and directory_handle is None:
             source = open(source_path, "rb")
-        else:
+        elif os.name == "nt":
             import msvcrt
 
             source = os.fdopen(
@@ -371,6 +419,19 @@ def _copy_regular_file(
                 ),
                 "rb",
             )
+        elif _posix_descriptor_pinning_available() and directory_handle is not None:
+            file_handle = os.open(
+                source_path.name,
+                os.O_RDONLY | os.O_NOFOLLOW,
+                dir_fd=directory_handle,
+            )
+            try:
+                source = os.fdopen(file_handle, "rb")
+            except OSError:
+                os.close(file_handle)
+                raise
+        else:
+            raise LiveEvidenceBundleError("secure directory pinning is unavailable.")
         with source, open(target_path, "xb") as target:
             opened = os.fstat(source.fileno())
             if not _same_regular_file_identity(expected, opened):
@@ -378,7 +439,7 @@ def _copy_regular_file(
             while block := source.read(64 * 1024):
                 target.write(block)
             read_details = os.fstat(source.fileno())
-        final = os.lstat(source_path)
+        final = _child_details(source_path, directory_handle=directory_handle)
     except OSError as exc:
         raise LiveEvidenceBundleError("capture snapshot source file could not be copied.") from exc
     if not (
@@ -400,7 +461,7 @@ def _snapshot_capture_graph(capture_dir: str | Path, snapshot: Path) -> None:
                 directory, "capture input", parent_handle=parent_handle
             )
             parent_handle = handles[directory]
-        root_inventory = _directory_inventory(source)
+        root_inventory = _directory_inventory(source, directory_handle=handles[source])
         if set(root_inventory) != {
             "monitor-baseline.json",
             "register-capture.json",
@@ -412,7 +473,9 @@ def _snapshot_capture_graph(capture_dir: str | Path, snapshot: Path) -> None:
         evidence_handle = pinned.pin(
             source_evidence, "capture evidence", parent_handle=handles[source]
         )
-        evidence_inventory = _directory_inventory(source_evidence)
+        evidence_inventory = _directory_inventory(
+            source_evidence, directory_handle=evidence_handle
+        )
         if any(_EVIDENCE_NAME.fullmatch(name) is None for name in evidence_inventory):
             raise LiveEvidenceBundleError("capture evidence layout is invalid.")
         try:
@@ -420,35 +483,52 @@ def _snapshot_capture_graph(capture_dir: str | Path, snapshot: Path) -> None:
             os.mkdir(snapshot / "evidence", 0o700)
         except OSError as exc:
             raise LiveEvidenceBundleError("capture snapshot could not be created.") from exc
-        copied: dict[Path, os.stat_result] = {}
+        copied: list[tuple[Path, int | None, os.stat_result]] = []
         for name in (
             "monitor-baseline.json",
             "register-capture.json",
             "register-observation.json",
         ):
             path = source / name
-            copied[path] = _copy_regular_file(
-                path,
-                snapshot / name,
-                directory_handle=handles[source],
-                expected=_ordinary_file_details(path),
+            copied.append(
+                (
+                    path,
+                    handles[source],
+                    _copy_regular_file(
+                        path,
+                        snapshot / name,
+                        directory_handle=handles[source],
+                        expected=_ordinary_file_details(
+                            path, directory_handle=handles[source]
+                        ),
+                    ),
+                ),
             )
         for name in sorted(evidence_inventory):
             path = source_evidence / name
-            copied[path] = _copy_regular_file(
-                path,
-                snapshot / "evidence" / name,
-                directory_handle=evidence_handle,
-                expected=_ordinary_file_details(path),
+            copied.append(
+                (
+                    path,
+                    evidence_handle,
+                    _copy_regular_file(
+                        path,
+                        snapshot / "evidence" / name,
+                        directory_handle=evidence_handle,
+                        expected=_ordinary_file_details(
+                            path, directory_handle=evidence_handle
+                        ),
+                    ),
+                ),
             )
         if (
-            _directory_inventory(source) != root_inventory
-            or _directory_inventory(source_evidence) != evidence_inventory
+            _directory_inventory(source, directory_handle=handles[source]) != root_inventory
+            or _directory_inventory(source_evidence, directory_handle=evidence_handle)
+            != evidence_inventory
         ):
             raise LiveEvidenceBundleError("capture input inventory changed.")
-        for path, expected in copied.items():
+        for path, directory_handle, expected in copied:
             try:
-                final = os.lstat(path)
+                final = _child_details(path, directory_handle=directory_handle)
             except OSError as exc:
                 raise LiveEvidenceBundleError("capture snapshot source file changed.") from exc
             if not _same_regular_file_identity(expected, final):
@@ -768,9 +848,6 @@ def _export_validated_snapshot(capture: Path, output_dir: str | Path) -> LiveEvi
             response=response,
         )
         candidates.append(candidate)
-    candidate_ids = [candidate[0] for candidate in candidates]
-    if len(candidate_ids) != len(set(candidate_ids)):
-        raise LiveEvidenceBundleError("candidate identities are duplicated.")
     if output.exists():
         raise LiveEvidenceBundleError("output directory must not already exist.")
     try:

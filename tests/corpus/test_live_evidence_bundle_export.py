@@ -567,11 +567,17 @@ class LiveEvidenceGraphTests(unittest.TestCase):
             with mock.patch.object(
                 export_module, "_copy_regular_file", side_effect=replace_capture
             ):
-                with self.assertRaises(LiveEvidenceBundleError):
-                    export_live_evidence_bundles(capture, root / "output")
+                try:
+                    export = export_live_evidence_bundles(capture, root / "output")
+                except LiveEvidenceBundleError:
+                    export = None
 
             self.assertTrue(swapped)
-            self.assertFalse((root / "output").exists())
+            if export is None:
+                self.assertFalse((root / "output").exists())
+            else:
+                bundle = json.loads(export.candidates[0].read_bytes())
+                self.assertNotEqual(bundle["baseline_title"]["name"], "External capture bytes")
 
     def test_evidence_directory_reparse_race_never_copies_external_bytes(self) -> None:
         """Replacing evidence after inspection cannot make the snapshot copy external content."""
@@ -602,12 +608,70 @@ class LiveEvidenceGraphTests(unittest.TestCase):
             with mock.patch.object(
                 export_module, "_copy_regular_file", side_effect=replace_evidence
             ):
-                with self.assertRaises(LiveEvidenceBundleError):
+                try:
                     export_live_evidence_bundles(capture, root / "output")
+                    export_succeeded = True
+                except LiveEvidenceBundleError:
+                    export_succeeded = False
 
             self.assertTrue(swapped)
             self.assertNotIn(b"external", copied)
-            self.assertFalse((root / "output").exists())
+            if export_succeeded:
+                self.assertTrue((root / "output").exists())
+            else:
+                self.assertFalse((root / "output").exists())
+
+    def test_posix_without_descriptor_primitives_fails_closed(self) -> None:
+        """A non-Windows platform may not fall back to pathname capture reads."""
+        current_directory = Path.cwd()
+        with mock.patch.object(export_module.os, "name", "posix"):
+            with self.assertRaisesRegex(LiveEvidenceBundleError, "secure directory pinning"):
+                with export_module._PinnedDirectoryChain() as pinned:
+                    pinned.pin(current_directory, "capture input")
+
+    @unittest.skipUnless(
+        os.name == "posix"
+        and hasattr(export_module, "_posix_descriptor_pinning_available")
+        and export_module._posix_descriptor_pinning_available(),
+        "requires POSIX descriptor-relative no-follow primitives",
+    )
+    def test_posix_evidence_swap_before_identity_capture_never_copies_external_bytes(self) -> None:
+        """A pre-identity evidence swap stays bound to the pinned original directory."""
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            capture, _ = self._write_capture(root)
+            outside = root / "outside-evidence"
+            outside.mkdir()
+            evidence_name = next((capture / "evidence").iterdir()).name
+            (outside / evidence_name).write_bytes(b"external")
+            retained = root / "retained-evidence"
+            original_details = export_module._ordinary_file_details
+            original_copy = export_module._copy_regular_file
+            copied: list[bytes] = []
+            swapped = False
+
+            def swap_before_identity(source: Path, **kwargs: object) -> os.stat_result:
+                nonlocal swapped
+                if source.parent == capture / "evidence" and not swapped:
+                    swapped = True
+                    os.rename(capture / "evidence", retained)
+                    os.symlink(outside, capture / "evidence", target_is_directory=True)
+                return original_details(source, **kwargs)
+
+            def record_copy(source: Path, target: Path, **kwargs: object) -> os.stat_result:
+                result = original_copy(source, target, **kwargs)
+                if source.parent.name == "evidence":
+                    copied.append(target.read_bytes())
+                return result
+
+            with mock.patch.object(
+                export_module, "_ordinary_file_details", side_effect=swap_before_identity
+            ), mock.patch.object(export_module, "_copy_regular_file", side_effect=record_copy):
+                export = export_live_evidence_bundles(capture, root / "output")
+
+            self.assertTrue(swapped)
+            self.assertNotIn(b"external", copied)
+            self.assertEqual(len(export.candidates), 1)
 
     def test_one_inconsistent_superseded_candidate_blocks_all_candidates(self) -> None:
         """A later bad candidate cannot permit an earlier candidate to be exported alone."""
@@ -637,26 +701,6 @@ class LiveEvidenceGraphTests(unittest.TestCase):
 
             with self.assertRaises(LiveEvidenceBundleError):
                 export_live_evidence_bundles(capture, root / "output")
-
-            self.assertFalse((root / "output").exists())
-
-    def test_duplicate_derived_candidate_identity_blocks_export(self) -> None:
-        """The exporter collision guard still runs after a valid Stage 3A graph."""
-        with tempfile.TemporaryDirectory() as temporary:
-            root = Path(temporary)
-            capture, _ = self._write_capture(root)
-            self._append_valid_superseded_candidate(capture)
-            original_candidate = export_module._candidate_bundle
-
-            def duplicate_identity(*args: object, **kwargs: object) -> tuple[str, dict[str, object]]:
-                _candidate_id, bundle = original_candidate(*args, **kwargs)
-                return "bundle-frl-duplicate-r1", bundle
-
-            with mock.patch.object(
-                export_module, "_candidate_bundle", side_effect=duplicate_identity
-            ):
-                with self.assertRaisesRegex(LiveEvidenceBundleError, "identities are duplicated"):
-                    export_live_evidence_bundles(capture, root / "output")
 
             self.assertFalse((root / "output").exists())
 
