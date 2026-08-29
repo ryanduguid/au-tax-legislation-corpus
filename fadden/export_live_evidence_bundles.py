@@ -22,6 +22,56 @@ _SEMVER = re.compile(
 )
 _VERSION_PATH = Path(__file__).resolve().parent.parent / "VERSION"
 _PYPROJECT_PATH = Path(__file__).resolve().parent.parent / "pyproject.toml"
+_MAX_RESPONSE_BYTES = 256 * 1024
+_MAX_BUNDLE_BYTES = 1024 * 1024
+_BASELINE_TITLE_FIELDS = (
+    "register_id",
+    "name",
+    "collection",
+    "compilation_number",
+    "compilation_date",
+    "version_is_current",
+    "current_version_start",
+    "retrieved",
+    "source_url",
+    "register_page",
+)
+_CAPTURE_RESULT_FIELDS = (
+    "register_id",
+    "collection",
+    "checked_at",
+    "state",
+    "error_category",
+    "requests",
+)
+_REQUEST_FIELDS = (
+    "role",
+    "url",
+    "checked_at",
+    "http_status",
+    "transport_error_category",
+    "attempt_count",
+    "response_headers",
+    "response_length",
+    "response_sha256",
+    "evidence_path",
+)
+_OBSERVATION_FIELDS = (
+    "register_id",
+    "collection",
+    "state",
+    "evidence_id",
+    "observed_compilation_number",
+    "observed_compilation_date",
+    "observed_register_document_id",
+    "current_version_start",
+    "evidence_url",
+    "checked_at",
+    "error_category",
+    "capture_result_sha256",
+    "primary_response_sha256",
+    "primary_response_media_type",
+)
 
 
 @dataclass(frozen=True)
@@ -112,6 +162,42 @@ def _rights(checked_at: str) -> dict[str, str]:
     }
 
 
+def _project_members(
+    value: dict[str, Any], fields: tuple[str, ...], label: str
+) -> dict[str, Any]:
+    try:
+        return {field: value[field] for field in fields}
+    except KeyError as exc:
+        raise LiveEvidenceBundleError(f"{label} is missing {exc.args[0]}.") from exc
+
+
+def _project_capture_result(value: dict[str, Any]) -> dict[str, Any]:
+    result = _project_members(value, _CAPTURE_RESULT_FIELDS, "capture result")
+    requests = result["requests"]
+    if not isinstance(requests, list):
+        raise LiveEvidenceBundleError("capture result requests must be an array.")
+    result["requests"] = [
+        _project_members(
+            _required_object(request, "capture request"),
+            _REQUEST_FIELDS,
+            "capture request",
+        )
+        for request in requests
+    ]
+    return result
+
+
+def _read_response(path: Path) -> bytes:
+    try:
+        with open(path, "rb") as source:
+            response = source.read(_MAX_RESPONSE_BYTES + 1)
+    except OSError as exc:
+        raise LiveEvidenceBundleError("retained response could not be read.") from exc
+    if len(response) > _MAX_RESPONSE_BYTES:
+        raise LiveEvidenceBundleError("retained response exceeds the 256 KiB limit.")
+    return response
+
+
 def _candidate_bundle(
     title: dict[str, Any],
     result: dict[str, Any],
@@ -123,21 +209,33 @@ def _candidate_bundle(
     observed_at: str,
     response: bytes,
 ) -> tuple[str, dict[str, Any]]:
-    register_id = _register_id(title.get("register_id"), "baseline title register_id")
-    document_id = _register_id(
-        observation.get("observed_register_document_id"), "observed register document id"
+    baseline_title = _project_members(title, _BASELINE_TITLE_FIELDS, "baseline title")
+    capture_result = _project_capture_result(result)
+    bundle_observation = _project_members(observation, _OBSERVATION_FIELDS, "observation")
+    register_id = _register_id(
+        baseline_title.get("register_id"), "baseline title register_id"
     )
-    requests = result.get("requests")
+    document_id = _register_id(
+        bundle_observation.get("observed_register_document_id"),
+        "observed register document id",
+    )
+    requests = capture_result["requests"]
     if not isinstance(requests, list) or len(requests) != 1:
         raise LiveEvidenceBundleError("SUPERSEDED capture result must have one request.")
     request = _required_object(requests[0], "capture request")
     response_sha256 = _required_sha256(request.get("response_sha256"), "response SHA-256")
     if _sha256_id(response) != response_sha256:
-        raise LiveEvidenceBundleError("retained response digest does not match the capture request.")
+        raise LiveEvidenceBundleError(
+            "retained response digest does not match the capture request."
+        )
     if request.get("response_length") != len(response):
-        raise LiveEvidenceBundleError("retained response length does not match the capture request.")
-    if observation.get("primary_response_sha256") != response_sha256:
-        raise LiveEvidenceBundleError("observation response digest does not match the capture request.")
+        raise LiveEvidenceBundleError(
+            "retained response length does not match the capture request."
+        )
+    if bundle_observation.get("primary_response_sha256") != response_sha256:
+        raise LiveEvidenceBundleError(
+            "observation response digest does not match the capture request."
+        )
     bundle_id = f"bundle-frl-{register_id.lower()}-{document_id.lower()}-r1"
     return bundle_id, {
         "schema_version": "evidence-bundle.v2",
@@ -150,11 +248,11 @@ def _candidate_bundle(
             "baseline_sha256": baseline_sha256,
             "observation_sha256": observation_sha256,
         },
-        "baseline_title": title,
-        "capture_result": result,
-        "observation": observation,
+        "baseline_title": baseline_title,
+        "capture_result": capture_result,
+        "observation": bundle_observation,
         "rights": _rights(
-            _required_text(observation.get("checked_at"), "observation checked_at")
+            _required_text(bundle_observation.get("checked_at"), "observation checked_at")
         ),
         "primary_response_base64": base64.b64encode(response).decode("ascii"),
     }
@@ -225,11 +323,10 @@ def export_live_evidence_bundles(
         if not isinstance(requests, list) or not requests:
             raise LiveEvidenceBundleError("SUPERSEDED capture result must have a request.")
         request = _required_object(requests[0], "capture request")
-        evidence_path = _required_text(request.get("evidence_path"), "capture evidence path")
-        try:
-            response = (capture / evidence_path).read_bytes()
-        except OSError as exc:
-            raise LiveEvidenceBundleError("retained response could not be read.") from exc
+        evidence_path = _required_text(
+            request.get("evidence_path"), "capture evidence path"
+        )
+        response = _read_response(capture / evidence_path)
         candidates.append(
             _candidate_bundle(
                 title,
@@ -249,7 +346,10 @@ def export_live_evidence_bundles(
         paths = []
         for bundle_id, bundle in sorted(candidates):
             path = output / f"{bundle_id}.json"
-            path.write_bytes(_json_bytes(bundle))
+            content = _json_bytes(bundle)
+            if len(content) > _MAX_BUNDLE_BYTES:
+                raise LiveEvidenceBundleError("serialised bundle exceeds the 1 MiB limit.")
+            path.write_bytes(content)
             paths.append(path)
     except OSError as exc:
         raise LiveEvidenceBundleError("live evidence bundles could not be written.") from exc
