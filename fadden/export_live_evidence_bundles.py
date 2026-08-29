@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import base64
+import ctypes
 import datetime as dt
 import hashlib
 import json
@@ -14,6 +15,8 @@ import tempfile
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Sequence
+
+from ctypes import wintypes
 
 from .capture_register import (
     ODATA_CONTEXT,
@@ -137,16 +140,6 @@ def _require_ordinary_directory(path: Path, label: str) -> None:
         raise LiveEvidenceBundleError(f"{label} must be an ordinary directory.")
 
 
-def _require_ordinary_ancestors(path: Path, label: str) -> None:
-    current = path
-    while True:
-        _require_ordinary_directory(current, label)
-        parent = current.parent
-        if parent == current:
-            return
-        current = parent
-
-
 def _same_regular_file_identity(expected: os.stat_result, observed: os.stat_result) -> bool:
     return (
         stat.S_ISREG(expected.st_mode)
@@ -157,7 +150,146 @@ def _same_regular_file_identity(expected: os.stat_result, observed: os.stat_resu
     )
 
 
-def _copy_regular_file(source_path: Path, target_path: Path) -> None:
+class _ByHandleFileInformation(ctypes.Structure):
+    _fields_ = [
+        ("file_attributes", wintypes.DWORD),
+        ("creation_time", wintypes.FILETIME),
+        ("last_access_time", wintypes.FILETIME),
+        ("last_write_time", wintypes.FILETIME),
+        ("volume_serial_number", wintypes.DWORD),
+        ("file_size_high", wintypes.DWORD),
+        ("file_size_low", wintypes.DWORD),
+        ("number_of_links", wintypes.DWORD),
+        ("file_index_high", wintypes.DWORD),
+        ("file_index_low", wintypes.DWORD),
+    ]
+
+
+class _UnicodeString(ctypes.Structure):
+    _fields_ = [
+        ("length", ctypes.c_ushort),
+        ("maximum_length", ctypes.c_ushort),
+        ("buffer", wintypes.LPWSTR),
+    ]
+
+
+class _ObjectAttributes(ctypes.Structure):
+    _fields_ = [
+        ("length", wintypes.ULONG),
+        ("root_directory", wintypes.HANDLE),
+        ("object_name", ctypes.POINTER(_UnicodeString)),
+        ("attributes", wintypes.ULONG),
+        ("security_descriptor", wintypes.LPVOID),
+        ("security_quality_of_service", wintypes.LPVOID),
+    ]
+
+
+class _IoStatusBlock(ctypes.Structure):
+    _fields_ = [("status", wintypes.LONG), ("information", ctypes.c_size_t)]
+
+
+_FILE_ATTRIBUTE_DIRECTORY = 0x10
+_FILE_ATTRIBUTE_REPARSE_POINT = 0x400
+_FILE_READ_ATTRIBUTES = 0x80
+_GENERIC_READ = 0x80000000
+_SYNCHRONIZE = 0x00100000
+_FILE_SHARE_READ = 0x1
+_FILE_SHARE_WRITE = 0x2
+_OPEN_EXISTING = 3
+_FILE_FLAG_BACKUP_SEMANTICS = 0x02000000
+_FILE_FLAG_OPEN_REPARSE_POINT = 0x00200000
+_FILE_DIRECTORY_FILE = 0x1
+_FILE_NON_DIRECTORY_FILE = 0x40
+_FILE_SYNCHRONOUS_IO_NONALERT = 0x20
+
+
+def _windows_handle_value(handle: wintypes.HANDLE | int | None) -> int:
+    """Return a ctypes Windows handle as a stable integer value."""
+
+    value = getattr(handle, "value", handle)
+    if value is None:
+        return 0
+    return int(value)
+
+
+class _PinnedDirectoryChain:
+    """Hold Windows directories open without delete sharing during one source copy."""
+
+    def __init__(self) -> None:
+        self._handles: list[int] = []
+
+    def __enter__(self) -> _PinnedDirectoryChain:
+        return self
+
+    def __exit__(self, _type: object, _value: object, _traceback: object) -> None:
+        if os.name == "nt":
+            kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+            for handle in reversed(self._handles):
+                kernel32.CloseHandle(wintypes.HANDLE(handle))
+
+    def pin(self, path: Path, label: str, *, parent_handle: int | None = None) -> int | None:
+        if os.name != "nt":
+            _require_ordinary_directory(path, label)
+            return None
+        kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+        kernel32.CreateFileW.argtypes = [
+            wintypes.LPCWSTR,
+            wintypes.DWORD,
+            wintypes.DWORD,
+            wintypes.LPVOID,
+            wintypes.DWORD,
+            wintypes.DWORD,
+            wintypes.HANDLE,
+        ]
+        kernel32.CreateFileW.restype = wintypes.HANDLE
+        kernel32.GetFileInformationByHandle.argtypes = [
+            wintypes.HANDLE, ctypes.POINTER(_ByHandleFileInformation)
+        ]
+        kernel32.GetFileInformationByHandle.restype = wintypes.BOOL
+        if parent_handle is None:
+            handle = kernel32.CreateFileW(
+                str(path),
+                _FILE_READ_ATTRIBUTES,
+                _FILE_SHARE_READ | _FILE_SHARE_WRITE,
+                None,
+                _OPEN_EXISTING,
+                _FILE_FLAG_BACKUP_SEMANTICS | _FILE_FLAG_OPEN_REPARSE_POINT,
+                None,
+            )
+            if _windows_handle_value(handle) == _windows_handle_value(wintypes.HANDLE(-1)):
+                raise LiveEvidenceBundleError(f"{label} could not be pinned.")
+        else:
+            handle = wintypes.HANDLE(
+                _open_pinned_child(parent_handle, path.name, _FILE_DIRECTORY_FILE)
+            )
+        handle_value = _windows_handle_value(handle)
+        details = _ByHandleFileInformation()
+        if not kernel32.GetFileInformationByHandle(handle, ctypes.byref(details)):
+            kernel32.CloseHandle(handle)
+            raise LiveEvidenceBundleError(f"{label} could not be pinned.")
+        if (
+            not details.file_attributes & _FILE_ATTRIBUTE_DIRECTORY
+            or details.file_attributes & _FILE_ATTRIBUTE_REPARSE_POINT
+        ):
+            kernel32.CloseHandle(handle)
+            raise LiveEvidenceBundleError(f"{label} must be an ordinary directory.")
+        self._handles.append(handle_value)
+        return handle_value
+
+
+def _directory_inventory(path: Path) -> dict[str, tuple[int, int, int]]:
+    try:
+        entries = list(path.iterdir())
+        return {
+            entry.name: (details.st_mode, details.st_dev, details.st_ino)
+            for entry in entries
+            for details in (os.lstat(entry),)
+        }
+    except OSError as exc:
+        raise LiveEvidenceBundleError("capture input inventory changed.") from exc
+
+
+def _ordinary_file_details(source_path: Path) -> os.stat_result:
     try:
         expected = os.lstat(source_path)
     except OSError as exc:
@@ -170,8 +302,76 @@ def _copy_regular_file(source_path: Path, target_path: Path) -> None:
         or getattr(expected, "st_nlink", 1) != 1
     ):
         raise LiveEvidenceBundleError("capture snapshot source file is not ordinary.")
+    return expected
+
+
+def _open_pinned_child(directory_handle: int, name: str, options: int) -> int:
+    name_buffer = ctypes.create_unicode_buffer(name)
+    unicode_name = _UnicodeString(
+        len(name) * 2,
+        (len(name) + 1) * 2,
+        ctypes.cast(name_buffer, wintypes.LPWSTR),
+    )
+    attributes = _ObjectAttributes(
+        ctypes.sizeof(_ObjectAttributes),
+        wintypes.HANDLE(directory_handle),
+        ctypes.pointer(unicode_name),
+        0,
+        None,
+        None,
+    )
+    status = _IoStatusBlock()
+    handle = wintypes.HANDLE()
+    ntdll = ctypes.WinDLL("ntdll", use_last_error=True)
+    ntdll.NtOpenFile.argtypes = [
+        ctypes.POINTER(wintypes.HANDLE),
+        wintypes.ULONG,
+        ctypes.POINTER(_ObjectAttributes),
+        ctypes.POINTER(_IoStatusBlock),
+        wintypes.ULONG,
+        wintypes.ULONG,
+    ]
+    ntdll.NtOpenFile.restype = wintypes.LONG
+    result = ntdll.NtOpenFile(
+        ctypes.byref(handle),
+        _GENERIC_READ | _SYNCHRONIZE,
+        ctypes.byref(attributes),
+        ctypes.byref(status),
+        _FILE_SHARE_READ | _FILE_SHARE_WRITE,
+        options | _FILE_SYNCHRONOUS_IO_NONALERT | _FILE_FLAG_OPEN_REPARSE_POINT,
+    )
+    if result != 0:
+        raise LiveEvidenceBundleError("capture snapshot source file could not be opened.")
+    return int(handle.value)
+
+
+def _open_pinned_regular_file(directory_handle: int, name: str) -> int:
+    return _open_pinned_child(directory_handle, name, _FILE_NON_DIRECTORY_FILE)
+
+
+def _copy_regular_file(
+    source_path: Path,
+    target_path: Path,
+    *,
+    directory_handle: int | None = None,
+    expected: os.stat_result | None = None,
+) -> os.stat_result:
+    if expected is None:
+        expected = _ordinary_file_details(source_path)
     try:
-        with open(source_path, "rb") as source, open(target_path, "xb") as target:
+        if directory_handle is None:
+            source = open(source_path, "rb")
+        else:
+            import msvcrt
+
+            source = os.fdopen(
+                msvcrt.open_osfhandle(
+                    _open_pinned_regular_file(directory_handle, source_path.name),
+                    os.O_RDONLY | os.O_BINARY,
+                ),
+                "rb",
+            )
+        with source, open(target_path, "xb") as target:
             opened = os.fstat(source.fileno())
             if not _same_regular_file_identity(expected, opened):
                 raise LiveEvidenceBundleError("capture snapshot source file changed.")
@@ -186,45 +386,73 @@ def _copy_regular_file(source_path: Path, target_path: Path) -> None:
         and _same_regular_file_identity(read_details, final)
     ):
         raise LiveEvidenceBundleError("capture snapshot source file changed.")
+    return expected
 
 
 def _snapshot_capture_graph(capture_dir: str | Path, snapshot: Path) -> None:
     source = Path(os.path.abspath(os.fspath(capture_dir)))
-    _require_ordinary_ancestors(source.parent, "capture input")
-    _require_ordinary_directory(source, "capture input")
-    try:
-        root_entries = {entry.name for entry in source.iterdir()}
-    except OSError as exc:
-        raise LiveEvidenceBundleError("capture input could not be inspected.") from exc
-    if root_entries != {
-        "monitor-baseline.json",
-        "register-capture.json",
-        "register-observation.json",
-        "evidence",
-    }:
-        raise LiveEvidenceBundleError("capture input layout is invalid.")
-    source_evidence = source / "evidence"
-    _require_ordinary_directory(source_evidence, "capture evidence")
-    _require_ordinary_ancestors(source_evidence.parent, "capture input")
-    try:
-        evidence_entries = list(source_evidence.iterdir())
-    except OSError as exc:
-        raise LiveEvidenceBundleError("capture evidence could not be inspected.") from exc
-    if any(_EVIDENCE_NAME.fullmatch(entry.name) is None for entry in evidence_entries):
-        raise LiveEvidenceBundleError("capture evidence layout is invalid.")
-    try:
-        os.mkdir(snapshot, 0o700)
-        os.mkdir(snapshot / "evidence", 0o700)
-    except OSError as exc:
-        raise LiveEvidenceBundleError("capture snapshot could not be created.") from exc
-    for name in (
-        "monitor-baseline.json",
-        "register-capture.json",
-        "register-observation.json",
-    ):
-        _copy_regular_file(source / name, snapshot / name)
-    for entry in evidence_entries:
-        _copy_regular_file(entry, snapshot / "evidence" / entry.name)
+    chain = list(reversed([source, *source.parents]))
+    with _PinnedDirectoryChain() as pinned:
+        handles: dict[Path, int | None] = {}
+        parent_handle: int | None = None
+        for directory in chain:
+            handles[directory] = pinned.pin(
+                directory, "capture input", parent_handle=parent_handle
+            )
+            parent_handle = handles[directory]
+        root_inventory = _directory_inventory(source)
+        if set(root_inventory) != {
+            "monitor-baseline.json",
+            "register-capture.json",
+            "register-observation.json",
+            "evidence",
+        }:
+            raise LiveEvidenceBundleError("capture input layout is invalid.")
+        source_evidence = source / "evidence"
+        evidence_handle = pinned.pin(
+            source_evidence, "capture evidence", parent_handle=handles[source]
+        )
+        evidence_inventory = _directory_inventory(source_evidence)
+        if any(_EVIDENCE_NAME.fullmatch(name) is None for name in evidence_inventory):
+            raise LiveEvidenceBundleError("capture evidence layout is invalid.")
+        try:
+            os.mkdir(snapshot, 0o700)
+            os.mkdir(snapshot / "evidence", 0o700)
+        except OSError as exc:
+            raise LiveEvidenceBundleError("capture snapshot could not be created.") from exc
+        copied: dict[Path, os.stat_result] = {}
+        for name in (
+            "monitor-baseline.json",
+            "register-capture.json",
+            "register-observation.json",
+        ):
+            path = source / name
+            copied[path] = _copy_regular_file(
+                path,
+                snapshot / name,
+                directory_handle=handles[source],
+                expected=_ordinary_file_details(path),
+            )
+        for name in sorted(evidence_inventory):
+            path = source_evidence / name
+            copied[path] = _copy_regular_file(
+                path,
+                snapshot / "evidence" / name,
+                directory_handle=evidence_handle,
+                expected=_ordinary_file_details(path),
+            )
+        if (
+            _directory_inventory(source) != root_inventory
+            or _directory_inventory(source_evidence) != evidence_inventory
+        ):
+            raise LiveEvidenceBundleError("capture input inventory changed.")
+        for path, expected in copied.items():
+            try:
+                final = os.lstat(path)
+            except OSError as exc:
+                raise LiveEvidenceBundleError("capture snapshot source file changed.") from exc
+            if not _same_regular_file_identity(expected, final):
+                raise LiveEvidenceBundleError("capture snapshot source file changed.")
 
 
 def _json_bytes(value: Any) -> bytes:

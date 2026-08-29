@@ -5,11 +5,14 @@ from __future__ import annotations
 import base64
 import hashlib
 import json
+import os
 import tempfile
 import unittest
 from pathlib import Path
 from typing import Callable
+from unittest import mock
 
+import fadden.export_live_evidence_bundles as export_module
 from fadden.export_live_evidence_bundles import (
     LiveEvidenceBundleError,
     export_live_evidence_bundles,
@@ -403,6 +406,51 @@ class LiveEvidenceGraphTests(unittest.TestCase):
         )
         self._write_documents(capture, baseline, register, observation)
 
+    def _append_valid_superseded_candidate(self, capture: Path) -> None:
+        baseline, register, observation = self._documents(capture)
+        title = json.loads(json.dumps(baseline["titles"][0]))
+        result = json.loads(json.dumps(register["results"][0]))
+        item = json.loads(json.dumps(observation["observations"][0]))
+        register_id = "F2022L00348"
+        document_id = "F2026C00839"
+        raw = (
+            DEFAULT_RESPONSE.replace(b"F2022L00347", register_id.encode("ascii"))
+            .replace(b"F2026C00838", document_id.encode("ascii"))
+        )
+        response_sha256 = _sha256_id(raw)
+        evidence_name = f"sha256-{response_sha256.removeprefix('sha256:')}.json"
+        (capture / "evidence" / evidence_name).write_bytes(raw)
+        title.update(
+            {
+                "register_id": register_id,
+                "source_url": title["source_url"].replace("F2022L00347", register_id),
+                "register_page": title["register_page"].replace("F2022L00347", register_id),
+            }
+        )
+        result["register_id"] = register_id
+        request = result["requests"][0]
+        request.update(
+            {
+                "url": request["url"].replace("F2022L00347", register_id),
+                "response_length": len(raw),
+                "response_sha256": response_sha256,
+                "evidence_path": f"evidence/{evidence_name}",
+            }
+        )
+        item.update(
+            {
+                "register_id": register_id,
+                "observed_register_document_id": document_id,
+                "evidence_url": item["evidence_url"].replace("F2022L00347", register_id),
+            }
+        )
+        baseline["titles"].append(title)
+        register["expected_register_ids"].append(register_id)
+        register["results"].append(result)
+        observation["expected_register_ids"].append(register_id)
+        observation["observations"].append(item)
+        self._write_documents(capture, baseline, register, observation)
+
     def test_complete_graph_failures_are_table_driven(self) -> None:
         """No malformed graph may be partially exported as a plausible candidate."""
         def incomplete(capture: Path) -> None:
@@ -441,6 +489,11 @@ class LiveEvidenceGraphTests(unittest.TestCase):
             baseline["titles"].append(dict(baseline["titles"][0]))
             (capture / "monitor-baseline.json").write_bytes(_json_bytes(baseline))
 
+        def missing_title(capture: Path) -> None:
+            baseline, _register, _observation = self._documents(capture)
+            baseline["titles"] = []
+            (capture / "monitor-baseline.json").write_bytes(_json_bytes(baseline))
+
         def digest_mismatch(capture: Path) -> None:
             _baseline, register, _observation = self._documents(capture)
             register["baseline_sha256"] = f"sha256:{'0' * 64}"
@@ -468,6 +521,7 @@ class LiveEvidenceGraphTests(unittest.TestCase):
             ("incomplete", incomplete),
             ("non-VERIFIED", blocked),
             ("LOOKUP_FAILED", lookup_failed),
+            ("missing title", missing_title),
             ("duplicate derived identity", duplicate_title),
             ("digest mismatch", digest_mismatch),
             ("response length mismatch", response_length_mismatch),
@@ -483,6 +537,128 @@ class LiveEvidenceGraphTests(unittest.TestCase):
 
                 with self.assertRaises(LiveEvidenceBundleError):
                     export_live_evidence_bundles(capture, root / "output")
+
+    def test_capture_directory_reparse_race_never_exports_external_graph(self) -> None:
+        """A capture-directory swap cannot redirect the owned snapshot to external bytes."""
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            capture, _ = self._write_capture(root)
+            external, _ = LiveEvidenceBundleContractTests()._write_capture(
+                root / "external",
+                mutate=lambda baseline, _result, _observation: baseline["titles"][0].__setitem__(
+                    "name", "External capture bytes"
+                ),
+            )
+            retained = root / "retained-capture"
+            original_copy = export_module._copy_regular_file
+            swapped = False
+
+            def replace_capture(source: Path, target: Path, **kwargs: object) -> None:
+                nonlocal swapped
+                if not swapped:
+                    swapped = True
+                    try:
+                        os.rename(capture, retained)
+                        os.symlink(external, capture, target_is_directory=True)
+                    except OSError as exc:
+                        raise LiveEvidenceBundleError("directory replacement was blocked") from exc
+                original_copy(source, target, **kwargs)
+
+            with mock.patch.object(
+                export_module, "_copy_regular_file", side_effect=replace_capture
+            ):
+                with self.assertRaises(LiveEvidenceBundleError):
+                    export_live_evidence_bundles(capture, root / "output")
+
+            self.assertTrue(swapped)
+            self.assertFalse((root / "output").exists())
+
+    def test_evidence_directory_reparse_race_never_copies_external_bytes(self) -> None:
+        """Replacing evidence after inspection cannot make the snapshot copy external content."""
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            capture, _ = self._write_capture(root)
+            outside = root / "outside-evidence"
+            outside.mkdir()
+            (outside / next((capture / "evidence").iterdir()).name).write_bytes(b"external")
+            retained = root / "retained-evidence"
+            original_copy = export_module._copy_regular_file
+            copied: list[bytes] = []
+            swapped = False
+
+            def replace_evidence(source: Path, target: Path, **kwargs: object) -> None:
+                nonlocal swapped
+                if source.parent == capture / "evidence" and not swapped:
+                    swapped = True
+                    try:
+                        os.rename(capture / "evidence", retained)
+                        os.symlink(outside, capture / "evidence", target_is_directory=True)
+                    except OSError as exc:
+                        raise LiveEvidenceBundleError("directory replacement was blocked") from exc
+                original_copy(source, target, **kwargs)
+                if source.parent.name == "evidence":
+                    copied.append(target.read_bytes())
+
+            with mock.patch.object(
+                export_module, "_copy_regular_file", side_effect=replace_evidence
+            ):
+                with self.assertRaises(LiveEvidenceBundleError):
+                    export_live_evidence_bundles(capture, root / "output")
+
+            self.assertTrue(swapped)
+            self.assertNotIn(b"external", copied)
+            self.assertFalse((root / "output").exists())
+
+    def test_one_inconsistent_superseded_candidate_blocks_all_candidates(self) -> None:
+        """A later bad candidate cannot permit an earlier candidate to be exported alone."""
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            capture, _ = self._write_capture(root)
+            self._append_valid_superseded_candidate(capture)
+            baseline, register, observation = self._documents(capture)
+            request = register["results"][1]["requests"][0]
+            evidence = capture / request["evidence_path"]
+            raw = evidence.read_bytes().replace(
+                b'"registeredAt":"2026-08-27T17:31:41.1234567+10:00"',
+                b'"registeredAt":"2026-08-27"',
+            )
+            evidence.unlink()
+            digest = _sha256_id(raw)
+            evidence_name = f"sha256-{digest.removeprefix('sha256:')}.json"
+            (capture / "evidence" / evidence_name).write_bytes(raw)
+            request.update(
+                {
+                    "response_length": len(raw),
+                    "response_sha256": digest,
+                    "evidence_path": f"evidence/{evidence_name}",
+                }
+            )
+            self._write_documents(capture, baseline, register, observation)
+
+            with self.assertRaises(LiveEvidenceBundleError):
+                export_live_evidence_bundles(capture, root / "output")
+
+            self.assertFalse((root / "output").exists())
+
+    def test_duplicate_derived_candidate_identity_blocks_export(self) -> None:
+        """The exporter collision guard still runs after a valid Stage 3A graph."""
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            capture, _ = self._write_capture(root)
+            self._append_valid_superseded_candidate(capture)
+            original_candidate = export_module._candidate_bundle
+
+            def duplicate_identity(*args: object, **kwargs: object) -> tuple[str, dict[str, object]]:
+                _candidate_id, bundle = original_candidate(*args, **kwargs)
+                return "bundle-frl-duplicate-r1", bundle
+
+            with mock.patch.object(
+                export_module, "_candidate_bundle", side_effect=duplicate_identity
+            ):
+                with self.assertRaisesRegex(LiveEvidenceBundleError, "identities are duplicated"):
+                    export_live_evidence_bundles(capture, root / "output")
+
+            self.assertFalse((root / "output").exists())
 
     def test_non_candidate_states_create_no_asset(self) -> None:
         """Only a verified SUPERSEDED observation is publishable evidence."""
