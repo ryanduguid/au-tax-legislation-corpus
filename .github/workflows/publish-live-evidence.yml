@@ -1,0 +1,175 @@
+name: Publish live evidence
+
+on:
+  workflow_dispatch:
+
+concurrency:
+  group: publish-live-evidence-v2
+  cancel-in-progress: false
+
+jobs:
+  publish:
+    if: github.repository == 'ryanduguid/au-tax-legislation-corpus' && github.ref == 'refs/heads/main'
+    permissions:
+      attestations: write
+      contents: write
+      id-token: write
+    runs-on: windows-latest
+    timeout-minutes: 120
+    defaults:
+      run:
+        shell: pwsh
+    steps:
+      - name: Check out source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Set up Python
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.12"
+
+      - name: Install the locked toolchain
+        run: python -m pip install "uv==0.12.0"
+
+      - name: Capture and export live evidence
+        id: export
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $captureDir = Join-Path $env:RUNNER_TEMP 'register-capture'
+          $candidateDir = Join-Path $env:RUNNER_TEMP 'live-evidence'
+
+          uv run --locked python -m fadden capture_register -- fadden/manifest_md.json --out $captureDir
+          if ($LASTEXITCODE -ne 0) { throw 'Federal Register capture failed.' }
+
+          $summary = @(uv run --locked python -m fadden export_live_evidence_bundles -- $captureDir --out $candidateDir)
+          if ($LASTEXITCODE -ne 0) { throw 'Live evidence export failed.' }
+          if ($summary.Count -ne 2) { throw 'Live evidence export returned an invalid summary.' }
+
+          $values = @{}
+          foreach ($line in $summary) {
+            if ($line -cnotmatch '^(candidate_count|release_tag)=(.+)$') {
+              throw 'Live evidence export returned an invalid summary.'
+            }
+            if ($values.ContainsKey($Matches[1])) {
+              throw 'Live evidence export returned an invalid summary.'
+            }
+            $values[$Matches[1]] = $Matches[2]
+          }
+          if ($values.Count -ne 2) { throw 'Live evidence export returned an invalid summary.' }
+
+          $candidateText = [string]$values['candidate_count']
+          if ($candidateText -cnotmatch '^(0|[1-9][0-9]{0,3})$') {
+            throw 'Live evidence export returned an invalid candidate count.'
+          }
+          $candidateCount = [int]$candidateText
+          if ($candidateCount -gt 1000) {
+            throw 'Live evidence export exceeds the candidate limit.'
+          }
+
+          $releaseTag = [string]$values['release_tag']
+          if ($releaseTag -cnotmatch '^live-evidence-v2-[0-9a-f]{64}$') {
+            throw 'Live evidence export returned an invalid release tag.'
+          }
+
+          $observationPath = Join-Path $captureDir 'register-observation.json'
+          $observation = Get-Content -Raw -LiteralPath $observationPath | ConvertFrom-Json
+          $captureStarted = [string]$observation.observed_at
+          if ($captureStarted -cnotmatch '^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{1,6})?Z$') {
+            throw 'Live evidence capture has an invalid start time.'
+          }
+
+          $hasCandidates = if ($candidateCount -eq 0) { 'false' } else { 'true' }
+          Add-Content -LiteralPath $env:GITHUB_OUTPUT -Value "has_candidates=$hasCandidates"
+          Add-Content -LiteralPath $env:GITHUB_OUTPUT -Value "candidate_count=$candidateCount"
+          Add-Content -LiteralPath $env:GITHUB_OUTPUT -Value "release_tag=$releaseTag"
+          Add-Content -LiteralPath $env:GITHUB_OUTPUT -Value "capture_started=$captureStarted"
+
+      - name: Verify candidate set
+        env:
+          CANDIDATE_COUNT: ${{ steps.export.outputs.candidate_count }}
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $candidateDir = Join-Path $env:RUNNER_TEMP 'live-evidence'
+          if ($env:CANDIDATE_COUNT -cnotmatch '^(0|[1-9][0-9]{0,3})$') {
+            throw 'Candidate count is invalid.'
+          }
+          $candidateCount = [int]$env:CANDIDATE_COUNT
+          $candidateFiles = @(
+            Get-ChildItem -LiteralPath $candidateDir -Filter '*.json' -File |
+              Sort-Object -Property Name
+          )
+          if ($candidateFiles.Count -ne $candidateCount) {
+            throw 'Candidate files do not match the export summary.'
+          }
+          if ($candidateFiles.Count -gt 1000) {
+            throw 'Candidate files exceed the release bounds.'
+          }
+
+      - name: Attest candidate set
+        id: attest
+        if: steps.export.outputs.has_candidates == 'true'
+        uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6 # v4.2.2
+        with:
+          subject-path: ${{ runner.temp }}/live-evidence/*.json
+
+      - name: Verify attestation receipt
+        if: steps.export.outputs.has_candidates == 'true'
+        env:
+          ATTESTATION_ID: ${{ steps.attest.outputs.attestation-id }}
+        run: |
+          $attestationId = $env:ATTESTATION_ID
+          if ([string]::IsNullOrWhiteSpace($attestationId)) {
+            throw 'Artifact attestation did not return an identifier.'
+          }
+
+      - name: Create draft and upload candidates
+        if: steps.export.outputs.has_candidates == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          CANDIDATE_COUNT: ${{ steps.export.outputs.candidate_count }}
+          CAPTURE_STARTED: ${{ steps.export.outputs.capture_started }}
+          RELEASE_TAG: ${{ steps.export.outputs.release_tag }}
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $candidateDir = Join-Path $env:RUNNER_TEMP 'live-evidence'
+          $candidateCount = [int]$env:CANDIDATE_COUNT
+          $captureStarted = $env:CAPTURE_STARTED
+          $releaseTag = $env:RELEASE_TAG
+          $assetPaths = @(
+            Get-ChildItem -LiteralPath $candidateDir -Filter '*.json' -File |
+              Sort-Object -Property Name |
+              ForEach-Object { $_.FullName }
+          )
+          if ($assetPaths.Count -ne $candidateCount) {
+            throw 'Candidate files changed after attestation.'
+          }
+          $notes = @(
+            "Capture started: $captureStarted"
+            "Candidates: $candidateCount"
+            'Source-only evidence: no legislation text is reproduced. Each immutable asset'
+            'contains the Federal Register attribution for its own response retrieval date.'
+          ) -join "`n"
+
+          & gh api --method POST repos/ryanduguid/au-tax-legislation-corpus/git/refs --raw-field "ref=refs/tags/$releaseTag" --raw-field "sha=$env:GITHUB_SHA"
+          if ($LASTEXITCODE -ne 0) { throw 'GitHub CLI release operation failed.' }
+          & gh release create $releaseTag --repo ryanduguid/au-tax-legislation-corpus --draft --verify-tag --title $releaseTag --notes $notes
+          if ($LASTEXITCODE -ne 0) { throw 'GitHub CLI release operation failed.' }
+          $batchSize = 64
+          for ($offset = 0; $offset -lt $assetPaths.Count; $offset += $batchSize) {
+            $last = [Math]::Min($offset + $batchSize - 1, $assetPaths.Count - 1)
+            $batch = $assetPaths[$offset..$last]
+            & gh release upload $releaseTag @batch --repo ryanduguid/au-tax-legislation-corpus
+            if ($LASTEXITCODE -ne 0) { throw 'GitHub CLI release operation failed.' }
+          }
+
+      - name: Publish immutable release
+        if: steps.export.outputs.has_candidates == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ steps.export.outputs.release_tag }}
+        run: |
+          $releaseTag = $env:RELEASE_TAG
+          & gh release edit $releaseTag --repo ryanduguid/au-tax-legislation-corpus --draft=false --latest=false
+          if ($LASTEXITCODE -ne 0) { throw 'GitHub CLI release operation failed.' }

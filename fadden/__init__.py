@@ -19,4 +19,7 @@ STAGES = (
     "dist",
     "dist_verify",
     "export_monitor_contract",
+    "export_publication_bundles",
+    "capture_register",
+    "export_live_evidence_bundles",
 )
