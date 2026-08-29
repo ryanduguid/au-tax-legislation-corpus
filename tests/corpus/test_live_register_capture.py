@@ -886,6 +886,80 @@ class LiveRegisterCaptureStateTests(unittest.TestCase):
                 },
             },
             {
+                "label": "repealed current row",
+                "row": manifest_row(
+                    id="F2016L01256",
+                    name="Repealed Instrument 2016",
+                    collection="LegislativeInstrument",
+                    versionStart="2016-07-29",
+                    compilationNumber=None,
+                    sourceUrl=(
+                        "https://www.legislation.gov.au/F2016L01256/"
+                        "2016-07-29/2016-07-29/text/original/epub"
+                    ),
+                ),
+                "exchanges": {
+                    current_url_for("F2016L01256"): [
+                        successful_exchange(
+                            version_body(
+                                "F2016L01256",
+                                "2026-08-12",
+                                None,
+                                None,
+                                status="Repealed",
+                            ),
+                            "2026-08-29T01:00:06Z",
+                        )
+                    ],
+                },
+                "state": "NO_LONGER_IN_FORCE",
+                "run_status": "VERIFIED",
+                "conditional": {
+                    "observed_compilation_number": None,
+                    "observed_compilation_date": None,
+                    "observed_register_document_id": None,
+                    "current_version_start": None,
+                    "error_category": None,
+                },
+            },
+            {
+                "label": "repealed row carrying a superseding shape",
+                "row": manifest_row(
+                    id="F2016L01523",
+                    name="Repealed Instrument With Compilation 2016",
+                    collection="LegislativeInstrument",
+                    versionStart="2016-07-29",
+                    compilationNumber="1",
+                    sourceUrl=(
+                        "https://www.legislation.gov.au/F2016L01523/"
+                        "2016-07-29/2016-07-29/text/original/epub"
+                    ),
+                ),
+                "exchanges": {
+                    current_url_for("F2016L01523"): [
+                        successful_exchange(
+                            version_body(
+                                "F2016L01523",
+                                "2026-08-15",
+                                "2",
+                                "F2026C00777",
+                                status="Repealed",
+                            ),
+                            "2026-08-29T01:00:07Z",
+                        )
+                    ],
+                },
+                "state": "NO_LONGER_IN_FORCE",
+                "run_status": "VERIFIED",
+                "conditional": {
+                    "observed_compilation_number": None,
+                    "observed_compilation_date": None,
+                    "observed_register_document_id": None,
+                    "current_version_start": None,
+                    "error_category": None,
+                },
+            },
+            {
                 "label": "lookup failed",
                 "row": manifest_row(
                     id="F2025L00178",
@@ -1120,11 +1194,6 @@ class LiveRegisterCaptureStateTests(unittest.TestCase):
             (
                 "non-boolean current",
                 exchange(with_row({"isCurrent": "true"})),
-                "INVALID_ODATA_SHAPE",
-            ),
-            (
-                "wrong current status",
-                exchange(with_row({"status": "Repealed"})),
                 "INVALID_ODATA_SHAPE",
             ),
             (
