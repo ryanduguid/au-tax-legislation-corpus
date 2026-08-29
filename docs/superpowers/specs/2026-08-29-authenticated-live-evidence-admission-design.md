@@ -4,7 +4,7 @@
 
 **Stage:** 3B
 
-**Status:** Approved design; implementation and hosted activation remain separate
+**Status:** Approved amended design; implementation and hosted activation remain separate
 
 **Producer base:** `feature/live-register-capture` at
 `20c489450a279f032ed78a290bb0fb76602a5522`
@@ -133,9 +133,17 @@ output as untrusted. It owns:
 The production boundary is intentionally deep: one live bundle path enters and
 either one canonical development is atomically admitted or nothing changes.
 Provenance orchestration, JSON parsing, OData interpretation, transformation
-and filesystem staging remain behind that boundary. Tests may substitute
-process and filesystem adapters internally; no production argument may bypass
-provenance, enable synthetic input or select another content root.
+and filesystem staging remain behind that boundary. Live-v2 parsing,
+provenance, transformation and admission form one dedicated module. The
+unchanged synthetic-v1 parser and transformation remain a separate conformance
+path; there is no shared production "import any bundle" mode switch. Shared
+strict-JSON and scalar-validation primitives are permitted.
+
+The production module exposes one fixed-root live import operation. Tests may
+substitute process and filesystem adapters only through internal test seams;
+no production command or programmatic export accepts an alternate content
+root, skips provenance, enables synthetic input, selects a mode or permits an
+overwrite or retry.
 
 ### Why a per-development envelope
 
@@ -176,6 +184,11 @@ scalar forms fail. The exact top-level shape is:
   "baseline_title": {},
   "capture_result": {},
   "observation": {},
+  "rights": {
+    "mode": "metadata-only",
+    "attribution": "Based on content from the Federal Register of Legislation at 2026-08-29. For the latest information on Australian Government legislation please go to https://www.legislation.gov.au. Changes: selected and reformatted Federal Register metadata into a bounded evidence bundle and factual source update; no legislation text is reproduced.",
+    "licence_url": "https://creativecommons.org/licenses/by/4.0/"
+  },
   "primary_response_base64": "e30K"
 }
 ```
@@ -215,6 +228,31 @@ of its own bytes; the publisher calculates that digest from its exact snapshot.
 Both digests use `sha256:` followed by 64 lowercase hexadecimal characters.
 The release tag is
 `live-evidence-v2-<observation_sha256-without-the-sha256-prefix>`.
+
+### Rights
+
+`rights` has exactly `mode`, `attribution` and `licence_url`:
+
+- `mode` is exactly `metadata-only`;
+- `licence_url` is exactly
+  `https://creativecommons.org/licenses/by/4.0/`; and
+- `attribution` is exactly the changed-content wording below, with
+  `<capture-date>` replaced by the literal ISO calendar component of
+  `observation.checked_at`.
+
+```text
+Based on content from the Federal Register of Legislation at <capture-date>.
+For the latest information on Australian Government legislation please go to
+https://www.legislation.gov.au. Changes: selected and reformatted Federal
+Register metadata into a bounded evidence bundle and factual source update; no
+legislation text is reproduced.
+```
+
+The producer derives this object rather than accepting caller wording. The
+publisher independently reconstructs it from the validated observation and
+requires exact equality before carrying the object into canonical source
+rights. The object is part of the attested immutable asset, so mutable release
+notes are not its sole durable attribution.
 
 ### Embedded Stage 3A objects
 
@@ -324,6 +362,11 @@ inconsistency or size breach fails the whole export; it must not silently omit
 that candidate. Derived bundle identities and filenames must be unique across
 the run; any collision also fails the whole export.
 
+For each candidate the exporter derives the exact rights object from that
+observation's `checked_at`. It does not accept rights wording, a capture date or
+a licence URL from its caller. Different candidates in one run may therefore
+carry different attribution dates.
+
 The exporter captures each input file once, builds in an owned private sibling,
 revalidates every final bundle, and promotes the output by one rename. It never
 overwrites, repairs or deletes a prior output. A verified run with zero
@@ -336,8 +379,9 @@ fails unless it is strict SemVer and equals the package version in
 to a particular version.
 
 `evidence-bundle.v1` remains byte-compatible and synthetic-only. It continues
-to test parser and transformation conformance, but it is not accepted by the
-production live-import command and gains no live mode.
+to test parser and transformation conformance in its existing separate path,
+but it is not accepted by any live-v2 parser, transformer or production import
+operation and gains no live mode.
 
 ## Producer workflow
 
@@ -416,19 +460,21 @@ replacement.
 
 ### Release notes and rights
 
-The release notes state the capture time, candidate count, source-only nature
-and this attribution, using the ISO calendar date of `run.observed_at`:
+The deterministic release notes state the capture start time, candidate count,
+source-only nature and that every asset contains its own durable Federal
+Register attribution dated to that response's retrieval:
 
 ```text
-Based on content from the Federal Register of Legislation at <capture-date>.
-For the latest information on Australian Government legislation please go to
-https://www.legislation.gov.au. Changes: selected and reformatted Federal
-Register metadata into bounded evidence bundles; no legislation text is
-reproduced.
+Capture started: <run.observed_at>
+Candidates: <candidate-count>
+Source-only evidence: no legislation text is reproduced. Each immutable asset
+contains the Federal Register attribution for its own response retrieval date.
 ```
 
-The workflow derives the actual date and count. It does not accept free-form
-release notes. It attaches no full corpus, full capture directory, checksum
+The workflow derives the actual timestamp and count. It does not accept
+free-form release notes. Release notes are an aggregate human summary, not the
+sole rights record and not a replacement for the exact object in every asset.
+The workflow attaches no full corpus, full capture directory, checksum
 manifest, SBOM, separate run receipt or custom asset index.
 
 ### Activation prerequisites
@@ -460,6 +506,13 @@ npm run import-bundle -- --bundle <file>
 `--content-root`, synthetic flag, provenance skip, offline-trust flag,
 overwrite flag or retry flag. `evidence-bundle.v1` and every schema other than
 v2 are rejected by this command.
+
+The command and its one supported programmatic operation resolve the fixed
+root internally. No exported production function accepts another root, a
+mode, synthetic input, alternate process or filesystem operations, a
+provenance verifier, offline trust, overwrite or retry behaviour. Internal
+test seams are not a supported import API and cannot be reached through this
+command.
 
 The command requires an authenticated GitHub CLI at version 2.98.0 or later and
 checks that the exact verification commands and flags are available. That floor
@@ -532,17 +585,25 @@ recomputes the candidate fact:
   number;
 - a current compilation date strictly later than the baseline date and a
   compilation number different from the nullable baseline number;
-- raw current identifiers and dates equal to every observation declaration;
-- a valid non-null `registeredAt` timestamp whose calendar date equals the
-  observed current compilation date; and
+- raw current identifiers and the raw `start` compilation date equal every
+  observation declaration;
+- a valid non-null `registeredAt` timestamp, with its literal ISO calendar
+  component retained as a separate registration date rather than compared with
+  or substituted for the raw `start` compilation date;
+- exact rights members, mode, licence URL and changed-content attribution,
+  independently reconstructed from the validated `observation.checked_at`; and
 - no state or language beyond `SUPERSEDED` and the bounded compilation fact.
 
 Any mismatch abstains. The publisher does not query the Federal Register to
 repair or enrich the bundle.
 
 The `registeredAt` parser implements the Stage 3A timestamp grammar directly,
-including up to seven fractional digits and an optional numeric offset. It does
-not rely on JavaScript `Date` to accept or truncate that source representation.
+including up to seven fractional digits and an optional numeric offset. It
+extracts the calendar component exactly as written and does not rely on
+JavaScript `Date` to accept, truncate or timezone-normalise that source
+representation. The registration date must not be later than the UTC calendar
+date of `observation.checked_at`; an offset-less timestamp that would require a
+timezone assumption abstains instead.
 
 ### Atomic admission and idempotency
 
@@ -575,7 +636,7 @@ introduced. The live mapping is deterministic:
 | `authority_status` | `in-force` |
 | `evidence_status` | `verified` |
 | `publication_status` | `source-only` |
-| `published_at` | observed compilation date at midnight UTC |
+| `published_at` | literal `registeredAt` calendar date at midnight UTC |
 | `effective_at` | `null` |
 | `topics` | empty array |
 | `affected_practice_areas` | empty array |
@@ -594,8 +655,10 @@ introduced. The live mapping is deterministic:
 
 `source_event` is exactly `compilation-superseded`. It carries the baseline
 Register identifier and collection, the previous compilation number and date,
-and the observed current compilation number, date and Register document
-identifier.
+and the observed current compilation number, compilation date and Register
+document identifier. The current compilation date remains the calendar date
+from raw `start`; it is distinct from the registration-derived
+`published_at`.
 
 Live evidence exposes four bounded compatibility rules that the synthetic v1
 projection could not establish:
@@ -618,7 +681,10 @@ the v1 parser or introducing a new canonical schema version.
 
 Generation and revision times use the per-title `checked_at`, not the run's
 earlier `observed_at`. This preserves the canonical rule that generation cannot
-predate source retrieval.
+predate source retrieval. The registration-derived `published_at` is a
+date-level projection at midnight UTC and must not be later than the UTC
+calendar date of `checked_at`; no timezone is invented to make an ambiguous
+source timestamp pass.
 
 The single source is:
 
@@ -629,36 +695,29 @@ The single source is:
 | `document_class` | `legislation` |
 | `title` | baseline title name |
 | `canonical_url` | exact official `baseline_title.register_page` |
-| `published_at` | observed compilation date at midnight UTC |
+| `published_at` | literal `registeredAt` calendar date at midnight UTC |
 | `retrieved_at` | `observation.checked_at` |
 | `evidence_id` | Stage 3A observation evidence identity |
 | `content_sha256` | primary response digest |
 | `content_kind` | `metadata-response` |
 | `content_media_type` | `application/json` |
-| `rights.mode` | `metadata-only` |
-| `rights.attribution` | deterministic changed-content attribution below |
-| `rights.licence_url` | `https://creativecommons.org/licenses/by/4.0/` |
+| `rights` | exact independently reconstructed bundle rights object |
 | `evidence` | empty array |
 
-The source attribution uses the ISO calendar date of
-`observation.checked_at`:
-
-```text
-Based on content from the Federal Register of Legislation at <capture-date>.
-For the latest information on Australian Government legislation please go to
-https://www.legislation.gov.au. Changes: selected and reformatted Federal
-Register metadata into an evidence bundle and factual source update; no
-legislation text is reproduced.
-```
+The publisher independently reconstructs the exact bundle rights object from
+the ISO calendar date of `observation.checked_at`, requires equality with the
+attested object and carries that validated object into the canonical source.
+It does not generate a second canonical-only wording.
 
 The immutable evidence release URL is derived from the fixed producer
 repository and `run.observation_sha256`; no second mutable URL field is needed
 in the canonical record.
 
 The v1 synthetic bundle and its golden transformation remain unchanged for
-conformance. Synthetic parsing and transformation tests do not cross the live
-production admission boundary and receive no runtime `allowSynthetic` escape
-hatch.
+conformance. Synthetic parsing and transformation tests do not invoke the live
+parser, provenance or filesystem-admission path. The live production command
+and its supported programmatic operation receive no runtime `allowSynthetic`
+escape hatch or generic mode switch.
 
 ## Public presentation
 
@@ -672,7 +731,9 @@ The detail view shows:
 
 - the previous compilation number, or “No compilation number recorded”;
 - the current compilation number;
-- “Registered” with the verified current compilation date;
+- “Registered” with the literal calendar date derived from raw `registeredAt`;
+- the distinct current compilation date derived from raw `start` as factual
+  compilation detail;
 - the existing `in-force`, `verified` and `source-only` status language;
 - the official Federal Register title page as the primary action; and
 - the immutable GitHub evidence release as a secondary evidence link.
@@ -687,8 +748,9 @@ Raw response bytes remain in the release bundle, not the website. Opaque hashes
 are available through the evidence release but are not displayed by default.
 
 The homepage, development page, RSS and JSON Feed use the same source-only
-identity, headline, date and restrained claim. The machine feeds must not add a
-stronger summary than the HTML page.
+identity, headline, registration-derived publication date and restrained
+claim. The compilation date remains separate factual detail. The machine feeds
+must not add a stronger summary than the HTML page.
 
 ## Workflow and import failures
 
@@ -717,6 +779,7 @@ accepted development.
 The producer test surface covers:
 
 - exact v2 envelope, nested Stage 3A shapes and unknown-member refusal;
+- exact per-candidate rights derivation, attribution date, wording and licence;
 - strict SemVer, UTC timestamp, identifier, URL, digest, size and base64 rules;
 - reconstruction of capture-result bytes and response evidence relationships;
 - complete-graph gating before candidate selection;
@@ -731,7 +794,7 @@ Workflow policy tests inspect the checked-in YAML and require the exact manual
 trigger, no inputs, repository/ref guard, one hosted runner, 120-minute timeout,
 concurrency policy, minimal permissions, full action SHAs, fixed manifest,
 attest-once behaviour, zero-candidate exit, draft-before-publish ordering,
-deterministic tag, attribution and `latest: false`.
+deterministic tag, aggregate rights summary and `latest: false`.
 
 ### Publisher tests
 
@@ -742,10 +805,19 @@ The publisher test surface covers:
 - strict snapshot parsing, exact byte hashing and release-tag derivation;
 - every v2 member, size, base64, digest and cross-object relation;
 - independent strict OData parsing and source-event recomputation;
+- valid differing `start` and `registeredAt` calendar dates, including a
+  numeric-offset form, with no timezone conversion or extra source request;
+- preservation of the raw `start` date as compilation detail and derivation of
+  canonical and public publication dates from the literal `registeredAt`
+  calendar component;
+- missing, unknown or altered rights members, incorrect attribution dates,
+  wording and licence URLs, and exact canonical rights carry-through;
 - null previous compilation numbers and mandatory current numbers;
 - exact canonical mapping, chronology, attribution and evidence-release link;
 - restrained HTML, RSS and JSON Feed rendering;
 - fixed content root and absence of production bypasses;
+- isolation of synthetic-v1 conformance from live-v2 parsing, provenance and
+  filesystem admission;
 - every validation, process and filesystem failure leaving content unchanged;
 - exact re-import as a no-op and every changed same-identity import as a
   conflict;
@@ -839,9 +911,10 @@ parallel canonical record or renderer.
   separately verified archival mirror can be designed after the first live
   path is proven.
 - GitHub protects immutable release assets and tags, not the human-readable
-  release title and notes. Repository operators must preserve the attribution
-  notes; the publisher also carries the prescribed attribution in its canonical
-  record, but the minimal v2 asset has no duplicate rights block.
+  release title and notes. Every v2 asset therefore carries its exact durable
+  rights object; release notes remain an aggregate human summary, and the
+  publisher independently verifies and carries the same rights into its
+  canonical record.
 - GitHub availability and authenticated CLI access are required for admission.
 - The checked-in corpus selection is keyword-based and is not all Australian
   tax law or accounting material.
