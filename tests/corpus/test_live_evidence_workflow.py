@@ -42,6 +42,7 @@ class LiveEvidenceWorkflowPolicyTests(unittest.TestCase):
         for start, line in enumerate(lines):
             if line != marker:
                 continue
+            block = [line]
             end = start + 1
             while end < len(lines):
                 stripped = lines[end].lstrip()
@@ -50,13 +51,28 @@ class LiveEvidenceWorkflowPolicyTests(unittest.TestCase):
                     continue
                 if len(lines[end]) - len(stripped) <= indent:
                     break
+                block.append(lines[end])
                 end += 1
-            blocks.append("\n".join(lines[start:end]))
+            blocks.append("\n".join(block))
         return blocks
 
     def _yaml_scalar_lines(self, text: str, key: str, indent: int) -> list[str]:
         marker = f"{' ' * indent}{key}:"
         return [line for line in text.splitlines() if line.startswith(marker)]
+
+    def _active_run_lines(self, step: str) -> list[str]:
+        lines = step.splitlines()
+        markers = [index for index, line in enumerate(lines) if line == "        run: |"]
+        self.assertEqual(len(markers), 1, "expected one run block in the owning step")
+        active: list[str] = []
+        for line in lines[markers[0] + 1 :]:
+            stripped = line.strip()
+            if not stripped or stripped.startswith("#"):
+                continue
+            if len(line) - len(line.lstrip()) <= 8:
+                break
+            active.append(stripped)
+        return active
 
     def test_yaml_oracle_exposes_comments_blank_lines_and_scalar_decoys(self) -> None:
         decoy = (
@@ -64,16 +80,30 @@ class LiveEvidenceWorkflowPolicyTests(unittest.TestCase):
             "      contents: write\n"
             "\n"
             "    # decoy\n"
+            "      issues: write\n"
             "    runs-on: windows-latest"
         )
         self.assertEqual(
             self._indented_blocks(decoy, "permissions", 4),
-            ["    permissions:\n      contents: write\n\n    # decoy"],
+            ["    permissions:\n      contents: write\n      issues: write"],
         )
         scalar_decoy = "          persist-credentials: true # persist-credentials: false"
         self.assertEqual(
             self._yaml_scalar_lines(scalar_decoy, "persist-credentials", 10),
             [scalar_decoy],
+        )
+
+    def test_run_oracle_ignores_full_comments_and_preserves_inline_comments(self) -> None:
+        step = (
+            "      - name: Decoy\n"
+            "        run: |\n"
+            "          # & gh release edit ignored\n"
+            "\n"
+            "          & gh release edit kept # --latest=true"
+        )
+        self.assertEqual(
+            self._active_run_lines(step),
+            ["& gh release edit kept # --latest=true"],
         )
 
     def test_manual_trigger_has_no_inputs_and_job_has_exact_guard(self) -> None:
@@ -141,15 +171,31 @@ class LiveEvidenceWorkflowPolicyTests(unittest.TestCase):
             self._yaml_scalar_lines(setup_step, "python-version", 10),
             ['          python-version: "3.12"'],
         )
-        self.assertIn('python -m pip install "uv==0.12.0"', workflow)
-        self.assertIn("fadden/manifest_md.json", workflow)
+        install_step = self._step_containing("Install the locked toolchain")
+        self.assertEqual(
+            self._yaml_scalar_lines(install_step, "run", 8),
+            ['        run: python -m pip install "uv==0.12.0"'],
+        )
         self.assertNotRegex(workflow, r"(?m)^\s+uses: [^\s@]+@(?:v|main|master)")
 
     def test_export_uses_runner_private_paths_and_validates_exact_summary(self) -> None:
         step = self._step_containing("id: export")
+        active = self._active_run_lines(step)
         self.assertGreaterEqual(step.count("Join-Path $env:RUNNER_TEMP"), 2)
-        self.assertIn("python -m fadden capture_register -- fadden/manifest_md.json", step)
-        self.assertIn("python -m fadden export_live_evidence_bundles --", step)
+        self.assertEqual(
+            active.count(
+                "uv run --locked python -m fadden capture_register -- "
+                "fadden/manifest_md.json --out $captureDir"
+            ),
+            1,
+        )
+        self.assertEqual(
+            active.count(
+                "$summary = @(uv run --locked python -m fadden "
+                "export_live_evidence_bundles -- $captureDir --out $candidateDir)"
+            ),
+            1,
+        )
         self.assertIn("$summary.Count -ne 2", step)
         self.assertIn("^(candidate_count|release_tag)=(.+)$", step)
         self.assertIn("^(0|[1-9][0-9]{0,3})$", step)
@@ -201,23 +247,41 @@ class LiveEvidenceWorkflowPolicyTests(unittest.TestCase):
     def test_release_is_a_two_step_draft_upload_publish_transaction(self) -> None:
         workflow = self._workflow()
         release_step = self._step_containing("Create draft and upload candidates")
-        self.assertIn("gh api --method POST", release_step)
-        tag = workflow.index("gh api --method POST")
-        create = workflow.index("gh release create")
-        upload = workflow.index("gh release upload")
-        publish = workflow.index("gh release edit")
-        self.assertLess(tag, create)
-        self.assertLess(create, upload)
-        self.assertLess(upload, publish)
-        self.assertIn(
+        publish_step = self._step_containing("Publish immutable release")
+        run_steps = [step for step in self._steps() if "        run: |" in step.splitlines()]
+        gh_commands = [
+            line
+            for step in run_steps
+            for line in self._active_run_lines(step)
+            if line.startswith("& gh ")
+        ]
+        expected_gh_commands = [
             "& gh api --method POST "
             "repos/ryanduguid/au-tax-legislation-corpus/git/refs "
             "--raw-field \"ref=refs/tags/$releaseTag\" "
             "--raw-field \"sha=$env:GITHUB_SHA\"",
-            release_step,
+            "& gh release create $releaseTag "
+            "--repo ryanduguid/au-tax-legislation-corpus --draft --verify-tag "
+            "--title $releaseTag --notes $notes",
+            "& gh release upload $releaseTag @batch "
+            "--repo ryanduguid/au-tax-legislation-corpus",
+            "& gh release edit $releaseTag "
+            "--repo ryanduguid/au-tax-legislation-corpus "
+            "--draft=false --latest=false",
+        ]
+        release_gh_commands = [
+            line for line in self._active_run_lines(release_step) if line.startswith("& gh ")
+        ]
+        publish_gh_commands = [
+            line for line in self._active_run_lines(publish_step) if line.startswith("& gh ")
+        ]
+        self.assertEqual(release_gh_commands, expected_gh_commands[:3])
+        self.assertEqual(publish_gh_commands, expected_gh_commands[3:])
+        self.assertEqual(
+            gh_commands,
+            expected_gh_commands,
         )
-        self.assertIn("--draft --verify-tag", release_step)
-        self.assertNotIn("--target", release_step)
+        self.assertNotIn("--target", gh_commands[1])
 
         enumeration = (
             "          $assetPaths = @(\n"
@@ -247,7 +311,6 @@ class LiveEvidenceWorkflowPolicyTests(unittest.TestCase):
         self.assertIn(upload_loop, release_step)
         self.assertNotIn("$batchSize = 65", release_step)
         self.assertNotIn("--clobber", workflow)
-        self.assertIn("--draft=false --latest=false", workflow)
         self.assertIn("Capture started: $captureStarted", workflow)
         self.assertIn("Candidates: $candidateCount", workflow)
         self.assertIn("Source-only evidence: no legislation text is reproduced.", workflow)
