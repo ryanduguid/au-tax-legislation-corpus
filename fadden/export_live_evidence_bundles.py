@@ -4,13 +4,23 @@ from __future__ import annotations
 
 import argparse
 import base64
+import datetime as dt
 import hashlib
 import json
+import os
 import re
+import stat
+import tempfile
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Sequence
 
+from .capture_register import (
+    ODATA_CONTEXT,
+    ROW_FIELDS,
+    CaptureRegisterError,
+    validate_capture_graph,
+)
 from .corpus_paths import register_id as _validate_register_id
 
 
@@ -24,6 +34,11 @@ _VERSION_PATH = Path(__file__).resolve().parent.parent / "VERSION"
 _PYPROJECT_PATH = Path(__file__).resolve().parent.parent / "pyproject.toml"
 _MAX_RESPONSE_BYTES = 256 * 1024
 _MAX_BUNDLE_BYTES = 1024 * 1024
+_EVIDENCE_NAME = re.compile(r"sha256-[0-9a-f]{64}\.json\Z")
+_VERSION_TIMESTAMP = re.compile(
+    r"\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}"
+    r"(?:\.\d{1,7})?(?:Z|[+-]\d{2}:\d{2})?\Z"
+)
 _BASELINE_TITLE_FIELDS = (
     "register_id",
     "name",
@@ -84,6 +99,134 @@ class LiveEvidenceBundleError(ValueError):
     pass
 
 
+class _DuplicateJsonMemberError(ValueError):
+    """Internal signal for ambiguous source JSON."""
+
+
+def _reject_duplicate_json_members(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
+    result: dict[str, Any] = {}
+    for key, value in pairs:
+        if key in result:
+            raise _DuplicateJsonMemberError
+        result[key] = value
+    return result
+
+
+def _details_are_reparse_point(details: os.stat_result) -> bool:
+    return bool(
+        getattr(details, "st_file_attributes", 0)
+        & getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0x400)
+    )
+
+
+def _path_is_junction(path: Path) -> bool:
+    return getattr(os.path, "isjunction", lambda _path: False)(path)
+
+
+def _require_ordinary_directory(path: Path, label: str) -> None:
+    try:
+        details = os.lstat(path)
+    except OSError as exc:
+        raise LiveEvidenceBundleError(f"{label} must be an ordinary directory.") from exc
+    if (
+        not stat.S_ISDIR(details.st_mode)
+        or os.path.islink(path)
+        or _path_is_junction(path)
+        or _details_are_reparse_point(details)
+    ):
+        raise LiveEvidenceBundleError(f"{label} must be an ordinary directory.")
+
+
+def _require_ordinary_ancestors(path: Path, label: str) -> None:
+    current = path
+    while True:
+        _require_ordinary_directory(current, label)
+        parent = current.parent
+        if parent == current:
+            return
+        current = parent
+
+
+def _same_regular_file_identity(expected: os.stat_result, observed: os.stat_result) -> bool:
+    return (
+        stat.S_ISREG(expected.st_mode)
+        and stat.S_ISREG(observed.st_mode)
+        and os.path.samestat(expected, observed)
+        and getattr(expected, "st_nlink", 1) == 1
+        and getattr(observed, "st_nlink", 1) == 1
+    )
+
+
+def _copy_regular_file(source_path: Path, target_path: Path) -> None:
+    try:
+        expected = os.lstat(source_path)
+    except OSError as exc:
+        raise LiveEvidenceBundleError("capture snapshot source file is unavailable.") from exc
+    if (
+        not stat.S_ISREG(expected.st_mode)
+        or os.path.islink(source_path)
+        or _path_is_junction(source_path)
+        or _details_are_reparse_point(expected)
+        or getattr(expected, "st_nlink", 1) != 1
+    ):
+        raise LiveEvidenceBundleError("capture snapshot source file is not ordinary.")
+    try:
+        with open(source_path, "rb") as source, open(target_path, "xb") as target:
+            opened = os.fstat(source.fileno())
+            if not _same_regular_file_identity(expected, opened):
+                raise LiveEvidenceBundleError("capture snapshot source file changed.")
+            while block := source.read(64 * 1024):
+                target.write(block)
+            read_details = os.fstat(source.fileno())
+        final = os.lstat(source_path)
+    except OSError as exc:
+        raise LiveEvidenceBundleError("capture snapshot source file could not be copied.") from exc
+    if not (
+        _same_regular_file_identity(expected, read_details)
+        and _same_regular_file_identity(read_details, final)
+    ):
+        raise LiveEvidenceBundleError("capture snapshot source file changed.")
+
+
+def _snapshot_capture_graph(capture_dir: str | Path, snapshot: Path) -> None:
+    source = Path(os.path.abspath(os.fspath(capture_dir)))
+    _require_ordinary_ancestors(source.parent, "capture input")
+    _require_ordinary_directory(source, "capture input")
+    try:
+        root_entries = {entry.name for entry in source.iterdir()}
+    except OSError as exc:
+        raise LiveEvidenceBundleError("capture input could not be inspected.") from exc
+    if root_entries != {
+        "monitor-baseline.json",
+        "register-capture.json",
+        "register-observation.json",
+        "evidence",
+    }:
+        raise LiveEvidenceBundleError("capture input layout is invalid.")
+    source_evidence = source / "evidence"
+    _require_ordinary_directory(source_evidence, "capture evidence")
+    _require_ordinary_ancestors(source_evidence.parent, "capture input")
+    try:
+        evidence_entries = list(source_evidence.iterdir())
+    except OSError as exc:
+        raise LiveEvidenceBundleError("capture evidence could not be inspected.") from exc
+    if any(_EVIDENCE_NAME.fullmatch(entry.name) is None for entry in evidence_entries):
+        raise LiveEvidenceBundleError("capture evidence layout is invalid.")
+    try:
+        os.mkdir(snapshot, 0o700)
+        os.mkdir(snapshot / "evidence", 0o700)
+    except OSError as exc:
+        raise LiveEvidenceBundleError("capture snapshot could not be created.") from exc
+    for name in (
+        "monitor-baseline.json",
+        "register-capture.json",
+        "register-observation.json",
+    ):
+        _copy_regular_file(source / name, snapshot / name)
+    for entry in evidence_entries:
+        _copy_regular_file(entry, snapshot / "evidence" / entry.name)
+
+
 def _json_bytes(value: Any) -> bytes:
     return (json.dumps(value, ensure_ascii=False, indent=2, allow_nan=False) + "\n").encode(
         "utf-8"
@@ -97,8 +240,10 @@ def _sha256_id(content: bytes) -> str:
 def _read_json(path: Path, label: str) -> tuple[bytes, dict[str, Any]]:
     try:
         content = path.read_bytes()
-        value = json.loads(content.decode("utf-8"))
-    except (OSError, UnicodeDecodeError, json.JSONDecodeError) as exc:
+        value = json.loads(
+            content.decode("utf-8"), object_pairs_hook=_reject_duplicate_json_members
+        )
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError, _DuplicateJsonMemberError) as exc:
         raise LiveEvidenceBundleError(f"{label} could not be read as UTF-8 JSON.") from exc
     if not isinstance(value, dict):
         raise LiveEvidenceBundleError(f"{label} must be an object.")
@@ -198,6 +343,46 @@ def _read_response(path: Path) -> bytes:
     return response
 
 
+def _version_timestamp(value: Any, label: str) -> str:
+    text = _required_text(value, label)
+    if _VERSION_TIMESTAMP.fullmatch(text) is None:
+        raise LiveEvidenceBundleError(f"{label} is invalid.")
+    try:
+        dt.datetime.fromisoformat(text.replace("Z", "+00:00"))
+    except ValueError as exc:
+        raise LiveEvidenceBundleError(f"{label} is invalid.") from exc
+    return text
+
+
+def _raw_current_row(response: bytes, register_id: str) -> dict[str, Any]:
+    try:
+        document = json.loads(
+            response.decode("utf-8"), object_pairs_hook=_reject_duplicate_json_members
+        )
+    except (UnicodeDecodeError, json.JSONDecodeError, _DuplicateJsonMemberError) as exc:
+        raise LiveEvidenceBundleError("retained response is not unambiguous OData JSON.") from exc
+    if (
+        not isinstance(document, dict)
+        or set(document) != {"@odata.context", "value"}
+        or document["@odata.context"] != ODATA_CONTEXT
+        or not isinstance(document["value"], list)
+        or len(document["value"]) != 1
+    ):
+        raise LiveEvidenceBundleError("retained response OData shape is invalid.")
+    row = document["value"][0]
+    if not isinstance(row, dict) or set(row) != ROW_FIELDS:
+        raise LiveEvidenceBundleError("retained response OData row is invalid.")
+    if row["titleId"] != register_id or row["isCurrent"] is not True or row["status"] != "InForce":
+        raise LiveEvidenceBundleError("retained response is not the declared current row.")
+    if row["registerId"] is None:
+        raise LiveEvidenceBundleError("retained response current document identifier is missing.")
+    _register_id(row["registerId"], "raw current document identifier")
+    _required_text(row["compilationNumber"], "raw current compilation number")
+    _version_timestamp(row["start"], "raw current compilation start")
+    _version_timestamp(row["registeredAt"], "raw current registration timestamp")
+    return row
+
+
 def _candidate_bundle(
     title: dict[str, Any],
     result: dict[str, Any],
@@ -236,6 +421,23 @@ def _candidate_bundle(
         raise LiveEvidenceBundleError(
             "observation response digest does not match the capture request."
         )
+    if capture_result.get("state") != "SUPERSEDED" or bundle_observation.get("state") != "SUPERSEDED":
+        raise LiveEvidenceBundleError("candidate state is not SUPERSEDED.")
+    if request.get("role") != "current" or request.get("http_status") != 200:
+        raise LiveEvidenceBundleError("candidate current request is invalid.")
+    if bundle_observation.get("primary_response_media_type") != "application/json":
+        raise LiveEvidenceBundleError("candidate primary response media type is invalid.")
+    raw_row = _raw_current_row(response, register_id)
+    if (
+        raw_row["compilationNumber"] != bundle_observation.get("observed_compilation_number")
+        or raw_row["start"][:10] != bundle_observation.get("observed_compilation_date")
+        or raw_row["registerId"] != bundle_observation.get("observed_register_document_id")
+    ):
+        raise LiveEvidenceBundleError("retained response does not prove the observed compilation.")
+    if bundle_observation.get("capture_result_sha256") != _sha256_id(
+        _json_bytes(capture_result)
+    ):
+        raise LiveEvidenceBundleError("observation capture result digest is invalid.")
     bundle_id = f"bundle-frl-{register_id.lower()}-{document_id.lower()}-r1"
     return bundle_id, {
         "schema_version": "evidence-bundle.v2",
@@ -258,11 +460,8 @@ def _candidate_bundle(
     }
 
 
-def export_live_evidence_bundles(
-    capture_dir: str | Path, output_dir: str | Path
-) -> LiveEvidenceExport:
-    """Write v2 candidates from a verified live Stage 3A capture."""
-    capture = Path(capture_dir)
+def _export_validated_snapshot(capture: Path, output_dir: str | Path) -> LiveEvidenceExport:
+    """Write v2 candidates from an exporter-owned, validated capture snapshot."""
     output = Path(output_dir)
     baseline_bytes, baseline = _read_json(capture / "monitor-baseline.json", "baseline")
     capture_bytes, capture_document = _read_json(
@@ -323,22 +522,27 @@ def export_live_evidence_bundles(
         if not isinstance(requests, list) or not requests:
             raise LiveEvidenceBundleError("SUPERSEDED capture result must have a request.")
         request = _required_object(requests[0], "capture request")
-        evidence_path = _required_text(
-            request.get("evidence_path"), "capture evidence path"
+        response_sha256 = _required_sha256(
+            request.get("response_sha256"), "capture response SHA-256"
         )
-        response = _read_response(capture / evidence_path)
-        candidates.append(
-            _candidate_bundle(
-                title,
-                result,
-                observation,
-                version=_producer_version(),
-                baseline_sha256=baseline_sha256,
-                observation_sha256=observation_sha256,
-                observed_at=_required_text(observation_document.get("observed_at"), "observed_at"),
-                response=response,
-            )
+        expected_evidence_path = f"evidence/sha256-{response_sha256.removeprefix('sha256:')}.json"
+        if request.get("evidence_path") != expected_evidence_path:
+            raise LiveEvidenceBundleError("capture evidence path is invalid.")
+        response = _read_response(capture / expected_evidence_path)
+        candidate = _candidate_bundle(
+            title,
+            result,
+            observation,
+            version=_producer_version(),
+            baseline_sha256=baseline_sha256,
+            observation_sha256=observation_sha256,
+            observed_at=_required_text(observation_document.get("observed_at"), "observed_at"),
+            response=response,
         )
+        candidates.append(candidate)
+    candidate_ids = [candidate[0] for candidate in candidates]
+    if len(candidate_ids) != len(set(candidate_ids)):
+        raise LiveEvidenceBundleError("candidate identities are duplicated.")
     if output.exists():
         raise LiveEvidenceBundleError("output directory must not already exist.")
     try:
@@ -356,6 +560,20 @@ def export_live_evidence_bundles(
     return LiveEvidenceExport(
         f"live-evidence-v2-{observation_sha256.removeprefix('sha256:')}", tuple(paths)
     )
+
+
+def export_live_evidence_bundles(
+    capture_dir: str | Path, output_dir: str | Path
+) -> LiveEvidenceExport:
+    """Write v2 candidates only from a private, verified Stage 3A snapshot."""
+    with tempfile.TemporaryDirectory(prefix="tax-radar-live-evidence-") as temporary:
+        snapshot = Path(temporary) / "capture"
+        _snapshot_capture_graph(capture_dir, snapshot)
+        try:
+            validate_capture_graph(snapshot)
+        except CaptureRegisterError as exc:
+            raise LiveEvidenceBundleError("capture graph is not a verified Stage 3A graph.") from exc
+        return _export_validated_snapshot(snapshot, output_dir)
 
 
 def main(argv: Sequence[str] | None = None) -> int:

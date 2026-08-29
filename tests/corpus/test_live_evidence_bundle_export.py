@@ -18,6 +18,14 @@ from fadden.export_live_evidence_bundles import (
 
 FIXTURES = Path(__file__).parent / "fixtures" / "live-evidence"
 V2_FIXTURE = FIXTURES / "evidence-bundle.v2.json"
+DEFAULT_RESPONSE = (
+    b'{"@odata.context":"https://api.prod.legislation.gov.au/v1/'
+    b'$metadata#Versions(titleId,start,compilationNumber,registerId,'
+    b'isCurrent,status,registeredAt)","value":[{"titleId":"F2022L00347",'
+    b'"start":"2026-08-18T00:00:00","compilationNumber":"20",'
+    b'"registerId":"F2026C00838","isCurrent":true,"status":"InForce",'
+    b'"registeredAt":"2026-08-27T17:31:41.1234567+10:00"}]}'
+)
 
 
 def _json_bytes(value: object) -> bytes:
@@ -43,14 +51,7 @@ class LiveEvidenceBundleContractTests(unittest.TestCase):
         evidence.mkdir(parents=True)
         register_id = "F2022L00347"
         current_document_id = "F2026C00838"
-        response = response or (
-            b'{"@odata.context":"https://api.prod.legislation.gov.au/v1/'
-            b'$metadata#Versions(titleId,start,compilationNumber,registerId,'
-            b'isCurrent,status,registeredAt)","value":[{"titleId":"F2022L00347",'
-            b'"start":"2026-08-18T00:00:00","compilationNumber":"20",'
-            b'"registerId":"F2026C00838","isCurrent":true,"status":"InForce",'
-            b'"registeredAt":"2026-08-27T17:31:41.1234567+10:00"}]}'
-        )
+        response = response or DEFAULT_RESPONSE
         response_sha256 = _sha256_id(response)
         evidence_path = f"evidence/sha256-{response_sha256.removeprefix('sha256:')}.json"
         (capture / evidence_path).write_bytes(response)
@@ -284,7 +285,10 @@ class LiveEvidenceBundleContractTests(unittest.TestCase):
         """The permitted raw-response boundary must remain usable."""
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
-            capture, _ = self._write_capture(root, response=b"x" * (256 * 1024))
+            capture, _ = self._write_capture(
+                root,
+                response=DEFAULT_RESPONSE + b" " * (256 * 1024 - len(DEFAULT_RESPONSE)),
+            )
 
             result = export_live_evidence_bundles(capture, root / "output")
 
@@ -294,10 +298,13 @@ class LiveEvidenceBundleContractTests(unittest.TestCase):
         """An oversized source response must fail before encoding it into the bundle."""
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
-            capture, _ = self._write_capture(root, response=b"x" * (256 * 1024 + 1))
+            capture, _ = self._write_capture(
+                root,
+                response=DEFAULT_RESPONSE + b" " * (256 * 1024 + 1 - len(DEFAULT_RESPONSE)),
+            )
 
             with self.assertRaisesRegex(
-                LiveEvidenceBundleError, "retained response exceeds the 256 KiB limit"
+                LiveEvidenceBundleError, "capture graph is not a verified Stage 3A graph"
             ):
                 export_live_evidence_bundles(capture, root / "output")
 
@@ -318,7 +325,7 @@ class LiveEvidenceBundleContractTests(unittest.TestCase):
                 export_live_evidence_bundles(capture, root / "output")
 
     def test_projects_exact_member_sets_when_stage_3a_objects_include_extras(self) -> None:
-        """Envelope members must not inherit unreviewed Stage 3A extension fields."""
+        """A complete graph refuses extensions rather than projecting them away."""
         def inject_extras(baseline: dict, result: dict, observation: dict) -> None:
             baseline["titles"][0]["unexpected_title"] = "must not be emitted"
             result["unexpected_result"] = "must not be emitted"
@@ -329,13 +336,270 @@ class LiveEvidenceBundleContractTests(unittest.TestCase):
             root = Path(temporary)
             capture, _ = self._write_capture(root, mutate=inject_extras)
 
-            bundle = json.loads(
-                export_live_evidence_bundles(capture, root / "output").candidates[0].read_text(
-                    encoding="utf-8"
-                )
-            )
+            with self.assertRaises(LiveEvidenceBundleError):
+                export_live_evidence_bundles(capture, root / "output")
 
-        self.assertNotIn("unexpected_title", bundle["baseline_title"])
-        self.assertNotIn("unexpected_result", bundle["capture_result"])
-        self.assertNotIn("unexpected_request", bundle["capture_result"]["requests"][0])
-        self.assertNotIn("unexpected_observation", bundle["observation"])
+
+class LiveEvidenceGraphTests(unittest.TestCase):
+    """The exporter admits only a complete, independently provable Stage 3A graph."""
+
+    def _write_capture(self, root: Path) -> tuple[Path, str]:
+        return LiveEvidenceBundleContractTests()._write_capture(root)
+
+    @staticmethod
+    def _documents(capture: Path) -> tuple[dict, dict, dict]:
+        return tuple(
+            json.loads((capture / name).read_bytes())
+            for name in (
+                "monitor-baseline.json",
+                "register-capture.json",
+                "register-observation.json",
+            )
+        )  # type: ignore[return-value]
+
+    @staticmethod
+    def _write_documents(capture: Path, baseline: dict, register: dict, observation: dict) -> None:
+        baseline_bytes = _json_bytes(baseline)
+        register["baseline_sha256"] = _sha256_id(baseline_bytes)
+        register_bytes = _json_bytes(register)
+        observation["baseline_sha256"] = _sha256_id(baseline_bytes)
+        observation["capture_sha256"] = _sha256_id(register_bytes)
+        for result, item in zip(register["results"], observation["observations"], strict=True):
+            result_sha256 = _sha256_id(_json_bytes(result))
+            item["capture_result_sha256"] = result_sha256
+            item["evidence_id"] = (
+                f"frl:{item['register_id']}:{result_sha256.removeprefix('sha256:')[:32]}"
+            )
+            item["primary_response_sha256"] = result["requests"][0]["response_sha256"]
+            content_type = result["requests"][0]["response_headers"].get("content-type")
+            item["primary_response_media_type"] = (
+                content_type.split(";", 1)[0].strip().lower()
+                if content_type is not None
+                else None
+            )
+        (capture / "monitor-baseline.json").write_bytes(baseline_bytes)
+        (capture / "register-capture.json").write_bytes(register_bytes)
+        (capture / "register-observation.json").write_bytes(_json_bytes(observation))
+
+    def _set_non_candidate_state(self, capture: Path, state: str) -> None:
+        baseline, register, observation = self._documents(capture)
+        result = register["results"][0]
+        item = observation["observations"][0]
+        result["state"] = state
+        result["error_category"] = None
+        item.update(
+            {
+                "state": state,
+                "error_category": None,
+                "observed_compilation_number": None,
+                "observed_compilation_date": None,
+                "observed_register_document_id": None,
+                "current_version_start": (
+                    "2026-08-18"
+                    if state == "CURRENT_NO_PUBLISHED_COMPILATION"
+                    else None
+                ),
+            }
+        )
+        self._write_documents(capture, baseline, register, observation)
+
+    def test_complete_graph_failures_are_table_driven(self) -> None:
+        """No malformed graph may be partially exported as a plausible candidate."""
+        def incomplete(capture: Path) -> None:
+            _baseline, register, observation = self._documents(capture)
+            register["complete"] = False
+            observation["complete"] = False
+            (capture / "register-capture.json").write_bytes(_json_bytes(register))
+            (capture / "register-observation.json").write_bytes(_json_bytes(observation))
+
+        def blocked(capture: Path) -> None:
+            _baseline, _register, observation = self._documents(capture)
+            observation["run_status"] = "BLOCKED"
+            (capture / "register-observation.json").write_bytes(_json_bytes(observation))
+
+        def lookup_failed(capture: Path) -> None:
+            baseline, register, observation = self._documents(capture)
+            result = register["results"][0]
+            item = observation["observations"][0]
+            result["state"] = "LOOKUP_FAILED"
+            result["error_category"] = "INVALID_JSON"
+            item.update(
+                {
+                    "state": "LOOKUP_FAILED",
+                    "error_category": "INVALID_JSON",
+                    "observed_compilation_number": None,
+                    "observed_compilation_date": None,
+                    "observed_register_document_id": None,
+                    "current_version_start": None,
+                }
+            )
+            observation["run_status"] = "BLOCKED"
+            self._write_documents(capture, baseline, register, observation)
+
+        def duplicate_title(capture: Path) -> None:
+            baseline, _register, _observation = self._documents(capture)
+            baseline["titles"].append(dict(baseline["titles"][0]))
+            (capture / "monitor-baseline.json").write_bytes(_json_bytes(baseline))
+
+        def digest_mismatch(capture: Path) -> None:
+            _baseline, register, _observation = self._documents(capture)
+            register["baseline_sha256"] = f"sha256:{'0' * 64}"
+            (capture / "register-capture.json").write_bytes(_json_bytes(register))
+
+        def response_length_mismatch(capture: Path) -> None:
+            _baseline, register, _observation = self._documents(capture)
+            register["results"][0]["requests"][0]["response_length"] += 1
+            (capture / "register-capture.json").write_bytes(_json_bytes(register))
+
+        def capture_result_digest_mismatch(capture: Path) -> None:
+            _baseline, _register, observation = self._documents(capture)
+            observation["observations"][0]["capture_result_sha256"] = f"sha256:{'0' * 64}"
+            (capture / "register-observation.json").write_bytes(_json_bytes(observation))
+
+        def unsafe_evidence_path(capture: Path) -> None:
+            _baseline, register, _observation = self._documents(capture)
+            register["results"][0]["requests"][0]["evidence_path"] = "../outside.json"
+            (capture / "register-capture.json").write_bytes(_json_bytes(register))
+
+        def undeclared_file(capture: Path) -> None:
+            (capture / "evidence" / f"sha256-{'0' * 64}.json").write_bytes(b"extra")
+
+        cases: tuple[tuple[str, Callable[[Path], None]], ...] = (
+            ("incomplete", incomplete),
+            ("non-VERIFIED", blocked),
+            ("LOOKUP_FAILED", lookup_failed),
+            ("duplicate derived identity", duplicate_title),
+            ("digest mismatch", digest_mismatch),
+            ("response length mismatch", response_length_mismatch),
+            ("capture result digest mismatch", capture_result_digest_mismatch),
+            ("unsafe evidence path", unsafe_evidence_path),
+            ("undeclared evidence", undeclared_file),
+        )
+        for label, mutate in cases:
+            with self.subTest(case=label), tempfile.TemporaryDirectory() as temporary:
+                root = Path(temporary)
+                capture, _ = self._write_capture(root)
+                mutate(capture)
+
+                with self.assertRaises(LiveEvidenceBundleError):
+                    export_live_evidence_bundles(capture, root / "output")
+
+    def test_non_candidate_states_create_no_asset(self) -> None:
+        """Only a verified SUPERSEDED observation is publishable evidence."""
+        for state in (
+            "UNCHANGED",
+            "CURRENT_NO_PUBLISHED_COMPILATION",
+            "NO_LONGER_IN_FORCE",
+        ):
+            with self.subTest(state=state), tempfile.TemporaryDirectory() as temporary:
+                root = Path(temporary)
+                capture, _ = self._write_capture(root)
+                self._set_non_candidate_state(capture, state)
+
+                export = export_live_evidence_bundles(capture, root / "output")
+
+                self.assertEqual(export.candidates, ())
+                self.assertEqual(list((root / "output").iterdir()), [])
+
+    def test_registered_at_is_independent_from_compilation_start(self) -> None:
+        """Registration remains a separate source fact, not a substituted compilation date."""
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            capture, _ = self._write_capture(root)
+
+            bundle_path = export_live_evidence_bundles(capture, root / "output").candidates[0]
+            bundle = json.loads(bundle_path.read_bytes())
+            raw = base64.b64decode(bundle["primary_response_base64"], validate=True)
+
+        self.assertEqual(bundle["observation"]["observed_compilation_date"], "2026-08-18")
+        self.assertIn(b'"registeredAt":"2026-08-27T17:31:41.1234567+10:00"', raw)
+
+    def test_null_previous_compilation_number_and_non_empty_current_number_are_required(self) -> None:
+        """An unnumbered historical baseline is valid but the new compilation is not optional."""
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            capture, _ = self._write_capture(root)
+            baseline, register, observation = self._documents(capture)
+            baseline["titles"][0]["compilation_number"] = None
+            self._write_documents(capture, baseline, register, observation)
+
+            self.assertEqual(len(export_live_evidence_bundles(capture, root / "output").candidates), 1)
+
+    def test_malformed_registered_at_is_rejected_without_a_new_request(self) -> None:
+        """Retained bytes must stand alone; export never refetches malformed source data."""
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            capture, _ = self._write_capture(root)
+            baseline, register, observation = self._documents(capture)
+            request = register["results"][0]["requests"][0]
+            evidence = capture / request["evidence_path"]
+            raw = evidence.read_bytes().replace(
+                b'"registeredAt":"2026-08-27T17:31:41.1234567+10:00"',
+                b'"registeredAt":"2026-08-27"',
+            )
+            evidence.unlink()
+            digest = _sha256_id(raw)
+            replacement = capture / "evidence" / f"sha256-{digest.removeprefix('sha256:')}.json"
+            replacement.write_bytes(raw)
+            request.update(
+                {
+                    "response_sha256": digest,
+                    "response_length": len(raw),
+                    "evidence_path": f"evidence/{replacement.name}",
+                }
+            )
+            self._write_documents(capture, baseline, register, observation)
+
+            with self.assertRaises(LiveEvidenceBundleError):
+                export_live_evidence_bundles(capture, root / "output")
+
+    def test_raw_row_relationships_are_table_driven(self) -> None:
+        """Each observed compilation fact must be recovered from the retained OData row."""
+        def replace_raw(capture: Path, replace: tuple[bytes, bytes]) -> None:
+            baseline, register, observation = self._documents(capture)
+            request = register["results"][0]["requests"][0]
+            evidence = capture / request["evidence_path"]
+            raw = evidence.read_bytes().replace(*replace)
+            evidence.unlink()
+            digest = _sha256_id(raw)
+            replacement = capture / "evidence" / f"sha256-{digest.removeprefix('sha256:')}.json"
+            replacement.write_bytes(raw)
+            request.update(
+                {
+                    "response_sha256": digest,
+                    "response_length": len(raw),
+                    "evidence_path": f"evidence/{replacement.name}",
+                }
+            )
+            self._write_documents(capture, baseline, register, observation)
+
+        cases: tuple[tuple[str, Callable[[Path], None]], ...] = (
+            (
+                "raw title identifier",
+                lambda capture: replace_raw(capture, (b'"titleId":"F2022L00347"', b'"titleId":"F2022L00348"')),
+            ),
+            (
+                "raw compilation start",
+                lambda capture: replace_raw(capture, (b'"start":"2026-08-18', b'"start":"2026-08-19')),
+            ),
+            (
+                "raw compilation number",
+                lambda capture: replace_raw(capture, (b'"compilationNumber":"20"', b'"compilationNumber":""')),
+            ),
+            (
+                "raw document identifier",
+                lambda capture: replace_raw(capture, (b'"registerId":"F2026C00838"', b'"registerId":"F2026C00839"')),
+            ),
+            (
+                "duplicate raw member",
+                lambda capture: replace_raw(capture, (b'"start":"2026-08-18T00:00:00",', b'"start":"2026-08-18T00:00:00","start":"2026-08-18T00:00:00",')),
+            ),
+        )
+        for label, mutate in cases:
+            with self.subTest(case=label), tempfile.TemporaryDirectory() as temporary:
+                root = Path(temporary)
+                capture, _ = self._write_capture(root)
+                mutate(capture)
+
+                with self.assertRaises(LiveEvidenceBundleError):
+                    export_live_evidence_bundles(capture, root / "output")

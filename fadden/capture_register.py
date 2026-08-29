@@ -1257,6 +1257,11 @@ def _validate_staged_graph(staging: Path) -> None:
         raise CaptureRegisterError("staged capture graph is invalid") from exc
 
 
+def validate_capture_graph(capture_dir: str | Path) -> None:
+    """Validate one existing complete Stage 3A capture graph."""
+    _validate_staged_graph(Path(capture_dir).resolve(strict=True))
+
+
 def _require_absent_destination(path: Path) -> None:
     try:
         os.lstat(path)

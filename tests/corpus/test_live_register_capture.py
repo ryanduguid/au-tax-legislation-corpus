@@ -19,6 +19,7 @@ from fadden.capture_register import (
     CaptureRegisterError,
     RegisterExchange,
     capture_register_run,
+    validate_capture_graph,
 )
 from fadden.export_publication_bundles import (
     PublicationBundleError,
@@ -1736,6 +1737,33 @@ class LiveRegisterEvidenceGraphTests(unittest.TestCase):
                     ),
                 )
             self.assertFalse(destination.exists())
+
+
+    def test_public_graph_validator_accepts_generated_graph_and_rejects_mutation(self) -> None:
+        """The exporter needs the same final Stage 3A proof as capture promotion."""
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            manifest_path = root / "manifest.json"
+            manifest_path.write_bytes(json_bytes([manifest_row()]))
+            destination = root / "capture"
+            capture_register_run(
+                manifest_path,
+                destination,
+                session=MemorySession(
+                    {
+                        CURRENT_URL: [
+                            successful_exchange(CURRENT_BODY, "2026-08-29T14:45:01Z")
+                        ]
+                    }
+                ),
+            )
+
+            validate_capture_graph(destination)
+            baseline = destination / "monitor-baseline.json"
+            baseline.write_bytes(baseline.read_bytes() + b" ")
+
+            with self.assertRaisesRegex(CaptureRegisterError, "staged capture"):
+                validate_capture_graph(destination)
 
 
 class LiveRegisterCaptureFilesystemTests(unittest.TestCase):
