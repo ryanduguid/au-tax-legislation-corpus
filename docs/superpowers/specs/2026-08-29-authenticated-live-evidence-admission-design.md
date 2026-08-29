@@ -131,7 +131,8 @@ output as untrusted. It owns:
 - restrained public language and links.
 
 The production boundary is intentionally deep: one live bundle path enters and
-either one canonical development is atomically admitted or nothing changes.
+either one canonical development is atomically admitted or the
+build-discovered `content/developments` namespace remains unchanged.
 Provenance orchestration, JSON parsing, OData interpretation, transformation
 and filesystem staging remain behind that boundary. Live-v2 parsing,
 provenance, transformation and admission form one dedicated module. The
@@ -144,6 +145,14 @@ substitute process and filesystem adapters only through internal test seams;
 no production command or programmatic export accepts an alternate content
 root, skips provenance, enables synthetic input, selects a mode or permits an
 overwrite or retry.
+
+The supported production importer is Windows-only and uses the Node.js
+standard library only. The downloaded bundle and all GitHub CLI output remain
+untrusted. Its local filesystem boundary trusts the operator account, checkout
+and destination namespace as exclusive, apart from accidental concurrent runs
+of the same compliant importer. It makes no hostile same-principal,
+shared-account, multi-tenant or power-loss durability claim. A native broker is
+deferred unless that threat boundary expands.
 
 ### Why a per-development envelope
 
@@ -556,12 +565,14 @@ permission to continue locally.
 
 Before any canonical content change, the importer:
 
-1. resolves the input and fixed content root and rejects links, junctions,
-   reparse points, special files, aliases and unsafe ancestors;
-2. creates only an importer-owned private staging directory under the fixed
-   content root;
-3. reads the bounded input once, writes an exact private snapshot, re-reads it
-   and checks byte equality;
+1. rejects non-Windows execution before any filesystem mutation, then resolves
+   the input and fixed repository paths and rejects links, junctions, reparse
+   points, special files, aliases and unsafe ancestors;
+2. creates one importer-owned private work directory matching
+   `content/.live-import-*`, outside the build-discovered
+   `content/developments` namespace;
+3. reads the bounded input once, writes an exact snapshot in that private work
+   directory, re-reads it and checks byte equality;
 4. strictly parses enough of the snapshot to validate the v2 envelope and
    derive the observation-hash release tag;
 5. invokes the three provenance checks below against that snapshot without a
@@ -639,19 +650,24 @@ timezone assumption abstains instead.
 ### Atomic admission and idempotency
 
 The importer calculates `upstream.bundle_sha256` from the exact private
-snapshot, builds one canonical record in owned staging, re-reads and validates
-the exact bytes, removes the private snapshot, and confirms staging contains
-only the canonical `development.json` before one directory rename.
+snapshot in `content/.live-import-*`, builds the complete child record
+directory there, and re-reads and validates its canonical bytes. That child
+must contain exactly one ordinary file, `development.json`, before one rename
+to `content/developments/<development_id>`.
 
-If the final development directory is absent, the rename admits it. If it is an
-ordinary directory containing exactly the same canonical bytes, import returns
-`unchanged`. Any other existing path, extra entry or byte difference is a
-conflict. Nothing is overwritten, merged, repaired or deleted.
+The final target is never removed or overwritten. An existing target resolves
+only to `unchanged` when it is an ordinary directory containing exactly one
+byte-identical `development.json`; every other shape or byte sequence is a
+conflict. The same rule resolves an accidental race between concurrent
+compliant imports.
 
-Every failure before promotion removes only recognised importer-owned staging
-and leaves `content/developments` byte-for-byte unchanged. Cleanup failure is
-reported rather than hidden. Error messages are bounded, deterministic and
-non-zero at the command line.
+Ordinary failures may attempt best-effort cleanup of recognised private work,
+but the safety claim does not depend on complete cleanup. A crash before the
+rename may leave an ignored private `content/.live-import-*` orphan; a crash
+after the rename exposes the complete record. The static build discovers only
+`content/developments`, so it never sees partial staging. No power-loss
+durability or hostile namespace identity binding is claimed. Error messages
+remain bounded, deterministic and non-zero at the command line.
 
 ## Canonical `development.v2` transformation
 
@@ -854,9 +870,14 @@ The publisher test surface covers:
 - exact canonical mapping, chronology, attribution and evidence-release link;
 - restrained HTML, RSS and JSON Feed rendering;
 - fixed content root and absence of production bypasses;
+- Windows-only, pre-mutation refusal elsewhere and Node-standard-library-only
+  production admission;
+- private `content/.live-import-*` snapshot and record staging outside the
+  build-discovered namespace;
 - isolation of synthetic-v1 conformance from live-v2 parsing, provenance and
   filesystem admission;
-- every validation, process and filesystem failure leaving content unchanged;
+- every validation, process and filesystem failure leaving
+  `content/developments` unchanged while permitting an ignored private orphan;
 - exact re-import as a no-op and every changed same-identity import as a
   conflict;
 - existing v1 synthetic parser/transformation conformance; and
@@ -957,6 +978,12 @@ parallel canonical record or renderer.
 - Official producer output publication is currently Windows-only. Supporting
   another platform requires an equally identity-bound promotion and cleanup
   design; pathname-only fallback remains prohibited.
+- Supported publisher admission is also Windows-only and assumes an exclusive,
+  trusted local operator account, checkout and namespace apart from accidental
+  concurrent compliant imports. Supporting hostile same-principal or
+  multi-tenant operation requires a separately designed native broker.
+- Publisher staging is outside `content/developments`; a crash can leave an
+  ignored private orphan, and no power-loss durability guarantee is made.
 - The checked-in corpus selection is keyword-based and is not all Australian
   tax law or accounting material.
 - Stage 3B publishes only new Federal Register compilations. Other source
