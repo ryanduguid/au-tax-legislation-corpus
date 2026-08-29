@@ -474,18 +474,23 @@ The workflow performs these steps in order:
 7. In a normally success-gated step, require
    `steps.attest.outputs.attestation-id` to be non-empty. Neither this check nor
    any attestation or release step uses `always()`.
-8. Create one draft release at the deterministic observation-hash tag, upload
-   all candidate assets together and attach deterministic attribution notes.
-   The release title is the tag and its target is the exact checked-out
-   `GITHUB_SHA`, not a later resolution of the moving branch name.
+8. Create one draft release at the deterministic observation-hash tag, then
+   upload the sorted candidate paths in deterministic contiguous batches of at
+   most 64 within the same token-bearing step. Every batch omits `--clobber`
+   and must pass its immediate `$LASTEXITCODE` check before the next batch. The
+   release carries deterministic attribution notes; its title is the tag and
+   its target is the exact checked-out `GITHUB_SHA`, not a later resolution of
+   the moving branch name.
 9. Publish the draft with `latest: false`. Publishing under the repository's
-   immutable-releases setting freezes the release and creates the GitHub release
-   attestation used by `gh release verify`.
+   immutable-releases setting freezes the release and creates the GitHub
+   release attestation used by `gh release verify`. Publication starts only
+   after every upload batch succeeds.
 
 The workflow must never publish before every candidate is uploaded and the
 artifact attestation succeeds. A pre-publication failure creates no public
-release. GitHub may retain a private failed draft; the workflow reports it and
-does not automatically delete it. Deleting or repairing that draft is an
+release. GitHub may retain a private failed draft, including one containing
+only the batches uploaded before a later batch failed; the workflow reports it
+and does not automatically delete it. Deleting or repairing that draft is an
 explicit operator action.
 
 Because artifact attestation precedes release creation, a later release-command
@@ -541,6 +546,11 @@ The only production command is:
 ```text
 npm run import-bundle -- --bundle <file>
 ```
+
+The package command invokes only `import-live.mjs`. The legacy `import.mjs`
+module remains function-only for isolated synthetic-v1 conformance tests; when
+executed directly, it must fail without parsing an import or mutating content,
+including when passed its former `--content-root` option.
 
 `content/developments` is fixed inside the repository. There is no production
 `--content-root`, synthetic flag, provenance skip, offline-trust flag,
@@ -847,8 +857,10 @@ behaviour, an exact sorted subject count equal to `candidate_count` and within
 draft-before-publish ordering, deterministic tag, aggregate rights summary and
 `latest: false`. They also require the `attest` step id, a non-empty
 `attestation-id` check before draft creation, normal success gating with no
-`always()`, and an immediate `$LASTEXITCODE` failure check after every `gh`
-invocation, including create before upload and upload before publish.
+`always()`, deterministic contiguous upload batches of at most 64 in the same
+create-and-upload token-bearing step, no `--clobber`, publication only after
+the batch loop, and an immediate `$LASTEXITCODE` failure check after every
+`gh` invocation, including each upload batch.
 
 ### Publisher tests
 
@@ -876,6 +888,9 @@ The publisher test surface covers:
   build-discovered namespace;
 - isolation of synthetic-v1 conformance from live-v2 parsing, provenance and
   filesystem admission;
+- direct legacy `import.mjs` invocation with v1 input or `--content-root`
+  failing without content mutation, and the package command invoking only
+  `import-live.mjs`;
 - every validation, process and filesystem failure leaving
   `content/developments` unchanged while permitting an ignored private orphan;
 - exact re-import as a no-op and every changed same-identity import as a
