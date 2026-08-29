@@ -74,6 +74,11 @@ class LiveEvidenceWorkflowPolicyTests(unittest.TestCase):
             active.append(stripped)
         return active
 
+    def _is_gh_command(self, line: str) -> bool:
+        return re.match(
+            r"^(?:&\s+)?gh(?:\.exe)?(?:\s|$)", line.strip(), re.IGNORECASE
+        ) is not None
+
     def test_yaml_oracle_exposes_comments_blank_lines_and_scalar_decoys(self) -> None:
         decoy = (
             "    permissions:\n"
@@ -99,12 +104,22 @@ class LiveEvidenceWorkflowPolicyTests(unittest.TestCase):
             "        run: |\n"
             "          # & gh release edit ignored\n"
             "\n"
-            "          & gh release edit kept # --latest=true"
+            "          & gh release edit kept # --latest=true\n"
+            "          gh release delete unsafe --yes"
+        )
+        active = self._active_run_lines(step)
+        self.assertEqual(
+            active,
+            [
+                "& gh release edit kept # --latest=true",
+                "gh release delete unsafe --yes",
+            ],
         )
         self.assertEqual(
-            self._active_run_lines(step),
-            ["& gh release edit kept # --latest=true"],
+            [line for line in active if self._is_gh_command(line)],
+            active,
         )
+        self.assertTrue(self._is_gh_command("& GH.EXE release view"))
 
     def test_manual_trigger_has_no_inputs_and_job_has_exact_guard(self) -> None:
         workflow = self._workflow()
@@ -253,7 +268,7 @@ class LiveEvidenceWorkflowPolicyTests(unittest.TestCase):
             line
             for step in run_steps
             for line in self._active_run_lines(step)
-            if line.startswith("& gh ")
+            if self._is_gh_command(line)
         ]
         expected_gh_commands = [
             "& gh api --method POST "
@@ -270,10 +285,10 @@ class LiveEvidenceWorkflowPolicyTests(unittest.TestCase):
             "--draft=false --latest=false",
         ]
         release_gh_commands = [
-            line for line in self._active_run_lines(release_step) if line.startswith("& gh ")
+            line for line in self._active_run_lines(release_step) if self._is_gh_command(line)
         ]
         publish_gh_commands = [
-            line for line in self._active_run_lines(publish_step) if line.startswith("& gh ")
+            line for line in self._active_run_lines(publish_step) if self._is_gh_command(line)
         ]
         self.assertEqual(release_gh_commands, expected_gh_commands[:3])
         self.assertEqual(publish_gh_commands, expected_gh_commands[3:])
@@ -331,7 +346,7 @@ class LiveEvidenceWorkflowPolicyTests(unittest.TestCase):
         workflow = self._workflow()
         lines = workflow.splitlines()
         gh_indexes = [
-            index for index, line in enumerate(lines) if re.match(r"^\s*& gh(?:\s|$)", line)
+            index for index, line in enumerate(lines) if self._is_gh_command(line)
         ]
         self.assertEqual(len(gh_indexes), 4)
         expected = (
