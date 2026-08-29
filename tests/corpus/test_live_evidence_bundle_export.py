@@ -20,6 +20,11 @@ from fadden.export_live_evidence_bundles import (
 )
 
 
+WINDOWS_ONLY_EXPORT = unittest.skipUnless(
+    os.name == "nt",
+    "identity-bound live evidence publication is supported only on Windows",
+)
+
 FIXTURES = Path(__file__).parent / "fixtures" / "live-evidence"
 V2_FIXTURE = FIXTURES / "evidence-bundle.v2.json"
 DEFAULT_RESPONSE = (
@@ -164,6 +169,7 @@ class LiveEvidenceBundleContractTests(unittest.TestCase):
         (capture / "register-observation.json").write_bytes(observation_bytes)
         return capture, _sha256_id(observation_bytes)
 
+    @WINDOWS_ONLY_EXPORT
     def test_exports_the_live_only_contract_and_reviewed_golden_bytes(self) -> None:
         """A wrong identity, rights object or serialisation must fail this contract."""
         with tempfile.TemporaryDirectory() as temporary:
@@ -285,6 +291,7 @@ class LiveEvidenceBundleContractTests(unittest.TestCase):
             decoded = base64.b64decode(encoded, validate=True)
             self.assertEqual(base64.b64encode(decoded).decode("ascii"), encoded)
 
+    @WINDOWS_ONLY_EXPORT
     def test_accepts_a_raw_response_at_the_256_kib_limit(self) -> None:
         """The permitted raw-response boundary must remain usable."""
         with tempfile.TemporaryDirectory() as temporary:
@@ -625,7 +632,9 @@ class LiveEvidenceGraphTests(unittest.TestCase):
     def test_posix_without_descriptor_primitives_fails_closed(self) -> None:
         """A non-Windows platform may not fall back to pathname capture reads."""
         current_directory = Path.cwd()
-        with mock.patch.object(export_module.os, "name", "posix"):
+        with mock.patch.object(export_module.os, "name", "posix"), mock.patch.object(
+            export_module, "_posix_descriptor_pinning_available", return_value=False
+        ):
             with self.assertRaisesRegex(LiveEvidenceBundleError, "secure directory pinning"):
                 with export_module._PinnedDirectoryChain() as pinned:
                     pinned.pin(current_directory, "capture input")
@@ -744,6 +753,7 @@ class LiveEvidenceGraphTests(unittest.TestCase):
 
             self.assertFalse((root / "output").exists())
 
+    @WINDOWS_ONLY_EXPORT
     def test_non_candidate_states_create_no_asset(self) -> None:
         """Only a verified SUPERSEDED observation is publishable evidence."""
         for state in (
@@ -761,6 +771,7 @@ class LiveEvidenceGraphTests(unittest.TestCase):
                 self.assertEqual(export.candidates, ())
                 self.assertEqual(list((root / "output").iterdir()), [])
 
+    @WINDOWS_ONLY_EXPORT
     def test_registered_at_is_independent_from_compilation_start(self) -> None:
         """Registration remains a separate source fact, not a substituted compilation date."""
         with tempfile.TemporaryDirectory() as temporary:
@@ -774,6 +785,7 @@ class LiveEvidenceGraphTests(unittest.TestCase):
         self.assertEqual(bundle["observation"]["observed_compilation_date"], "2026-08-18")
         self.assertIn(b'"registeredAt":"2026-08-27T17:31:41.1234567+10:00"', raw)
 
+    @WINDOWS_ONLY_EXPORT
     def test_null_previous_compilation_number_and_non_empty_current_number_are_required(self) -> None:
         """An unnumbered historical baseline is valid but the new compilation is not optional."""
         with tempfile.TemporaryDirectory() as temporary:
@@ -876,6 +888,7 @@ class LiveEvidenceFilesystemTests(unittest.TestCase):
     def _owned_staging(parent: Path, output: Path) -> list[Path]:
         return list(parent.glob(f".{output.name}.live-evidence-*"))
 
+    @WINDOWS_ONLY_EXPORT
     def test_absent_output_promotes_private_sibling_with_private_modes(self) -> None:
         """A successful export must publish one complete, non-world-readable directory."""
         with tempfile.TemporaryDirectory() as temporary:
@@ -936,6 +949,7 @@ class LiveEvidenceFilesystemTests(unittest.TestCase):
                 export_live_evidence_bundles(capture, linked / "output")
             self.assertFalse((root / "output").exists())
 
+    @WINDOWS_ONLY_EXPORT
     def test_write_failure_removes_only_owned_staging_and_preserves_destination(self) -> None:
         """A failed write may not leave an official partial directory or remove neighbours."""
         with tempfile.TemporaryDirectory() as temporary:
@@ -952,6 +966,7 @@ class LiveEvidenceFilesystemTests(unittest.TestCase):
             self.assertTrue(neighbour.is_dir())
             self.assertEqual(self._owned_staging(root, output), [])
 
+    @WINDOWS_ONLY_EXPORT
     def test_reread_or_revalidation_failure_never_promotes_output(self) -> None:
         """Staged bytes are untrusted until their exact reread validation succeeds."""
         with tempfile.TemporaryDirectory() as temporary:
@@ -969,6 +984,7 @@ class LiveEvidenceFilesystemTests(unittest.TestCase):
             self.assertFalse(output.exists())
             self.assertEqual(self._owned_staging(root, output), [])
 
+    @WINDOWS_ONLY_EXPORT
     def test_promotion_race_cannot_overwrite_new_destination(self) -> None:
         """A competitor claiming the final name before promotion must win without replacement."""
         with tempfile.TemporaryDirectory() as temporary:
@@ -1011,6 +1027,7 @@ class LiveEvidenceFilesystemTests(unittest.TestCase):
             self.assertFalse(output.exists())
             self.assertFalse((output / "attacker.json").exists())
 
+    @WINDOWS_ONLY_EXPORT
     def test_replacement_attempt_at_cleanup_delete_boundary_cannot_remove_another_directory(self) -> None:
         """The held staging object must prevent a path replacement before recursive cleanup."""
         with tempfile.TemporaryDirectory() as temporary:
@@ -1045,6 +1062,7 @@ class LiveEvidenceFilesystemTests(unittest.TestCase):
             self.assertFalse(output.exists())
             self.assertFalse(retained.exists())
 
+    @WINDOWS_ONLY_EXPORT
     def test_cleanup_child_replacement_after_handle_validation_is_blocked(self) -> None:
         """A child replacement at the former lstat-to-unlink boundary must not be deleted."""
         with tempfile.TemporaryDirectory() as temporary:
@@ -1092,6 +1110,7 @@ class LiveEvidenceFilesystemTests(unittest.TestCase):
             self.assertFalse(retained.exists())
             self.assertFalse(output.exists())
 
+    @WINDOWS_ONLY_EXPORT
     def test_unexpected_staging_child_stops_cleanup_without_deleting_any_child(self) -> None:
         """An inventory mismatch must preserve every staged child for safe manual recovery."""
         with tempfile.TemporaryDirectory() as temporary:
@@ -1113,6 +1132,7 @@ class LiveEvidenceFilesystemTests(unittest.TestCase):
             self.assertEqual(len(list(staging[0].glob("*.json"))), 2)
             self.assertFalse(output.exists())
 
+    @WINDOWS_ONLY_EXPORT
     def test_cleanup_failure_is_reported_without_official_output(self) -> None:
         """A failed bounded cleanup is not hidden behind the original write failure."""
         with tempfile.TemporaryDirectory() as temporary:
@@ -1128,6 +1148,7 @@ class LiveEvidenceFilesystemTests(unittest.TestCase):
 
             self.assertFalse(output.exists())
 
+    @WINDOWS_ONLY_EXPORT
     def test_cleanup_never_removes_a_replaced_same_prefix_staging_directory(self) -> None:
         """The prefix proves scope, while the recorded directory identity proves ownership."""
         with tempfile.TemporaryDirectory() as temporary:
@@ -1151,6 +1172,7 @@ class LiveEvidenceFilesystemTests(unittest.TestCase):
             self.assertTrue(replacement_blocked)
             self.assertTrue(output.is_dir())
 
+    @WINDOWS_ONLY_EXPORT
     def test_zero_candidates_still_promotes_one_empty_directory(self) -> None:
         """A verified abstention is successful evidence of no publishable candidate."""
         with tempfile.TemporaryDirectory() as temporary:

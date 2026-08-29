@@ -5,6 +5,7 @@ from __future__ import annotations
 import copy
 import hashlib
 import json
+import os
 from pathlib import Path
 import tempfile
 import unittest
@@ -85,6 +86,10 @@ class PublicationBundleExportTests(unittest.TestCase):
         expected = (FIXTURES / "evidence-bundle.v1.json").read_bytes()
         self.assertEqual(generated, expected)
 
+    @unittest.skipUnless(
+        os.name == "nt",
+        "identity-bound live evidence publication is supported only on Windows",
+    )
     def test_live_v2_export_does_not_change_the_synthetic_v1_fixture(self):
         """A live-contract change must not alter synthetic-v1 conformance bytes."""
         fixture = FIXTURES / "evidence-bundle.v1.json"
