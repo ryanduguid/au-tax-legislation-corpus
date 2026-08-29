@@ -13,6 +13,7 @@ from typing import Callable
 from unittest import mock
 
 import fadden.export_live_evidence_bundles as export_module
+from fadden.capture_register import CaptureRegisterError, validate_capture_graph
 from fadden.export_live_evidence_bundles import (
     LiveEvidenceBundleError,
     export_live_evidence_bundles,
@@ -667,11 +668,50 @@ class LiveEvidenceGraphTests(unittest.TestCase):
             with mock.patch.object(
                 export_module, "_ordinary_file_details", side_effect=swap_before_identity
             ), mock.patch.object(export_module, "_copy_regular_file", side_effect=record_copy):
-                export = export_live_evidence_bundles(capture, root / "output")
+                with self.assertRaisesRegex(LiveEvidenceBundleError, "inventory changed"):
+                    export_live_evidence_bundles(capture, root / "output")
 
             self.assertTrue(swapped)
             self.assertNotIn(b"external", copied)
-            self.assertEqual(len(export.candidates), 1)
+            self.assertFalse((root / "output").exists())
+
+    def test_candidate_identity_round_trips_the_validated_identifier_pair(self) -> None:
+        """The fixed pair encoding proves lower-case output identity injectivity."""
+        make_identity = getattr(export_module, "_candidate_identity", None)
+        parse_identity = getattr(export_module, "_candidate_identity_pair", None)
+        if not callable(make_identity) or not callable(parse_identity):
+            self.fail("candidate identity must have a checked pair round trip")
+        pairs = (
+            ("A0000A00000", "A0000A00001"),
+            ("Z9999Z99998", "Z9999Z99999"),
+        )
+        identities = [make_identity(*pair) for pair in pairs]
+
+        self.assertEqual(
+            identities,
+            [
+                "bundle-frl-a0000a00000-a0000a00001-r1",
+                "bundle-frl-z9999z99998-z9999z99999-r1",
+            ],
+        )
+        self.assertEqual([parse_identity(identity) for identity in identities], list(pairs))
+        self.assertEqual(len(set(identities)), len(pairs))
+        with self.assertRaises(LiveEvidenceBundleError):
+            make_identity("a0000a00000", "A0000A00001")
+        with self.assertRaises(LiveEvidenceBundleError):
+            parse_identity("bundle-frl-a0000a00000-a0000a00001-extra-r1")
+
+    def test_stage_3a_rejects_duplicate_title_before_candidate_derivation(self) -> None:
+        """Duplicate valid identifiers cannot reach candidate identity derivation."""
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            capture, _ = self._write_capture(root)
+            baseline, register, observation = self._documents(capture)
+            baseline["titles"].append(dict(baseline["titles"][0]))
+            self._write_documents(capture, baseline, register, observation)
+
+            with self.assertRaisesRegex(CaptureRegisterError, "identity is duplicated"):
+                validate_capture_graph(capture)
 
     def test_one_inconsistent_superseded_candidate_blocks_all_candidates(self) -> None:
         """A later bad candidate cannot permit an earlier candidate to be exported alone."""

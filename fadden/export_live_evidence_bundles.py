@@ -38,6 +38,9 @@ _PYPROJECT_PATH = Path(__file__).resolve().parent.parent / "pyproject.toml"
 _MAX_RESPONSE_BYTES = 256 * 1024
 _MAX_BUNDLE_BYTES = 1024 * 1024
 _EVIDENCE_NAME = re.compile(r"sha256-[0-9a-f]{64}\.json\Z")
+_CANDIDATE_ID = re.compile(
+    r"bundle-frl-([a-z]\d{4}[a-z]\d{5})-([a-z]\d{4}[a-z]\d{5})-r1\Z"
+)
 _VERSION_TIMESTAMP = re.compile(
     r"\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}"
     r"(?:\.\d{1,7})?(?:Z|[+-]\d{2}:\d{2})?\Z"
@@ -133,6 +136,12 @@ def _same_regular_file_identity(expected: os.stat_result, observed: os.stat_resu
         and os.path.samestat(expected, observed)
         and getattr(expected, "st_nlink", 1) == 1
         and getattr(observed, "st_nlink", 1) == 1
+    )
+
+
+def _same_directory_identity(expected: os.stat_result, observed: os.stat_result) -> bool:
+    return stat.S_ISDIR(expected.st_mode) and stat.S_ISDIR(observed.st_mode) and os.path.samestat(
+        expected, observed
     )
 
 
@@ -293,6 +302,33 @@ class _PinnedDirectoryChain:
             raise LiveEvidenceBundleError(f"{label} must be an ordinary directory.")
         self._handles.append(handle)
         return handle
+
+
+def _pinned_directory_details(path: Path, directory_handle: int | None) -> os.stat_result:
+    try:
+        details = (
+            os.fstat(directory_handle)
+            if _posix_descriptor_pinning_available() and directory_handle is not None
+            else os.lstat(path)
+        )
+    except OSError as exc:
+        raise LiveEvidenceBundleError("capture input inventory changed.") from exc
+    if not stat.S_ISDIR(details.st_mode):
+        raise LiveEvidenceBundleError("capture input inventory changed.")
+    return details
+
+
+def _pinned_path_identity_matches(path: Path, expected: os.stat_result) -> bool:
+    try:
+        observed = os.lstat(path)
+    except OSError:
+        return False
+    return (
+        _same_directory_identity(expected, observed)
+        and not os.path.islink(path)
+        and not _path_is_junction(path)
+        and not _details_are_reparse_point(observed)
+    )
 
 
 def _child_details(
@@ -461,6 +497,10 @@ def _snapshot_capture_graph(capture_dir: str | Path, snapshot: Path) -> None:
                 directory, "capture input", parent_handle=parent_handle
             )
             parent_handle = handles[directory]
+        pinned_directories = {
+            directory: _pinned_directory_details(directory, handles[directory])
+            for directory in chain
+        }
         root_inventory = _directory_inventory(source, directory_handle=handles[source])
         if set(root_inventory) != {
             "monitor-baseline.json",
@@ -473,6 +513,14 @@ def _snapshot_capture_graph(capture_dir: str | Path, snapshot: Path) -> None:
         evidence_handle = pinned.pin(
             source_evidence, "capture evidence", parent_handle=handles[source]
         )
+        pinned_directories[source_evidence] = _pinned_directory_details(
+            source_evidence, evidence_handle
+        )
+        if not all(
+            _pinned_path_identity_matches(directory, expected)
+            for directory, expected in pinned_directories.items()
+        ):
+            raise LiveEvidenceBundleError("capture input inventory changed.")
         evidence_inventory = _directory_inventory(
             source_evidence, directory_handle=evidence_handle
         )
@@ -524,6 +572,10 @@ def _snapshot_capture_graph(capture_dir: str | Path, snapshot: Path) -> None:
             _directory_inventory(source, directory_handle=handles[source]) != root_inventory
             or _directory_inventory(source_evidence, directory_handle=evidence_handle)
             != evidence_inventory
+            or not all(
+                _pinned_path_identity_matches(directory, expected)
+                for directory, expected in pinned_directories.items()
+            )
         ):
             raise LiveEvidenceBundleError("capture input inventory changed.")
         for path, directory_handle, expected in copied:
@@ -598,6 +650,31 @@ def _register_id(value: Any, label: str) -> str:
         return _validate_register_id(_required_text(value, label))
     except ValueError as exc:
         raise LiveEvidenceBundleError(f"{label} is invalid.") from exc
+
+
+def _candidate_identity_pair(identity: str) -> tuple[str, str]:
+    """Recover the two validated Register identifiers from a candidate identity."""
+
+    match = _CANDIDATE_ID.fullmatch(_required_text(identity, "candidate identity"))
+    if match is None:
+        raise LiveEvidenceBundleError("candidate identity is invalid.")
+    return (
+        _register_id(match.group(1).upper(), "candidate baseline identifier"),
+        _register_id(match.group(2).upper(), "candidate document identifier"),
+    )
+
+
+def _candidate_identity(register_id: str, document_id: str) -> str:
+    """Construct an injective v2 identity from two strict Register identifiers."""
+
+    pair = (
+        _register_id(register_id, "candidate baseline identifier"),
+        _register_id(document_id, "candidate document identifier"),
+    )
+    identity = f"bundle-frl-{pair[0].lower()}-{pair[1].lower()}-r1"
+    if _candidate_identity_pair(identity) != pair:
+        raise LiveEvidenceBundleError("candidate identity invariant failed.")
+    return identity
 
 
 def _rights(checked_at: str) -> dict[str, str]:
@@ -746,7 +823,7 @@ def _candidate_bundle(
         _json_bytes(capture_result)
     ):
         raise LiveEvidenceBundleError("observation capture result digest is invalid.")
-    bundle_id = f"bundle-frl-{register_id.lower()}-{document_id.lower()}-r1"
+    bundle_id = _candidate_identity(register_id, document_id)
     return bundle_id, {
         "schema_version": "evidence-bundle.v2",
         "producer": {"name": "tax-radar-au", "version": version},
@@ -816,6 +893,7 @@ def _export_validated_snapshot(capture: Path, output_dir: str | Path) -> LiveEvi
         for result in results
     }
     candidates: list[tuple[str, dict[str, Any]]] = []
+    candidate_pairs: dict[str, tuple[str, str]] = {}
     for raw_observation in observations:
         observation = _required_object(raw_observation, "observation item")
         if observation.get("state") != "SUPERSEDED":
@@ -847,6 +925,13 @@ def _export_validated_snapshot(capture: Path, output_dir: str | Path) -> LiveEvi
             observed_at=_required_text(observation_document.get("observed_at"), "observed_at"),
             response=response,
         )
+        pair = _candidate_identity_pair(candidate[0])
+        previous_pair = candidate_pairs.get(candidate[0])
+        if previous_pair is not None:
+            if previous_pair != pair:
+                raise LiveEvidenceBundleError("distinct candidate pairs collide.")
+            raise LiveEvidenceBundleError("candidate identity is duplicated.")
+        candidate_pairs[candidate[0]] = pair
         candidates.append(candidate)
     if output.exists():
         raise LiveEvidenceBundleError("output directory must not already exist.")
