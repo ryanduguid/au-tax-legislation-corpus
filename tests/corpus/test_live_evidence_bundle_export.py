@@ -863,3 +863,209 @@ class LiveEvidenceGraphTests(unittest.TestCase):
 
                 with self.assertRaises(LiveEvidenceBundleError):
                     export_live_evidence_bundles(capture, root / "output")
+
+
+class LiveEvidenceFilesystemTests(unittest.TestCase):
+    """Publication is one no-overwrite directory transaction."""
+
+    @staticmethod
+    def _capture(root: Path) -> Path:
+        return LiveEvidenceBundleContractTests()._write_capture(root)[0]
+
+    @staticmethod
+    def _owned_staging(parent: Path, output: Path) -> list[Path]:
+        return list(parent.glob(f".{output.name}.live-evidence-*"))
+
+    def test_absent_output_promotes_private_sibling_with_private_modes(self) -> None:
+        """A successful export must publish one complete, non-world-readable directory."""
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            output = root / "new-parent" / "output"
+
+            export = export_live_evidence_bundles(self._capture(root), output)
+
+            self.assertEqual(export.candidates, (output / "bundle-frl-f2022l00347-f2026c00838-r1.json",))
+            self.assertEqual(len(list(output.iterdir())), 1)
+            self.assertEqual(self._owned_staging(output.parent, output), [])
+            if os.name == "posix":
+                self.assertEqual((output.stat().st_mode & 0o777), 0o700)
+                self.assertEqual((export.candidates[0].stat().st_mode & 0o777), 0o600)
+
+    def test_only_one_safe_missing_output_parent_is_created(self) -> None:
+        """Creating arbitrary ancestor chains would expand the exporter write boundary."""
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            output = root / "first" / "second" / "output"
+
+            with self.assertRaisesRegex(LiveEvidenceBundleError, "one missing output parent"):
+                export_live_evidence_bundles(self._capture(root), output)
+
+            self.assertFalse((root / "first").exists())
+
+    def test_output_may_not_collide_with_capture_input(self) -> None:
+        """A destination alias must not be able to replace the admitted capture graph."""
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            capture = self._capture(root)
+            before = (capture / "monitor-baseline.json").read_bytes()
+
+            with self.assertRaises(LiveEvidenceBundleError):
+                export_live_evidence_bundles(capture, capture)
+
+            self.assertEqual((capture / "monitor-baseline.json").read_bytes(), before)
+
+    def test_existing_output_and_linked_ancestor_fail_without_mutation(self) -> None:
+        """No existing target or redirected ancestor is an admissible publication location."""
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            capture = self._capture(root)
+            existing = root / "existing"
+            existing.mkdir()
+            (existing / "keep").write_text("preserve", encoding="utf-8")
+
+            with self.assertRaises(LiveEvidenceBundleError):
+                export_live_evidence_bundles(capture, existing)
+            self.assertEqual((existing / "keep").read_text(encoding="utf-8"), "preserve")
+
+            linked = root / "linked"
+            try:
+                os.symlink(root, linked, target_is_directory=True)
+            except (NotImplementedError, OSError):
+                self.skipTest("directory symbolic links are unavailable on this host")
+            with self.assertRaises(LiveEvidenceBundleError):
+                export_live_evidence_bundles(capture, linked / "output")
+            self.assertFalse((root / "output").exists())
+
+    def test_write_failure_removes_only_owned_staging_and_preserves_destination(self) -> None:
+        """A failed write may not leave an official partial directory or remove neighbours."""
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            output = root / "output"
+            neighbour = root / ".output.not-ours"
+            neighbour.mkdir()
+
+            with mock.patch.object(export_module, "_write_new", side_effect=OSError("disk full")):
+                with self.assertRaisesRegex(LiveEvidenceBundleError, "could not be written"):
+                    export_live_evidence_bundles(self._capture(root), output)
+
+            self.assertFalse(output.exists())
+            self.assertTrue(neighbour.is_dir())
+            self.assertEqual(self._owned_staging(root, output), [])
+
+    def test_reread_or_revalidation_failure_never_promotes_output(self) -> None:
+        """Staged bytes are untrusted until their exact reread validation succeeds."""
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            output = root / "output"
+
+            with mock.patch.object(
+                export_module,
+                "_validate_staged_export",
+                side_effect=LiveEvidenceBundleError("staged output changed"),
+            ):
+                with self.assertRaisesRegex(LiveEvidenceBundleError, "staged output changed"):
+                    export_live_evidence_bundles(self._capture(root), output)
+
+            self.assertFalse(output.exists())
+            self.assertEqual(self._owned_staging(root, output), [])
+
+    def test_promotion_race_cannot_overwrite_new_destination(self) -> None:
+        """A competitor claiming the final name before promotion must win without replacement."""
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            output = root / "output"
+
+            def race(staging: Path, destination: Path) -> None:
+                destination.mkdir()
+                (destination / "competitor").write_text("keep", encoding="utf-8")
+                raise FileExistsError("destination claimed")
+
+            with mock.patch.object(export_module, "_promote_no_replace", side_effect=race):
+                with self.assertRaisesRegex(LiveEvidenceBundleError, "could not be promoted"):
+                    export_live_evidence_bundles(self._capture(root), output)
+
+            self.assertEqual((output / "competitor").read_text(encoding="utf-8"), "keep")
+            self.assertEqual(self._owned_staging(root, output), [])
+
+    def test_cleanup_failure_is_reported_without_official_output(self) -> None:
+        """A failed bounded cleanup is not hidden behind the original write failure."""
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            output = root / "output"
+            with mock.patch.object(export_module, "_write_new", side_effect=OSError("disk full")), mock.patch.object(
+                export_module,
+                "_remove_owned_staging",
+                side_effect=LiveEvidenceBundleError("staging could not be removed"),
+            ):
+                with self.assertRaisesRegex(LiveEvidenceBundleError, "staging could not be removed"):
+                    export_live_evidence_bundles(self._capture(root), output)
+
+            self.assertFalse(output.exists())
+
+    def test_cleanup_never_removes_a_replaced_same_prefix_staging_directory(self) -> None:
+        """The prefix proves scope, while the recorded directory identity proves ownership."""
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            output = root / "output"
+            original_write = export_module._write_new
+            replacement: Path | None = None
+
+            def replace_staging(path: Path, content: bytes) -> None:
+                nonlocal replacement
+                original_write(path, content)
+                retained = root / "retained-staging"
+                os.rename(path.parent, retained)
+                replacement = path.parent
+                replacement.mkdir()
+
+            with mock.patch.object(export_module, "_write_new", side_effect=replace_staging):
+                with self.assertRaises(LiveEvidenceBundleError):
+                    export_live_evidence_bundles(self._capture(root), output)
+
+            self.assertIsNotNone(replacement)
+            self.assertTrue(replacement.is_dir())
+            self.assertFalse(output.exists())
+
+    def test_zero_candidates_still_promotes_one_empty_directory(self) -> None:
+        """A verified abstention is successful evidence of no publishable candidate."""
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            capture = self._capture(root)
+            LiveEvidenceGraphTests()._set_non_candidate_state(capture, "UNCHANGED")
+            output = root / "output"
+
+            export = export_live_evidence_bundles(capture, output)
+
+            self.assertEqual(export.candidates, ())
+            self.assertTrue(output.is_dir())
+            self.assertEqual(list(output.iterdir()), [])
+
+    def test_producer_version_requires_strict_semver_and_package_equality(self) -> None:
+        """A malformed or divergent package version must not enter an attested bundle."""
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            version_path = root / "VERSION"
+            project_path = root / "pyproject.toml"
+            version_path.write_text("01.2.3\n", encoding="utf-8")
+            project_path.write_text('[project]\nversion = "01.2.3"\n', encoding="utf-8")
+            with mock.patch.object(export_module, "_VERSION_PATH", version_path), mock.patch.object(
+                export_module, "_PYPROJECT_PATH", project_path
+            ):
+                with self.assertRaisesRegex(LiveEvidenceBundleError, "strict Semantic Version"):
+                    export_module._producer_version()
+
+            version_path.write_text("1.2.3 \n", encoding="utf-8")
+            project_path.write_text('[project]\nversion = "1.2.3"\n', encoding="utf-8")
+            with mock.patch.object(export_module, "_VERSION_PATH", version_path), mock.patch.object(
+                export_module, "_PYPROJECT_PATH", project_path
+            ):
+                with self.assertRaisesRegex(LiveEvidenceBundleError, "strict Semantic Version"):
+                    export_module._producer_version()
+
+            version_path.write_text("1.2.3\n", encoding="utf-8")
+            project_path.write_text('[project]\nversion = "1.2.4"\n', encoding="utf-8")
+            with mock.patch.object(export_module, "_VERSION_PATH", version_path), mock.patch.object(
+                export_module, "_PYPROJECT_PATH", project_path
+            ):
+                with self.assertRaisesRegex(LiveEvidenceBundleError, "strict Semantic Version"):
+                    export_module._producer_version()

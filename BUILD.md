@@ -24,6 +24,7 @@ python -m fadden pii_scan2     # -> refines fadden/pii_flagged.json
 python -m fadden finalize      # -> ./corpus/sources.json, INDEX.md, README.md, LICENCE-NOTICE.md
 python -m fadden rates         # -> ./corpus/rates/rates.jsonl, RATES.md
 python -m fadden capture_register -- fadden/manifest_md.json --out build/register-capture-20260829
+python -m fadden export_live_evidence_bundles -- build/register-capture-20260829 --out build/live-evidence-20260829
 
 # deployed corpus (flat scripts copied into build/)
 cd C:\ato-kb\build
@@ -114,6 +115,29 @@ are authenticated in transit by HTTPS but are not individually government
 signed. Do not commit raw captures. Stage 3B must transport the retained bytes
 with authenticated producer provenance, prescribed Register attribution and
 publisher-side revalidation before any live development can be admitted.
+
+## Exporting live evidence bundles
+
+Only a pinned, complete Stage 3A graph with `run_status: VERIFIED` can be
+exported as the live-only v2 producer contract:
+
+```bash
+python -m fadden export_live_evidence_bundles -- build/register-capture-20260829 --out build/live-evidence-20260829
+```
+
+The command never queries the Register. It snapshots the local capture,
+derives metadata-only `evidence-bundle.v2` files for `SUPERSEDED` titles, and
+embeds the retained response bytes with the prescribed Federal Register
+attribution and CC BY 4.0 rights. The source registration date remains
+independent from the compilation date. A zero-candidate verified capture still
+atomically creates its empty destination.
+
+The destination must be absent. The exporter permits at most one missing safe
+parent, writes files privately under an owned sibling staging directory,
+re-reads and validates those exact bytes, then makes one no-overwrite directory
+promotion. It does not create a release, make a network request, or create a
+public development. Those authenticated release and publisher-admission steps
+remain separately authorised.
 
 ## Exporting publication evidence bundles
 

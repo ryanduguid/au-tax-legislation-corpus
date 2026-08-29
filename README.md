@@ -134,6 +134,7 @@ python -m fadden finalize      # write the corpus-level index and licence files 
 python -m fadden rates         # derive the rates-and-thresholds index -> ./corpus/rates/rates.jsonl, RATES.md
 python -m fadden check_current # read-only staleness check against the Register
 python -m fadden capture_register -- fadden/manifest_md.json --out build/register-capture-20260829
+python -m fadden export_live_evidence_bundles -- build/register-capture-20260829 --out build/live-evidence-20260829
 ```
 
 The PII scans run before `finalize.py` because the generated corpus README
@@ -222,6 +223,29 @@ transit, but the Register does not sign each response. Stage 3B must carry the
 retained source bytes with authenticated producer provenance, the Register's
 prescribed attribution and independent publisher-side validation before a live
 development can enter the public site.
+
+## Exporting live publication evidence
+
+After a complete Stage 3A capture is locally validated as `VERIFIED`, export
+its live-only v2 candidate bundles with:
+
+```bash
+python -m fadden export_live_evidence_bundles -- build/register-capture-20260829 --out build/live-evidence-20260829
+```
+
+The destination must be absent. The exporter snapshots and validates the
+capture, then writes a private sibling directory and promotes it once without
+overwriting a competing destination. A verified capture with no `SUPERSEDED`
+titles succeeds by producing one empty directory. It performs no network
+request or live capture.
+
+Each `evidence-bundle.v2` is metadata-only and embeds the exact retained
+response bytes, prescribed Federal Register attribution and CC BY 4.0 rights.
+It keeps the independently observed compilation date and the raw registration
+date distinct; neither is a claim that the legislation was amended or changed
+in practical effect. This local producer operation creates neither a GitHub
+release nor public development. Release attestation and publisher-side
+admission are separate, manually authorised boundaries.
 
 ## Exporting publication evidence bundles
 

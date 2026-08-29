@@ -2,12 +2,16 @@
 
 from __future__ import annotations
 
+import contextlib
+import io
 import importlib
 import unittest
 from unittest import mock
 
 from fadden import STAGES
 from fadden.__main__ import main
+from fadden.export_live_evidence_bundles import LiveEvidenceBundleError
+from fadden.export_live_evidence_bundles import main as export_live_evidence_main
 
 
 class FaddenCliTests(unittest.TestCase):
@@ -46,6 +50,7 @@ class FaddenCliTests(unittest.TestCase):
             "export_monitor_contract",
             "export_publication_bundles",
             "capture_register",
+            "export_live_evidence_bundles",
         ):
             with self.subTest(stage=stage), mock.patch("importlib.import_module") as importer:
                 module = mock.Mock()
@@ -53,7 +58,7 @@ class FaddenCliTests(unittest.TestCase):
                 importer.return_value = module
                 forwarded = (
                     ["a.json", "--out", "out"]
-                    if stage == "capture_register"
+                    if stage in {"capture_register", "export_live_evidence_bundles"}
                     else ["a.json", "b.json", "--out", "out"]
                 )
                 self.assertEqual(main([stage, "--", *forwarded]), 0)
@@ -80,8 +85,25 @@ class FaddenCliTests(unittest.TestCase):
                 "export_monitor_contract",
                 "export_publication_bundles",
                 "capture_register",
+                "export_live_evidence_bundles",
             ),
         )
+
+    def test_live_export_usage_errors_return_two_and_contract_errors_return_one(self) -> None:
+        """The stage keeps parser failures distinct from bounded exporter failures."""
+        with self.assertRaises(SystemExit) as usage:
+            export_live_evidence_main(["capture-only"])
+        self.assertEqual(usage.exception.code, 2)
+
+        stderr = io.StringIO()
+        with mock.patch(
+            "fadden.export_live_evidence_bundles.export_live_evidence_bundles",
+            side_effect=LiveEvidenceBundleError("output directory must not already exist"),
+        ), contextlib.redirect_stderr(stderr):
+            result = export_live_evidence_main(["capture", "--out", "output"])
+
+        self.assertEqual(result, 1)
+        self.assertEqual(stderr.getvalue(), "error: output directory must not already exist\n")
 
 
 if __name__ == "__main__":

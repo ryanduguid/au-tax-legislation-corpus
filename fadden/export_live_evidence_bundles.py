@@ -6,12 +6,16 @@ import argparse
 import base64
 import ctypes
 import datetime as dt
+import errno
 import hashlib
 import json
 import os
 import re
+import shutil
 import stat
+import sys
 import tempfile
+import uuid
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Sequence
@@ -41,6 +45,7 @@ _EVIDENCE_NAME = re.compile(r"sha256-[0-9a-f]{64}\.json\Z")
 _CANDIDATE_ID = re.compile(
     r"bundle-frl-([a-z]\d{4}[a-z]\d{5})-([a-z]\d{4}[a-z]\d{5})-r1\Z"
 )
+_SAFE_OUTPUT_LEAF = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,99}\Z")
 _VERSION_TIMESTAMP = re.compile(
     r"\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}"
     r"(?:\.\d{1,7})?(?:Z|[+-]\d{2}:\d{2})?\Z"
@@ -631,10 +636,11 @@ def _required_sha256(value: Any, label: str) -> str:
 
 def _producer_version() -> str:
     try:
-        version = _VERSION_PATH.read_text(encoding="utf-8").strip()
+        version = _VERSION_PATH.read_text(encoding="utf-8")
         pyproject = _PYPROJECT_PATH.read_text(encoding="utf-8")
     except OSError as exc:
         raise LiveEvidenceBundleError("producer version could not be read.") from exc
+    version = version.removesuffix("\n").removesuffix("\r")
     package_version = re.search(r'^version\s*=\s*"([^"]+)"\s*$', pyproject, re.MULTILINE)
     if (
         _SEMVER.fullmatch(version) is None
@@ -845,6 +851,246 @@ def _candidate_bundle(
     }
 
 
+def _absolute(path: str | Path) -> Path:
+    return Path(os.path.abspath(os.fspath(path)))
+
+
+def _require_absent_destination(path: Path) -> None:
+    try:
+        os.lstat(path)
+    except FileNotFoundError:
+        return
+    except OSError as exc:
+        raise LiveEvidenceBundleError("live evidence output could not be inspected.") from exc
+    raise LiveEvidenceBundleError("live evidence output directory must not already exist.")
+
+
+def _ordinary_directory_details(path: Path, label: str) -> os.stat_result:
+    try:
+        details = os.lstat(path)
+    except OSError as exc:
+        raise LiveEvidenceBundleError(f"{label} could not be inspected.") from exc
+    if (
+        not stat.S_ISDIR(details.st_mode)
+        or os.path.islink(path)
+        or _path_is_junction(path)
+        or _details_are_reparse_point(details)
+    ):
+        raise LiveEvidenceBundleError(f"{label} must be an ordinary directory.")
+    return details
+
+
+def _require_ordinary_ancestors(path: Path, label: str) -> None:
+    current = path
+    while current != current.parent:
+        _ordinary_directory_details(current, label)
+        current = current.parent
+
+
+def _output_collides_capture(output: Path, capture: Path) -> bool:
+    output_text = os.path.normcase(os.path.realpath(output))
+    capture_text = os.path.normcase(os.path.realpath(capture))
+    try:
+        return os.path.commonpath((output_text, capture_text)) == capture_text
+    except ValueError:
+        return False
+
+
+def _preflight_output(output: Path) -> tuple[bool, os.stat_result | None]:
+    if _SAFE_OUTPUT_LEAF.fullmatch(output.name) is None:
+        raise LiveEvidenceBundleError("live evidence output name is unsafe.")
+    _require_absent_destination(output)
+    try:
+        parent_details = os.lstat(output.parent)
+    except FileNotFoundError:
+        if _SAFE_OUTPUT_LEAF.fullmatch(output.parent.name) is None:
+            raise LiveEvidenceBundleError("live evidence output parent name is unsafe.")
+        try:
+            _require_ordinary_ancestors(output.parent.parent, "live evidence output")
+        except LiveEvidenceBundleError as exc:
+            raise LiveEvidenceBundleError("live evidence permits only one missing output parent.") from exc
+        return True, None
+    except OSError as exc:
+        raise LiveEvidenceBundleError("live evidence output parent could not be inspected.") from exc
+    if (
+        not stat.S_ISDIR(parent_details.st_mode)
+        or os.path.islink(output.parent)
+        or _path_is_junction(output.parent)
+        or _details_are_reparse_point(parent_details)
+    ):
+        raise LiveEvidenceBundleError("live evidence output parent must be an ordinary directory.")
+    _require_ordinary_ancestors(output.parent.parent, "live evidence output")
+    return False, parent_details
+
+
+def _write_new(path: Path, content: bytes) -> None:
+    descriptor = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+    try:
+        os.chmod(path, 0o600)
+        with os.fdopen(descriptor, "wb") as target:
+            descriptor = -1
+            target.write(content)
+    finally:
+        if descriptor != -1:
+            os.close(descriptor)
+
+
+def _read_staged_file(path: Path, expected: bytes) -> None:
+    try:
+        details = os.lstat(path)
+        if (
+            not stat.S_ISREG(details.st_mode)
+            or os.path.islink(path)
+            or _details_are_reparse_point(details)
+        ):
+            raise LiveEvidenceBundleError("staged live evidence output contains a non-ordinary file.")
+        with open(path, "rb") as source:
+            opened = os.fstat(source.fileno())
+            first = source.read(len(expected) + 1)
+            source.seek(0)
+            second = source.read(len(expected) + 1)
+            read_details = os.fstat(source.fileno())
+        final = os.lstat(path)
+    except LiveEvidenceBundleError:
+        raise
+    except OSError as exc:
+        raise LiveEvidenceBundleError("staged live evidence output could not be read.") from exc
+    if not (
+        _same_regular_file_identity(details, opened)
+        and _same_regular_file_identity(opened, read_details)
+        and _same_regular_file_identity(read_details, final)
+        and first == second == expected
+        and len(first) == read_details.st_size == details.st_size
+    ):
+        raise LiveEvidenceBundleError("staged live evidence output changed during validation.")
+
+
+def _validate_staged_export(staging: Path, expected: dict[str, bytes]) -> None:
+    """Re-read exactly the files that the exporter generated before promotion."""
+    _ordinary_directory_details(staging, "staged live evidence output")
+    try:
+        entries = {entry.name for entry in staging.iterdir()}
+    except OSError as exc:
+        raise LiveEvidenceBundleError("staged live evidence output could not be listed.") from exc
+    if entries != set(expected):
+        raise LiveEvidenceBundleError("staged live evidence output layout is invalid.")
+    for name, content in expected.items():
+        _read_staged_file(staging / name, content)
+        try:
+            parsed = json.loads(content.decode("utf-8"), object_pairs_hook=_reject_duplicate_json_members)
+        except (UnicodeDecodeError, json.JSONDecodeError, _DuplicateJsonMemberError) as exc:
+            raise LiveEvidenceBundleError("staged live evidence output JSON is invalid.") from exc
+        if not isinstance(parsed, dict) or _json_bytes(parsed) != content:
+            raise LiveEvidenceBundleError("staged live evidence output JSON is non-canonical.")
+
+
+def _remove_owned_staging(
+    staging: Path,
+    *,
+    parent: Path,
+    prefix: str,
+    parent_details: os.stat_result,
+    staging_details: os.stat_result,
+) -> None:
+    if staging.parent != parent or not staging.name.startswith(prefix):
+        raise LiveEvidenceBundleError("refusing to remove staging outside the live evidence boundary.")
+    current_parent = _ordinary_directory_details(parent, "live evidence output parent")
+    if not _same_directory_identity(parent_details, current_parent):
+        raise LiveEvidenceBundleError("live evidence output parent changed before staging cleanup.")
+    try:
+        details = os.lstat(staging)
+    except FileNotFoundError:
+        return
+    except OSError as exc:
+        raise LiveEvidenceBundleError("live evidence staging could not be inspected.") from exc
+    if (
+        not stat.S_ISDIR(details.st_mode)
+        or os.path.islink(staging)
+        or _path_is_junction(staging)
+        or _details_are_reparse_point(details)
+    ):
+        raise LiveEvidenceBundleError("live evidence staging is no longer an ordinary directory.")
+    if not _same_directory_identity(staging_details, details):
+        raise LiveEvidenceBundleError("live evidence staging changed before cleanup.")
+    try:
+        shutil.rmtree(staging)
+    except OSError as exc:
+        raise LiveEvidenceBundleError("live evidence staging could not be removed.") from exc
+
+
+def _promote_no_replace(staging: Path, destination: Path) -> None:
+    """Atomically move staging into an absent destination without replacement."""
+    if os.name == "nt":
+        os.rename(staging, destination)
+        return
+    try:
+        libc = ctypes.CDLL(None, use_errno=True)
+        renameat2 = libc.renameat2
+    except AttributeError as exc:
+        raise OSError(errno.ENOSYS, "no no-replace rename is available") from exc
+    renameat2.argtypes = [ctypes.c_int, ctypes.c_char_p, ctypes.c_int, ctypes.c_char_p, ctypes.c_uint]
+    renameat2.restype = ctypes.c_int
+    if renameat2(-100, os.fsencode(staging), -100, os.fsencode(destination), 1) != 0:
+        error_number = ctypes.get_errno()
+        raise OSError(error_number, os.strerror(error_number), os.fspath(destination))
+
+
+def _publish_candidates(
+    output: Path, candidates: list[tuple[str, dict[str, Any]]]
+) -> tuple[Path, ...]:
+    expected: dict[str, bytes] = {}
+    for bundle_id, bundle in sorted(candidates):
+        content = _json_bytes(bundle)
+        if len(content) > _MAX_BUNDLE_BYTES:
+            raise LiveEvidenceBundleError("serialised bundle exceeds the 1 MiB limit.")
+        expected[f"{bundle_id}.json"] = content
+
+    create_parent, known_parent = _preflight_output(output)
+    if create_parent:
+        try:
+            os.mkdir(output.parent, 0o700)
+            os.chmod(output.parent, 0o700)
+        except OSError as exc:
+            raise LiveEvidenceBundleError("live evidence output parent could not be created.") from exc
+    parent_details = _ordinary_directory_details(output.parent, "live evidence output parent")
+    if known_parent is not None and not _same_directory_identity(known_parent, parent_details):
+        raise LiveEvidenceBundleError("live evidence output parent changed before publication.")
+    _require_ordinary_ancestors(output.parent.parent, "live evidence output")
+    _require_absent_destination(output)
+
+    prefix = f".{output.name}.live-evidence-"
+    staging = output.parent / f"{prefix}{uuid.uuid4().hex}.tmp"
+    staging_details: os.stat_result | None = None
+    try:
+        try:
+            os.mkdir(staging, 0o700)
+            staging_details = _ordinary_directory_details(staging, "live evidence staging")
+            os.chmod(staging, 0o700)
+            for name, content in expected.items():
+                _write_new(staging / name, content)
+        except OSError as exc:
+            raise LiveEvidenceBundleError("live evidence output could not be written.") from exc
+        _validate_staged_export(staging, expected)
+        current_parent = _ordinary_directory_details(output.parent, "live evidence output parent")
+        if not _same_directory_identity(parent_details, current_parent):
+            raise LiveEvidenceBundleError("live evidence output parent changed before promotion.")
+        _require_absent_destination(output)
+        try:
+            _promote_no_replace(staging, output)
+        except OSError as exc:
+            raise LiveEvidenceBundleError("live evidence output could not be promoted.") from exc
+    finally:
+        if staging_details is not None:
+            _remove_owned_staging(
+                staging,
+                parent=output.parent,
+                prefix=prefix,
+                parent_details=parent_details,
+                staging_details=staging_details,
+            )
+    return tuple(output / name for name in expected)
+
+
 def _export_validated_snapshot(capture: Path, output_dir: str | Path) -> LiveEvidenceExport:
     """Write v2 candidates from an exporter-owned, validated capture snapshot."""
     output = Path(output_dir)
@@ -933,20 +1179,7 @@ def _export_validated_snapshot(capture: Path, output_dir: str | Path) -> LiveEvi
             raise LiveEvidenceBundleError("candidate identity is duplicated.")
         candidate_pairs[candidate[0]] = pair
         candidates.append(candidate)
-    if output.exists():
-        raise LiveEvidenceBundleError("output directory must not already exist.")
-    try:
-        output.mkdir(parents=True)
-        paths = []
-        for bundle_id, bundle in sorted(candidates):
-            path = output / f"{bundle_id}.json"
-            content = _json_bytes(bundle)
-            if len(content) > _MAX_BUNDLE_BYTES:
-                raise LiveEvidenceBundleError("serialised bundle exceeds the 1 MiB limit.")
-            path.write_bytes(content)
-            paths.append(path)
-    except OSError as exc:
-        raise LiveEvidenceBundleError("live evidence bundles could not be written.") from exc
+    paths = _publish_candidates(output, candidates)
     return LiveEvidenceExport(
         f"live-evidence-v2-{observation_sha256.removeprefix('sha256:')}", tuple(paths)
     )
@@ -956,25 +1189,30 @@ def export_live_evidence_bundles(
     capture_dir: str | Path, output_dir: str | Path
 ) -> LiveEvidenceExport:
     """Write v2 candidates only from a private, verified Stage 3A snapshot."""
+    source_capture = _absolute(capture_dir)
+    output = _absolute(output_dir)
+    if _output_collides_capture(output, source_capture):
+        raise LiveEvidenceBundleError("live evidence output would replace a capture input.")
     with tempfile.TemporaryDirectory(prefix="tax-radar-live-evidence-") as temporary:
         snapshot = Path(temporary) / "capture"
-        _snapshot_capture_graph(capture_dir, snapshot)
+        _snapshot_capture_graph(source_capture, snapshot)
         try:
             validate_capture_graph(snapshot)
         except CaptureRegisterError as exc:
             raise LiveEvidenceBundleError("capture graph is not a verified Stage 3A graph.") from exc
-        return _export_validated_snapshot(snapshot, output_dir)
+        return _export_validated_snapshot(snapshot, output)
 
 
 def main(argv: Sequence[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="Export live evidence-bundle.v2 candidates.")
     parser.add_argument("capture_dir")
-    parser.add_argument("output_dir")
+    parser.add_argument("--out", required=True, dest="output_dir")
     arguments = parser.parse_args(argv)
     try:
         export = export_live_evidence_bundles(arguments.capture_dir, arguments.output_dir)
     except LiveEvidenceBundleError as exc:
-        parser.error(str(exc))
+        print(f"error: {exc}", file=sys.stderr)
+        return 1
     print(f"candidate_count={len(export.candidates)}")
     print(f"release_tag={export.release_tag}")
     return 0
