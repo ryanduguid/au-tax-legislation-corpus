@@ -85,6 +85,24 @@ class PublicationBundleExportTests(unittest.TestCase):
         expected = (FIXTURES / "evidence-bundle.v1.json").read_bytes()
         self.assertEqual(generated, expected)
 
+    def test_live_v2_export_does_not_change_the_synthetic_v1_fixture(self):
+        """A live-contract change must not alter synthetic-v1 conformance bytes."""
+        fixture = FIXTURES / "evidence-bundle.v1.json"
+        before = hashlib.sha256(fixture.read_bytes()).hexdigest()
+
+        from fadden.export_live_evidence_bundles import export_live_evidence_bundles
+        from tests.corpus.test_live_evidence_bundle_export import (
+            LiveEvidenceBundleContractTests,
+        )
+
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            capture, _ = LiveEvidenceBundleContractTests()._write_capture(root)
+            export_live_evidence_bundles(capture, root / "output")
+
+        after = hashlib.sha256(fixture.read_bytes()).hexdigest()
+        self.assertEqual(after, before)
+
     def test_refuses_incomplete_or_non_v3_observations(self):
         baseline, observation, _, _ = self._project_inputs()
         for field, value in (
