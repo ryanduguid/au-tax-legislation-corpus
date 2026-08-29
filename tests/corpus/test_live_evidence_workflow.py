@@ -35,13 +35,56 @@ class LiveEvidenceWorkflowPolicyTests(unittest.TestCase):
         self.assertEqual(len(matches), 1, f"expected one step containing {needle!r}")
         return matches[0]
 
+    def _indented_blocks(self, text: str, key: str, indent: int) -> list[str]:
+        lines = text.splitlines()
+        marker = f"{' ' * indent}{key}:"
+        blocks: list[str] = []
+        for start, line in enumerate(lines):
+            if line != marker:
+                continue
+            end = start + 1
+            while end < len(lines):
+                stripped = lines[end].lstrip()
+                if not stripped or stripped.startswith("#"):
+                    end += 1
+                    continue
+                if len(lines[end]) - len(stripped) <= indent:
+                    break
+                end += 1
+            blocks.append("\n".join(lines[start:end]))
+        return blocks
+
+    def _yaml_scalar_lines(self, text: str, key: str, indent: int) -> list[str]:
+        marker = f"{' ' * indent}{key}:"
+        return [line for line in text.splitlines() if line.startswith(marker)]
+
+    def test_yaml_oracle_exposes_comments_blank_lines_and_scalar_decoys(self) -> None:
+        decoy = (
+            "    permissions:\n"
+            "      contents: write\n"
+            "\n"
+            "    # decoy\n"
+            "    runs-on: windows-latest"
+        )
+        self.assertEqual(
+            self._indented_blocks(decoy, "permissions", 4),
+            ["    permissions:\n      contents: write\n\n    # decoy"],
+        )
+        scalar_decoy = "          persist-credentials: true # persist-credentials: false"
+        self.assertEqual(
+            self._yaml_scalar_lines(scalar_decoy, "persist-credentials", 10),
+            [scalar_decoy],
+        )
+
     def test_manual_trigger_has_no_inputs_and_job_has_exact_guard(self) -> None:
         workflow = self._workflow()
         self.assertEqual(self._top_level_block("on"), "on:\n  workflow_dispatch:")
-        self.assertIn(
-            "if: github.repository == 'ryanduguid/au-tax-legislation-corpus' && "
-            "github.ref == 'refs/heads/main'",
-            workflow,
+        self.assertEqual(
+            self._yaml_scalar_lines(workflow, "if", 4),
+            [
+                "    if: github.repository == 'ryanduguid/au-tax-legislation-corpus' && "
+                "github.ref == 'refs/heads/main'"
+            ],
         )
 
     def test_runner_concurrency_shell_timeout_and_permissions_are_fixed(self) -> None:
@@ -54,15 +97,8 @@ class LiveEvidenceWorkflowPolicyTests(unittest.TestCase):
             re.findall(r"(?m)^  ([a-z][a-z0-9_-]*):$", self._top_level_block("jobs")),
             ["publish"],
         )
-        permission_blocks = [
-            match.rstrip()
-            for match in re.findall(
-                r"(?m)^    permissions:\n(?:      [a-z-]+: (?:read|write|none)\n?)+",
-                workflow,
-            )
-        ]
         self.assertEqual(
-            permission_blocks,
+            self._indented_blocks(workflow, "permissions", 4),
             [
                 "    permissions:\n"
                 "      attestations: write\n"
@@ -71,9 +107,18 @@ class LiveEvidenceWorkflowPolicyTests(unittest.TestCase):
             ],
         )
         self.assertEqual(len(re.findall(r"(?m)^\s*permissions:$", workflow)), 1)
-        self.assertIn("runs-on: windows-latest", workflow)
-        self.assertIn("timeout-minutes: 120", workflow)
-        self.assertRegex(workflow, r"(?m)^    defaults:\n      run:\n        shell: pwsh$")
+        self.assertEqual(
+            self._yaml_scalar_lines(workflow, "runs-on", 4),
+            ["    runs-on: windows-latest"],
+        )
+        self.assertEqual(
+            self._yaml_scalar_lines(workflow, "timeout-minutes", 4),
+            ["    timeout-minutes: 120"],
+        )
+        self.assertEqual(
+            self._indented_blocks(workflow, "defaults", 4),
+            ["    defaults:\n      run:\n        shell: pwsh"],
+        )
 
     def test_action_pins_and_fixed_capture_inputs_are_exact(self) -> None:
         workflow = self._workflow()
@@ -86,8 +131,16 @@ class LiveEvidenceWorkflowPolicyTests(unittest.TestCase):
                 "actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6",
             ],
         )
-        self.assertIn("persist-credentials: false", workflow)
-        self.assertIn('python-version: "3.12"', workflow)
+        checkout_step = self._step_containing(action_references[0])
+        setup_step = self._step_containing(action_references[1])
+        self.assertEqual(
+            self._yaml_scalar_lines(checkout_step, "persist-credentials", 10),
+            ["          persist-credentials: false"],
+        )
+        self.assertEqual(
+            self._yaml_scalar_lines(setup_step, "python-version", 10),
+            ['          python-version: "3.12"'],
+        )
         self.assertIn('python -m pip install "uv==0.12.0"', workflow)
         self.assertIn("fadden/manifest_md.json", workflow)
         self.assertNotRegex(workflow, r"(?m)^\s+uses: [^\s@]+@(?:v|main|master)")
