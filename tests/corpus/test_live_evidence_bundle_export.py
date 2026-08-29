@@ -305,6 +305,15 @@ class LiveEvidenceBundleContractTests(unittest.TestCase):
 
         self.assertEqual(len(result.candidates), 1)
 
+    def test_version_timestamps_accept_register_seven_digit_fractions(self) -> None:
+        """Python 3.10 fromisoformat alone cannot parse the Register's fractions."""
+        seven = "2026-08-27T17:31:41.1234567+10:00"
+        self.assertEqual(export_module._version_timestamp(seven, "field"), seven)
+        with self.assertRaisesRegex(LiveEvidenceBundleError, "invalid"):
+            export_module._version_timestamp(
+                "2026-08-27T17:31:41.12345678+10:00", "field"
+            )
+
     def test_rejects_a_raw_response_over_the_256_kib_limit(self) -> None:
         """An oversized source response must fail before encoding it into the bundle."""
         with tempfile.TemporaryDirectory() as temporary:

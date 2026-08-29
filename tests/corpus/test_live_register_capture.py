@@ -709,6 +709,25 @@ class LiveRegisterCaptureManifestTests(unittest.TestCase):
             self.assertFalse((root / "capture").exists())
 
 
+class RegisterTimestampCompatibilityTests(unittest.TestCase):
+    """Contract fraction widths must parse identically on every supported Python."""
+
+    def test_contract_fraction_widths_parse_on_python_3_10(self) -> None:
+        seven = "2026-08-27T17:31:41.1234567+10:00"
+        self.assertEqual(capture_module._version_timestamp(seven, "field"), seven)
+        self.assertEqual(
+            capture_module._start_date("2026-08-18T00:00:00.1234567+10:00"),
+            "2026-08-18",
+        )
+        for fraction in ("1", "12", "1234", "12345"):
+            stamp = f"2026-08-27T07:31:41.{fraction}Z"
+            self.assertEqual(capture_module._utc_timestamp(stamp, "field"), stamp)
+        with self.assertRaises(CaptureRegisterError):
+            capture_module._version_timestamp(
+                "2026-08-27T17:31:41.12345678+10:00", "field"
+            )
+
+
 class LiveRegisterCaptureStateTests(unittest.TestCase):
     def _capture_documents(
         self,
