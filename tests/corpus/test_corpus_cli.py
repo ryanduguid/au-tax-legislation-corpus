@@ -105,6 +105,18 @@ class FaddenCliTests(unittest.TestCase):
         self.assertEqual(result, 1)
         self.assertEqual(stderr.getvalue(), "error: output directory must not already exist\n")
 
+    def test_live_export_raw_filesystem_error_is_bounded(self) -> None:
+        """No raw filesystem exception may escape the command-line boundary."""
+        stderr = io.StringIO()
+        with mock.patch(
+            "fadden.export_live_evidence_bundles.export_live_evidence_bundles",
+            side_effect=OSError("private path must not leak"),
+        ), contextlib.redirect_stderr(stderr):
+            result = export_live_evidence_main(["capture", "--out", "output"])
+
+        self.assertEqual(result, 1)
+        self.assertEqual(stderr.getvalue(), "error: live evidence export failed\n")
+
 
 if __name__ == "__main__":
     unittest.main()

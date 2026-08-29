@@ -975,7 +975,7 @@ class LiveEvidenceFilesystemTests(unittest.TestCase):
             root = Path(temporary)
             output = root / "output"
 
-            def race(staging: Path, destination: Path) -> None:
+            def race(staging: Path, destination: Path, *_args: object) -> None:
                 destination.mkdir()
                 (destination / "competitor").write_text("keep", encoding="utf-8")
                 raise FileExistsError("destination claimed")
@@ -987,6 +987,64 @@ class LiveEvidenceFilesystemTests(unittest.TestCase):
             self.assertEqual((output / "competitor").read_text(encoding="utf-8"), "keep")
             self.assertEqual(self._owned_staging(root, output), [])
 
+    def test_replacement_at_the_promotion_boundary_cannot_become_official(self) -> None:
+        """The operation itself, not a preceding stat, must bind the promoted directory."""
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            capture = self._capture(root)
+            output = root / "output"
+            retained = root / "retained-staging"
+            original_promote = export_module._promote_no_replace
+
+            def replace_then_promote(staging: Path, destination: Path, *args: object) -> None:
+                os.rename(staging, retained)
+                staging.mkdir()
+                (staging / "attacker.json").write_text("attacker", encoding="utf-8")
+                original_promote(staging, destination, *args)
+
+            with mock.patch.object(
+                export_module, "_promote_no_replace", side_effect=replace_then_promote
+            ):
+                with self.assertRaises(LiveEvidenceBundleError):
+                    export_live_evidence_bundles(capture, output)
+
+            self.assertFalse(output.exists())
+            self.assertFalse((output / "attacker.json").exists())
+
+    def test_replacement_attempt_at_cleanup_delete_boundary_cannot_remove_another_directory(self) -> None:
+        """The held staging object must prevent a path replacement before recursive cleanup."""
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            capture = self._capture(root)
+            output = root / "output"
+            retained = root / "retained-staging"
+            original_cleanup = export_module._cleanup_owned_staging
+            replacement_blocked = False
+
+            def replace_then_cleanup(staging: object) -> None:
+                nonlocal replacement_blocked
+                try:
+                    os.rename(staging.path, retained)
+                except OSError:
+                    replacement_blocked = True
+                original_cleanup(staging)
+
+            with mock.patch.object(
+                export_module,
+                "_validate_staged_export",
+                side_effect=LiveEvidenceBundleError("staged output changed"),
+            ), mock.patch.object(
+                export_module,
+                "_cleanup_owned_staging",
+                side_effect=replace_then_cleanup,
+            ):
+                with self.assertRaisesRegex(LiveEvidenceBundleError, "staged output changed"):
+                    export_live_evidence_bundles(capture, output)
+
+            self.assertTrue(replacement_blocked)
+            self.assertFalse(output.exists())
+            self.assertFalse(retained.exists())
+
     def test_cleanup_failure_is_reported_without_official_output(self) -> None:
         """A failed bounded cleanup is not hidden behind the original write failure."""
         with tempfile.TemporaryDirectory() as temporary:
@@ -994,7 +1052,7 @@ class LiveEvidenceFilesystemTests(unittest.TestCase):
             output = root / "output"
             with mock.patch.object(export_module, "_write_new", side_effect=OSError("disk full")), mock.patch.object(
                 export_module,
-                "_remove_owned_staging",
+                "_cleanup_owned_staging",
                 side_effect=LiveEvidenceBundleError("staging could not be removed"),
             ):
                 with self.assertRaisesRegex(LiveEvidenceBundleError, "staging could not be removed"):
@@ -1008,23 +1066,22 @@ class LiveEvidenceFilesystemTests(unittest.TestCase):
             root = Path(temporary)
             output = root / "output"
             original_write = export_module._write_new
-            replacement: Path | None = None
+            replacement_blocked = False
 
             def replace_staging(path: Path, content: bytes) -> None:
-                nonlocal replacement
+                nonlocal replacement_blocked
                 original_write(path, content)
                 retained = root / "retained-staging"
-                os.rename(path.parent, retained)
-                replacement = path.parent
-                replacement.mkdir()
+                try:
+                    os.rename(path.parent, retained)
+                except OSError:
+                    replacement_blocked = True
 
             with mock.patch.object(export_module, "_write_new", side_effect=replace_staging):
-                with self.assertRaises(LiveEvidenceBundleError):
-                    export_live_evidence_bundles(self._capture(root), output)
+                export_live_evidence_bundles(self._capture(root), output)
 
-            self.assertIsNotNone(replacement)
-            self.assertTrue(replacement.is_dir())
-            self.assertFalse(output.exists())
+            self.assertTrue(replacement_blocked)
+            self.assertTrue(output.is_dir())
 
     def test_zero_candidates_still_promotes_one_empty_directory(self) -> None:
         """A verified abstention is successful evidence of no publishable candidate."""
@@ -1039,6 +1096,19 @@ class LiveEvidenceFilesystemTests(unittest.TestCase):
             self.assertEqual(export.candidates, ())
             self.assertTrue(output.is_dir())
             self.assertEqual(list(output.iterdir()), [])
+
+    def test_non_windows_rejects_before_creating_output_parent_or_staging(self) -> None:
+        """POSIX must fail closed until it has an identity-bound directory primitive."""
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            output = root / "new-parent" / "output"
+
+            with mock.patch.object(export_module.os, "name", "posix"):
+                with self.assertRaisesRegex(LiveEvidenceBundleError, "only on Windows"):
+                    export_module._publish_candidates(output, [])
+
+            self.assertFalse(output.parent.exists())
+            self.assertEqual(list(root.iterdir()), [])
 
     def test_producer_version_requires_strict_semver_and_package_equality(self) -> None:
         """A malformed or divergent package version must not enter an attested bundle."""
@@ -1069,3 +1139,57 @@ class LiveEvidenceFilesystemTests(unittest.TestCase):
             ):
                 with self.assertRaisesRegex(LiveEvidenceBundleError, "strict Semantic Version"):
                     export_module._producer_version()
+
+    def test_snapshot_handle_close_error_is_bounded_before_publication(self) -> None:
+        """Raw close failures may not escape after an exporter transaction begins."""
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            capture = self._capture(root)
+            output = root / "output"
+            original_exit = export_module._PinnedDirectoryChain.__exit__
+
+            def close_then_fail(
+                instance: object,
+                exception_type: object,
+                exception_value: object,
+                traceback: object,
+            ) -> None:
+                original_exit(instance, exception_type, exception_value, traceback)
+                raise OSError("raw pinned handle close")
+
+            with mock.patch.object(
+                export_module._PinnedDirectoryChain,
+                "__exit__",
+                autospec=True,
+                side_effect=close_then_fail,
+            ):
+                with self.assertRaisesRegex(LiveEvidenceBundleError, "snapshot cleanup"):
+                    export_live_evidence_bundles(capture, output)
+
+            self.assertFalse(output.exists())
+
+    def test_temporary_snapshot_cleanup_error_is_bounded_before_publication(self) -> None:
+        """A temporary snapshot cleanup error must not strand an official output directory."""
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            capture = self._capture(root)
+            output = root / "output"
+
+            class FailingTemporaryDirectory:
+                def __enter__(self) -> str:
+                    directory = root / "private-snapshot"
+                    directory.mkdir()
+                    return str(directory)
+
+                def __exit__(self, *args: object) -> None:
+                    raise OSError("raw temporary cleanup")
+
+            with mock.patch.object(
+                export_module.tempfile,
+                "TemporaryDirectory",
+                return_value=FailingTemporaryDirectory(),
+            ):
+                with self.assertRaisesRegex(LiveEvidenceBundleError, "snapshot cleanup"):
+                    export_live_evidence_bundles(capture, output)
+
+            self.assertFalse(output.exists())

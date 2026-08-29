@@ -129,15 +129,19 @@ The command never queries the Register. It snapshots the local capture,
 derives metadata-only `evidence-bundle.v2` files for `SUPERSEDED` titles, and
 embeds the retained response bytes with the prescribed Federal Register
 attribution and CC BY 4.0 rights. The source registration date remains
-independent from the compilation date. A zero-candidate verified capture still
-atomically creates its empty destination.
+independent from the compilation date. Its official-output transaction is
+currently supported on Windows only; a zero-candidate verified capture still
+atomically creates its empty destination there.
 
-The destination must be absent. The exporter permits at most one missing safe
-parent, writes files privately under an owned sibling staging directory,
-re-reads and validates those exact bytes, then makes one no-overwrite directory
-promotion. It does not create a release, make a network request, or create a
-public development. Those authenticated release and publisher-admission steps
-remain separately authorised.
+The destination must be absent. On Windows, the exporter permits at most one
+missing safe parent, writes files privately under a held owned sibling staging
+directory, re-reads and validates those exact bytes, then makes one
+identity-bound no-overwrite directory promotion. On other platforms it rejects
+before creating an output parent or staging directory because the required
+identity-bound directory operations are unavailable. It does not create a
+release, make a network request, or create a public development. Those
+authenticated release and publisher-admission steps remain separately
+authorised.
 
 ## Exporting publication evidence bundles
 

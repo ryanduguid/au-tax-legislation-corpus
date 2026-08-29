@@ -233,11 +233,13 @@ its live-only v2 candidate bundles with:
 python -m fadden export_live_evidence_bundles -- build/register-capture-20260829 --out build/live-evidence-20260829
 ```
 
-The destination must be absent. The exporter snapshots and validates the
-capture, then writes a private sibling directory and promotes it once without
-overwriting a competing destination. A verified capture with no `SUPERSEDED`
-titles succeeds by producing one empty directory. It performs no network
-request or live capture.
+The official-output transaction is currently supported on Windows only. The
+destination must be absent. The exporter snapshots and validates the capture,
+then writes a private sibling directory and promotes the held staging object
+once without overwriting a competing destination. On other platforms it fails
+closed before creating an output parent or staging directory. A verified
+capture with no `SUPERSEDED` titles succeeds by producing one empty directory
+on Windows. It performs no network request or live capture.
 
 Each `evidence-bundle.v2` is metadata-only and embeds the exact retained
 response bytes, prescribed Federal Register attribution and CC BY 4.0 rights.

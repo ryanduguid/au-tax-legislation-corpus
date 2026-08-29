@@ -6,12 +6,10 @@ import argparse
 import base64
 import ctypes
 import datetime as dt
-import errno
 import hashlib
 import json
 import os
 import re
-import shutil
 import stat
 import sys
 import tempfile
@@ -191,6 +189,8 @@ class _IoStatusBlock(ctypes.Structure):
 _FILE_ATTRIBUTE_DIRECTORY = 0x10
 _FILE_ATTRIBUTE_REPARSE_POINT = 0x400
 _FILE_READ_ATTRIBUTES = 0x80
+_DELETE = 0x00010000
+_FILE_ADD_FILE = 0x2
 _GENERIC_READ = 0x80000000
 _SYNCHRONIZE = 0x00100000
 _FILE_SHARE_READ = 0x1
@@ -201,6 +201,20 @@ _FILE_FLAG_OPEN_REPARSE_POINT = 0x00200000
 _FILE_DIRECTORY_FILE = 0x1
 _FILE_NON_DIRECTORY_FILE = 0x40
 _FILE_SYNCHRONOUS_IO_NONALERT = 0x20
+_FILE_DISPOSITION_INFO = 4
+_FILE_RENAME_INFORMATION = 10
+
+
+class _FileRenameInfo(ctypes.Structure):
+    _fields_ = [
+        ("replace_if_exists", wintypes.BOOL),
+        ("root_directory", wintypes.HANDLE),
+        ("file_name_length", wintypes.DWORD),
+    ]
+
+
+class _FileDispositionInfo(ctypes.Structure):
+    _fields_ = [("delete_file", wintypes.BOOL)]
 
 
 def _posix_descriptor_pinning_available() -> bool:
@@ -239,10 +253,14 @@ class _PinnedDirectoryChain:
         if os.name == "nt":
             kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
             for handle in reversed(self._handles):
-                kernel32.CloseHandle(wintypes.HANDLE(handle))
+                if not kernel32.CloseHandle(wintypes.HANDLE(handle)):
+                    raise LiveEvidenceBundleError("capture snapshot cleanup failed.")
         elif _posix_descriptor_pinning_available():
-            for handle in reversed(self._handles):
-                os.close(handle)
+            try:
+                for handle in reversed(self._handles):
+                    os.close(handle)
+            except OSError as exc:
+                raise LiveEvidenceBundleError("capture snapshot cleanup failed.") from exc
 
     def pin(self, path: Path, label: str, *, parent_handle: int | None = None) -> int | None:
         if os.name == "nt":
@@ -880,6 +898,149 @@ def _ordinary_directory_details(path: Path, label: str) -> os.stat_result:
     return details
 
 
+def _open_windows_locked_directory(
+    path: Path, expected: os.stat_result, label: str, *, desired_access: int = 0
+) -> int:
+    """Open the exact directory while denying competing delete or rename access."""
+    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    kernel32.CreateFileW.argtypes = [
+        wintypes.LPCWSTR,
+        wintypes.DWORD,
+        wintypes.DWORD,
+        wintypes.LPVOID,
+        wintypes.DWORD,
+        wintypes.DWORD,
+        wintypes.HANDLE,
+    ]
+    kernel32.CreateFileW.restype = wintypes.HANDLE
+    handle = kernel32.CreateFileW(
+        str(path),
+        _FILE_READ_ATTRIBUTES | _DELETE | _SYNCHRONIZE | desired_access,
+        _FILE_SHARE_READ | _FILE_SHARE_WRITE,
+        None,
+        _OPEN_EXISTING,
+        _FILE_FLAG_BACKUP_SEMANTICS | _FILE_FLAG_OPEN_REPARSE_POINT,
+        None,
+    )
+    if _windows_handle_value(handle) == _windows_handle_value(wintypes.HANDLE(-1)):
+        raise LiveEvidenceBundleError(f"{label} could not be pinned.")
+    handle_value = _windows_handle_value(handle)
+    try:
+        import msvcrt
+
+        kernel32.DuplicateHandle.argtypes = [
+            wintypes.HANDLE,
+            wintypes.HANDLE,
+            wintypes.HANDLE,
+            ctypes.POINTER(wintypes.HANDLE),
+            wintypes.DWORD,
+            wintypes.BOOL,
+            wintypes.DWORD,
+        ]
+        kernel32.DuplicateHandle.restype = wintypes.BOOL
+        current = kernel32.GetCurrentProcess()
+        duplicate = wintypes.HANDLE()
+        if not kernel32.DuplicateHandle(
+            current,
+            wintypes.HANDLE(handle_value),
+            current,
+            ctypes.byref(duplicate),
+            0,
+            False,
+            2,
+        ):
+            raise OSError(ctypes.get_last_error(), "could not duplicate directory handle")
+        descriptor = msvcrt.open_osfhandle(
+            _windows_handle_value(duplicate), os.O_RDONLY | os.O_BINARY
+        )
+        try:
+            observed = os.fstat(descriptor)
+        finally:
+            os.close(descriptor)
+    except OSError as exc:
+        kernel32.CloseHandle(wintypes.HANDLE(handle_value))
+        raise LiveEvidenceBundleError(f"{label} could not be pinned.") from exc
+    if not _same_directory_identity(expected, observed):
+        kernel32.CloseHandle(wintypes.HANDLE(handle_value))
+        raise LiveEvidenceBundleError(f"{label} changed while being pinned.")
+    return handle_value
+
+
+def _close_windows_handle(handle: int, label: str) -> None:
+    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    if not kernel32.CloseHandle(wintypes.HANDLE(handle)):
+        raise LiveEvidenceBundleError(f"{label} cleanup failed.")
+
+
+@dataclass
+class _OwnedStaging:
+    path: Path
+    parent: Path
+    prefix: str
+    parent_details: os.stat_result
+    staging_details: os.stat_result
+    parent_handle: int
+    staging_handle: int
+    files: dict[str, os.stat_result]
+    delete_on_close: bool = False
+
+    @classmethod
+    def pin(
+        cls,
+        path: Path,
+        *,
+        parent: Path,
+        prefix: str,
+        parent_details: os.stat_result,
+        staging_details: os.stat_result,
+    ) -> _OwnedStaging:
+        if os.name != "nt":
+            raise LiveEvidenceBundleError(
+                "identity-bound live evidence directory operations are unavailable on this platform."
+            )
+        parent_handle = _open_windows_locked_directory(
+            parent,
+            parent_details,
+            "live evidence output parent",
+            desired_access=_FILE_ADD_FILE,
+        )
+        try:
+            staging_handle = _open_windows_locked_directory(
+                path, staging_details, "live evidence staging"
+            )
+        except LiveEvidenceBundleError:
+            _close_windows_handle(parent_handle, "live evidence output parent")
+            raise
+        return cls(
+            path,
+            parent,
+            prefix,
+            parent_details,
+            staging_details,
+            parent_handle,
+            staging_handle,
+            {},
+        )
+
+    def remember_file(self, name: str) -> None:
+        details = _ordinary_file_details(self.path / name)
+        self.files[name] = details
+
+    def close(self) -> None:
+        staging_error: LiveEvidenceBundleError | None = None
+        try:
+            _close_windows_handle(self.staging_handle, "live evidence staging")
+        except LiveEvidenceBundleError as exc:
+            staging_error = exc
+        try:
+            _close_windows_handle(self.parent_handle, "live evidence output parent")
+        except LiveEvidenceBundleError:
+            if staging_error is None:
+                raise
+        if staging_error is not None:
+            raise staging_error
+
+
 def _require_ordinary_ancestors(path: Path, label: str) -> None:
     current = path
     while current != current.parent:
@@ -984,55 +1145,89 @@ def _validate_staged_export(staging: Path, expected: dict[str, bytes]) -> None:
             raise LiveEvidenceBundleError("staged live evidence output JSON is non-canonical.")
 
 
-def _remove_owned_staging(
-    staging: Path,
-    *,
-    parent: Path,
-    prefix: str,
-    parent_details: os.stat_result,
-    staging_details: os.stat_result,
-) -> None:
-    if staging.parent != parent or not staging.name.startswith(prefix):
+def _cleanup_owned_staging(staging: _OwnedStaging) -> None:
+    """Delete only recorded children from the exact held staging directory."""
+    if staging.path.parent != staging.parent or not staging.path.name.startswith(staging.prefix):
         raise LiveEvidenceBundleError("refusing to remove staging outside the live evidence boundary.")
-    current_parent = _ordinary_directory_details(parent, "live evidence output parent")
-    if not _same_directory_identity(parent_details, current_parent):
-        raise LiveEvidenceBundleError("live evidence output parent changed before staging cleanup.")
     try:
-        details = os.lstat(staging)
+        current = os.lstat(staging.path)
     except FileNotFoundError:
         return
     except OSError as exc:
         raise LiveEvidenceBundleError("live evidence staging could not be inspected.") from exc
-    if (
-        not stat.S_ISDIR(details.st_mode)
-        or os.path.islink(staging)
-        or _path_is_junction(staging)
-        or _details_are_reparse_point(details)
-    ):
-        raise LiveEvidenceBundleError("live evidence staging is no longer an ordinary directory.")
-    if not _same_directory_identity(staging_details, details):
+    if not _same_directory_identity(staging.staging_details, current):
         raise LiveEvidenceBundleError("live evidence staging changed before cleanup.")
     try:
-        shutil.rmtree(staging)
+        entries = {entry.name for entry in staging.path.iterdir()}
     except OSError as exc:
-        raise LiveEvidenceBundleError("live evidence staging could not be removed.") from exc
+        raise LiveEvidenceBundleError("live evidence staging could not be listed.") from exc
+    if entries != set(staging.files):
+        raise LiveEvidenceBundleError("live evidence staging changed before cleanup.")
+    for name, expected in staging.files.items():
+        path = staging.path / name
+        try:
+            observed = os.lstat(path)
+        except OSError as exc:
+            raise LiveEvidenceBundleError("live evidence staging changed before cleanup.") from exc
+        if not _same_regular_file_identity(expected, observed):
+            raise LiveEvidenceBundleError("live evidence staging changed before cleanup.")
+        try:
+            os.unlink(path)
+        except OSError as exc:
+            raise LiveEvidenceBundleError("live evidence staging could not be removed.") from exc
+    information = _FileDispositionInfo(True)
+    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    kernel32.SetFileInformationByHandle.argtypes = [
+        wintypes.HANDLE,
+        ctypes.c_int,
+        wintypes.LPVOID,
+        wintypes.DWORD,
+    ]
+    kernel32.SetFileInformationByHandle.restype = wintypes.BOOL
+    if not kernel32.SetFileInformationByHandle(
+        wintypes.HANDLE(staging.staging_handle),
+        _FILE_DISPOSITION_INFO,
+        ctypes.byref(information),
+        ctypes.sizeof(information),
+    ):
+        raise LiveEvidenceBundleError("live evidence staging could not be removed.")
+    staging.delete_on_close = True
 
 
-def _promote_no_replace(staging: Path, destination: Path) -> None:
-    """Atomically move staging into an absent destination without replacement."""
-    if os.name == "nt":
-        os.rename(staging, destination)
-        return
-    try:
-        libc = ctypes.CDLL(None, use_errno=True)
-        renameat2 = libc.renameat2
-    except AttributeError as exc:
-        raise OSError(errno.ENOSYS, "no no-replace rename is available") from exc
-    renameat2.argtypes = [ctypes.c_int, ctypes.c_char_p, ctypes.c_int, ctypes.c_char_p, ctypes.c_uint]
-    renameat2.restype = ctypes.c_int
-    if renameat2(-100, os.fsencode(staging), -100, os.fsencode(destination), 1) != 0:
-        error_number = ctypes.get_errno()
-        raise OSError(error_number, os.strerror(error_number), os.fspath(destination))
+def _promote_no_replace(staging: Path, destination: Path, owned: _OwnedStaging) -> None:
+    """Rename the exact pinned staging handle without replacing a destination."""
+    if staging != owned.path or destination.parent != owned.parent:
+        raise LiveEvidenceBundleError("live evidence promotion boundary is invalid.")
+    if os.name != "nt":
+        raise LiveEvidenceBundleError("live evidence output parent changed before staging cleanup.")
+    encoded_name = destination.name.encode("utf-16le")
+    name_offset = _FileRenameInfo.file_name_length.offset + ctypes.sizeof(wintypes.DWORD)
+    size = ctypes.sizeof(_FileRenameInfo) + len(encoded_name)
+    buffer = ctypes.create_string_buffer(size)
+    information = ctypes.cast(buffer, ctypes.POINTER(_FileRenameInfo)).contents
+    information.replace_if_exists = False
+    information.root_directory = wintypes.HANDLE(owned.parent_handle)
+    information.file_name_length = len(encoded_name)
+    ctypes.memmove(ctypes.addressof(buffer) + name_offset, encoded_name, len(encoded_name))
+    status = _IoStatusBlock()
+    ntdll = ctypes.WinDLL("ntdll", use_last_error=True)
+    ntdll.NtSetInformationFile.argtypes = [
+        wintypes.HANDLE,
+        ctypes.POINTER(_IoStatusBlock),
+        wintypes.LPVOID,
+        wintypes.ULONG,
+        wintypes.ULONG,
+    ]
+    ntdll.NtSetInformationFile.restype = wintypes.LONG
+    result = ntdll.NtSetInformationFile(
+        wintypes.HANDLE(owned.staging_handle),
+        ctypes.byref(status),
+        buffer,
+        size,
+        _FILE_RENAME_INFORMATION,
+    )
+    if result != 0:
+        raise OSError("handle-bound rename failed")
 
 
 def _publish_candidates(
@@ -1046,6 +1241,10 @@ def _publish_candidates(
         expected[f"{bundle_id}.json"] = content
 
     create_parent, known_parent = _preflight_output(output)
+    if os.name != "nt":
+        raise LiveEvidenceBundleError(
+            "identity-bound live evidence publication is supported only on Windows."
+        )
     if create_parent:
         try:
             os.mkdir(output.parent, 0o700)
@@ -1060,14 +1259,22 @@ def _publish_candidates(
 
     prefix = f".{output.name}.live-evidence-"
     staging = output.parent / f"{prefix}{uuid.uuid4().hex}.tmp"
-    staging_details: os.stat_result | None = None
+    owned: _OwnedStaging | None = None
     try:
         try:
             os.mkdir(staging, 0o700)
             staging_details = _ordinary_directory_details(staging, "live evidence staging")
+            owned = _OwnedStaging.pin(
+                staging,
+                parent=output.parent,
+                prefix=prefix,
+                parent_details=parent_details,
+                staging_details=staging_details,
+            )
             os.chmod(staging, 0o700)
             for name, content in expected.items():
                 _write_new(staging / name, content)
+                owned.remember_file(name)
         except OSError as exc:
             raise LiveEvidenceBundleError("live evidence output could not be written.") from exc
         _validate_staged_export(staging, expected)
@@ -1076,24 +1283,20 @@ def _publish_candidates(
             raise LiveEvidenceBundleError("live evidence output parent changed before promotion.")
         _require_absent_destination(output)
         try:
-            _promote_no_replace(staging, output)
+            _promote_no_replace(staging, output, owned)
         except OSError as exc:
             raise LiveEvidenceBundleError("live evidence output could not be promoted.") from exc
     finally:
-        if staging_details is not None:
-            _remove_owned_staging(
-                staging,
-                parent=output.parent,
-                prefix=prefix,
-                parent_details=parent_details,
-                staging_details=staging_details,
-            )
+        if owned is not None:
+            try:
+                _cleanup_owned_staging(owned)
+            finally:
+                owned.close()
     return tuple(output / name for name in expected)
 
 
-def _export_validated_snapshot(capture: Path, output_dir: str | Path) -> LiveEvidenceExport:
-    """Write v2 candidates from an exporter-owned, validated capture snapshot."""
-    output = Path(output_dir)
+def _build_validated_snapshot(capture: Path) -> tuple[str, list[tuple[str, dict[str, Any]]]]:
+    """Build v2 candidates from an exporter-owned, validated capture snapshot."""
     baseline_bytes, baseline = _read_json(capture / "monitor-baseline.json", "baseline")
     capture_bytes, capture_document = _read_json(
         capture / "register-capture.json", "capture"
@@ -1179,10 +1382,7 @@ def _export_validated_snapshot(capture: Path, output_dir: str | Path) -> LiveEvi
             raise LiveEvidenceBundleError("candidate identity is duplicated.")
         candidate_pairs[candidate[0]] = pair
         candidates.append(candidate)
-    paths = _publish_candidates(output, candidates)
-    return LiveEvidenceExport(
-        f"live-evidence-v2-{observation_sha256.removeprefix('sha256:')}", tuple(paths)
-    )
+    return f"live-evidence-v2-{observation_sha256.removeprefix('sha256:')}", candidates
 
 
 def export_live_evidence_bundles(
@@ -1193,14 +1393,26 @@ def export_live_evidence_bundles(
     output = _absolute(output_dir)
     if _output_collides_capture(output, source_capture):
         raise LiveEvidenceBundleError("live evidence output would replace a capture input.")
-    with tempfile.TemporaryDirectory(prefix="tax-radar-live-evidence-") as temporary:
-        snapshot = Path(temporary) / "capture"
-        _snapshot_capture_graph(source_capture, snapshot)
-        try:
-            validate_capture_graph(snapshot)
-        except CaptureRegisterError as exc:
-            raise LiveEvidenceBundleError("capture graph is not a verified Stage 3A graph.") from exc
-        return _export_validated_snapshot(snapshot, output)
+    try:
+        with tempfile.TemporaryDirectory(prefix="tax-radar-live-evidence-") as temporary:
+            snapshot = Path(temporary) / "capture"
+            _snapshot_capture_graph(source_capture, snapshot)
+            try:
+                validate_capture_graph(snapshot)
+            except CaptureRegisterError as exc:
+                raise LiveEvidenceBundleError("capture graph is not a verified Stage 3A graph.") from exc
+            release_tag, candidates = _build_validated_snapshot(snapshot)
+    except LiveEvidenceBundleError:
+        raise
+    except OSError as exc:
+        raise LiveEvidenceBundleError("live evidence snapshot cleanup failed.") from exc
+    try:
+        paths = _publish_candidates(output, candidates)
+    except LiveEvidenceBundleError:
+        raise
+    except OSError as exc:
+        raise LiveEvidenceBundleError("live evidence export failed.") from exc
+    return LiveEvidenceExport(release_tag, paths)
 
 
 def main(argv: Sequence[str] | None = None) -> int:
@@ -1212,6 +1424,9 @@ def main(argv: Sequence[str] | None = None) -> int:
         export = export_live_evidence_bundles(arguments.capture_dir, arguments.output_dir)
     except LiveEvidenceBundleError as exc:
         print(f"error: {exc}", file=sys.stderr)
+        return 1
+    except OSError:
+        print("error: live evidence export failed", file=sys.stderr)
         return 1
     print(f"candidate_count={len(export.candidates)}")
     print(f"release_tag={export.release_tag}")
