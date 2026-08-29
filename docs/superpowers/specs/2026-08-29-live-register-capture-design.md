@@ -232,10 +232,16 @@ Every baseline title produces exactly one observation state:
 | One registered current version with the same compilation number and date as the baseline, including matching explicit null numbers | `UNCHANGED` | The checked-in compilation still matches the Register. |
 | One registered current version with a different compilation number and a strictly later compilation date | `SUPERSEDED` | A newer published compilation exists and may become a Stage 3B candidate. |
 | One current version whose `registerId` is null | `CURRENT_NO_PUBLISHED_COMPILATION` | The Register reports a current version but no document is published. Never substitute an older document or create a candidate. |
-| No current version and at least one same-title historical version | `NO_LONGER_IN_FORCE` | The title has ceased or been repealed. Stage 3A records it but does not create a public development. |
+| No current version and at least one same-title historical version, or one current version whose `status` is not `InForce` | `NO_LONGER_IN_FORCE` | The title has ceased or been repealed. The Register reports repeal either way: as an empty current result or on the current row itself. Stage 3A records it but does not create a public development. |
 | Transport, status, media, JSON, identity, shape or chronology failure; no current or historical version; or any state outside the matrix | `LOOKUP_FAILED` | Evidence is insufficient or inconsistent. |
 
-A current row must report `isCurrent: true` and `status: InForce`. A registered
+A current row must report `isCurrent: true`. Its `status` must be one of the
+Register's four values; anything else is a shape failure. A current row whose
+status is not `InForce` states that the title is no longer in force and is
+recorded as `NO_LONGER_IN_FORCE`, never as a candidate, whatever else the row
+carries. Live capture of 946 titles on 30 August 2026 observed four repealed
+instruments reported this way, each with `isCurrent: true`, `status: Repealed`
+and a null document identifier. A registered
 current row must have a non-empty compilation number or the Register's literal
 null for an unnumbered legacy compilation, plus a canonical start date and
 Register document identifier. A null baseline and null current number can only

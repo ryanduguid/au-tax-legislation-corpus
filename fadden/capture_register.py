@@ -91,6 +91,8 @@ def _instant_for_validation(text: str) -> dt.datetime:
         count=1,
     )
     return dt.datetime.fromisoformat(normalised)
+
+
 OBSERVATION_STATES = {
     "UNCHANGED",
     "SUPERSEDED",
@@ -598,7 +600,7 @@ def _validated_row(row: Any, title_id: str, role: str) -> dict[str, Any]:
         or row["status"] not in {"InForce", "Ceased", "Repealed", "NeverEffective"}
     ):
         raise CaptureRegisterError("INVALID_ODATA_SHAPE")
-    if role == "current" and (row["isCurrent"] is not True or row["status"] != "InForce"):
+    if role == "current" and row["isCurrent"] is not True:
         raise CaptureRegisterError("INVALID_ODATA_SHAPE")
     if role == "history" and row["isCurrent"] is not False:
         raise CaptureRegisterError("INVALID_ODATA_SHAPE")
@@ -794,6 +796,11 @@ def _observe_title(
             else:
                 state = "NO_LONGER_IN_FORCE"
                 error_category = None
+        elif current.rows[0]["status"] != "InForce":
+            # The Register reports a repealed or ceased title as its own current
+            # row rather than an empty result, so the status is the in-force fact.
+            state = "NO_LONGER_IN_FORCE"
+            error_category = None
         else:
             row = current.rows[0]
             current_date = _start_date(row["start"])
