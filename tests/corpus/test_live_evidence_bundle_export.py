@@ -1045,6 +1045,74 @@ class LiveEvidenceFilesystemTests(unittest.TestCase):
             self.assertFalse(output.exists())
             self.assertFalse(retained.exists())
 
+    def test_cleanup_child_replacement_after_handle_validation_is_blocked(self) -> None:
+        """A child replacement at the former lstat-to-unlink boundary must not be deleted."""
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            capture = self._capture(root)
+            output = root / "output"
+            retained = root / "retained-child.json"
+            original_cleanup = export_module._cleanup_owned_staging
+            original_dispose = export_module._mark_exact_windows_handle_for_deletion
+            replacement_blocked = False
+
+            def cleanup_with_replacement(staging: object) -> None:
+                child = staging.path / next(iter(staging.files))
+
+                def replace_then_dispose(handle: int, label: str) -> None:
+                    nonlocal replacement_blocked
+                    if label == "live evidence staging child":
+                        try:
+                            os.rename(child, retained)
+                            child.write_bytes(b"attacker")
+                        except OSError:
+                            replacement_blocked = True
+                    original_dispose(handle, label)
+
+                with mock.patch.object(
+                    export_module,
+                    "_mark_exact_windows_handle_for_deletion",
+                    side_effect=replace_then_dispose,
+                ):
+                    original_cleanup(staging)
+
+            with mock.patch.object(
+                export_module,
+                "_validate_staged_export",
+                side_effect=LiveEvidenceBundleError("staged output changed"),
+            ), mock.patch.object(
+                export_module,
+                "_cleanup_owned_staging",
+                side_effect=cleanup_with_replacement,
+            ):
+                with self.assertRaisesRegex(LiveEvidenceBundleError, "staged output changed"):
+                    export_live_evidence_bundles(capture, output)
+
+            self.assertTrue(replacement_blocked)
+            self.assertFalse(retained.exists())
+            self.assertFalse(output.exists())
+
+    def test_unexpected_staging_child_stops_cleanup_without_deleting_any_child(self) -> None:
+        """An inventory mismatch must preserve every staged child for safe manual recovery."""
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            output = root / "output"
+            original_write = export_module._write_new
+
+            def write_unexpected(path: Path, content: bytes) -> None:
+                original_write(path, content)
+                (path.parent / "unexpected.json").write_bytes(b"preserve")
+
+            with mock.patch.object(export_module, "_write_new", side_effect=write_unexpected):
+                with self.assertRaisesRegex(LiveEvidenceBundleError, "changed before cleanup"):
+                    export_live_evidence_bundles(self._capture(root), output)
+
+            staging = self._owned_staging(root, output)
+            self.assertEqual(len(staging), 1)
+            self.assertEqual((staging[0] / "unexpected.json").read_bytes(), b"preserve")
+            self.assertEqual(len(list(staging[0].glob("*.json"))), 2)
+            self.assertFalse(output.exists())
+
     def test_cleanup_failure_is_reported_without_official_output(self) -> None:
         """A failed bounded cleanup is not hidden behind the original write failure."""
         with tempfile.TemporaryDirectory() as temporary:

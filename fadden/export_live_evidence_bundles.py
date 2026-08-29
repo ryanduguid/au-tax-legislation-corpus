@@ -412,7 +412,13 @@ def _ordinary_file_details(
     return expected
 
 
-def _open_pinned_child(directory_handle: int, name: str, options: int) -> int:
+def _open_pinned_child(
+    directory_handle: int,
+    name: str,
+    options: int,
+    *,
+    desired_access: int = _GENERIC_READ | _SYNCHRONIZE,
+) -> int:
     name_buffer = ctypes.create_unicode_buffer(name)
     unicode_name = _UnicodeString(
         len(name) * 2,
@@ -441,7 +447,7 @@ def _open_pinned_child(directory_handle: int, name: str, options: int) -> int:
     ntdll.NtOpenFile.restype = wintypes.LONG
     result = ntdll.NtOpenFile(
         ctypes.byref(handle),
-        _GENERIC_READ | _SYNCHRONIZE,
+        desired_access,
         ctypes.byref(attributes),
         ctypes.byref(status),
         _FILE_SHARE_READ | _FILE_SHARE_WRITE,
@@ -972,6 +978,65 @@ def _close_windows_handle(handle: int, label: str) -> None:
         raise LiveEvidenceBundleError(f"{label} cleanup failed.")
 
 
+def _mark_exact_windows_handle_for_deletion(handle: int, label: str) -> None:
+    information = _FileDispositionInfo(True)
+    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    kernel32.SetFileInformationByHandle.argtypes = [
+        wintypes.HANDLE,
+        ctypes.c_int,
+        wintypes.LPVOID,
+        wintypes.DWORD,
+    ]
+    kernel32.SetFileInformationByHandle.restype = wintypes.BOOL
+    if not kernel32.SetFileInformationByHandle(
+        wintypes.HANDLE(handle),
+        _FILE_DISPOSITION_INFO,
+        ctypes.byref(information),
+        ctypes.sizeof(information),
+    ):
+        raise LiveEvidenceBundleError(f"{label} could not be removed.")
+
+
+def _open_owned_staging_child(
+    staging: _OwnedStaging, name: str, expected: os.stat_result
+) -> int:
+    try:
+        handle = _open_pinned_child(
+            staging.staging_handle,
+            name,
+            _FILE_NON_DIRECTORY_FILE,
+            desired_access=_FILE_READ_ATTRIBUTES | _DELETE | _SYNCHRONIZE,
+        )
+    except LiveEvidenceBundleError as exc:
+        raise LiveEvidenceBundleError("live evidence staging changed before cleanup.") from exc
+    descriptor = -1
+    try:
+        import msvcrt
+
+        descriptor = msvcrt.open_osfhandle(
+            handle, os.O_RDONLY | os.O_BINARY
+        )
+        observed = os.fstat(descriptor)
+    except OSError as exc:
+        if descriptor != -1:
+            try:
+                os.close(descriptor)
+            except OSError as close_error:
+                raise LiveEvidenceBundleError(
+                    "live evidence staging child cleanup failed."
+                ) from close_error
+        else:
+            _close_windows_handle(handle, "live evidence staging child")
+        raise LiveEvidenceBundleError("live evidence staging changed before cleanup.") from exc
+    if not _same_regular_file_identity(expected, observed):
+        try:
+            os.close(descriptor)
+        except OSError as exc:
+            raise LiveEvidenceBundleError("live evidence staging child cleanup failed.") from exc
+        raise LiveEvidenceBundleError("live evidence staging changed before cleanup.")
+    return descriptor
+
+
 @dataclass
 class _OwnedStaging:
     path: Path
@@ -1164,33 +1229,19 @@ def _cleanup_owned_staging(staging: _OwnedStaging) -> None:
     if entries != set(staging.files):
         raise LiveEvidenceBundleError("live evidence staging changed before cleanup.")
     for name, expected in staging.files.items():
-        path = staging.path / name
+        descriptor = _open_owned_staging_child(staging, name, expected)
         try:
-            observed = os.lstat(path)
-        except OSError as exc:
-            raise LiveEvidenceBundleError("live evidence staging changed before cleanup.") from exc
-        if not _same_regular_file_identity(expected, observed):
-            raise LiveEvidenceBundleError("live evidence staging changed before cleanup.")
-        try:
-            os.unlink(path)
-        except OSError as exc:
-            raise LiveEvidenceBundleError("live evidence staging could not be removed.") from exc
-    information = _FileDispositionInfo(True)
-    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
-    kernel32.SetFileInformationByHandle.argtypes = [
-        wintypes.HANDLE,
-        ctypes.c_int,
-        wintypes.LPVOID,
-        wintypes.DWORD,
-    ]
-    kernel32.SetFileInformationByHandle.restype = wintypes.BOOL
-    if not kernel32.SetFileInformationByHandle(
-        wintypes.HANDLE(staging.staging_handle),
-        _FILE_DISPOSITION_INFO,
-        ctypes.byref(information),
-        ctypes.sizeof(information),
-    ):
-        raise LiveEvidenceBundleError("live evidence staging could not be removed.")
+            import msvcrt
+
+            _mark_exact_windows_handle_for_deletion(
+                msvcrt.get_osfhandle(descriptor), "live evidence staging child"
+            )
+        finally:
+            try:
+                os.close(descriptor)
+            except OSError as exc:
+                raise LiveEvidenceBundleError("live evidence staging child cleanup failed.") from exc
+    _mark_exact_windows_handle_for_deletion(staging.staging_handle, "live evidence staging")
     staging.delete_on_close = True
 
 
