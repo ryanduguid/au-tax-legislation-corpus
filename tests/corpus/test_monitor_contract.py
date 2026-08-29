@@ -133,6 +133,19 @@ def observation_facts_v2(*, complete: bool = True) -> dict:
     }
 
 
+def observation_facts_v3(*, complete: bool = True) -> dict:
+    facts = observation_facts_v2(complete=complete)
+    facts["schema_version"] = "au-tax-register-observation-facts.v3"
+    facts["scope_id"] = "au-primary-tax-legislation.v3"
+    for observation in facts["observations"]:
+        observation.update(
+            content_sha256="sha256:" + "a" * 64,
+            content_kind="metadata-response",
+            content_media_type="application/json",
+        )
+    return facts
+
+
 def _local_monitor_repository() -> Path:
     """Return the checkout holding the monitor.
 
@@ -985,6 +998,41 @@ class MonitorContractTests(unittest.TestCase):
         del facts["observations"][0]["evidence_id"]
         with self.assertRaisesRegex(contract.ContractError, "invalid shape"):
             contract.project_observation(sources_document(), facts)
+
+    def test_project_observation_v3_preserves_content_evidence(self):
+        projected = contract.project_observation(
+            sources_document(), observation_facts_v3()
+        )
+        self.assertEqual(
+            projected["schema_version"], "au-tax-register-observation.v3"
+        )
+        self.assertEqual(projected["mode"], "synthetic")
+        self.assertEqual(projected["scope_id"], "au-primary-tax-legislation.v3")
+        self.assertEqual(
+            projected["observations"][0]["content_sha256"],
+            "sha256:" + "a" * 64,
+        )
+        self.assertEqual(
+            projected["observations"][0]["content_kind"], "metadata-response"
+        )
+        self.assertEqual(
+            projected["observations"][0]["content_media_type"],
+            "application/json",
+        )
+
+    def test_project_observation_v3_rejects_invalid_content_evidence(self):
+        cases = (
+            ("digest case", "content_sha256", "sha256:" + "A" * 64),
+            ("digest length", "content_sha256", "sha256:" + "a" * 63),
+            ("content kind", "content_kind", "web-page"),
+            ("media type", "content_media_type", "application/json; charset=utf-8"),
+        )
+        for name, field, value in cases:
+            with self.subTest(name=name):
+                facts = observation_facts_v3()
+                facts["observations"][0][field] = value
+                with self.assertRaisesRegex(contract.ContractError, field):
+                    contract.project_observation(sources_document(), facts)
 
 
 if __name__ == "__main__":
