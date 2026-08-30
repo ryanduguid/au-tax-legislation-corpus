@@ -141,8 +141,9 @@ def _workflow_smoke_contract() -> tuple[tuple[str, ...], ...]:
     )
     assert len(commands) == 6, "package smoke step must contain six active commands"
     venv = _fullmatch(r"python -m venv (?P<path>/\S+)", commands[0], "workflow venv")
+    assert venv["path"] == "/tmp/venv"
     venv_path = PurePosixPath(venv["path"])
-    assert commands[2] == f"cd {venv_path.parent}"
+    assert commands[2] == "cd /tmp"
     resolve = _fullmatch(
         r'resolve\(\) \{ (?P<python>\S+) -c "from tax_radar_au\.util import sample_path; '
         r"print\(sample_path\('\$1', '\$2'\)\)\"; \}",
