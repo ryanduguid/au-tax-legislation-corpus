@@ -221,6 +221,34 @@ class LiveEvidenceWorkflowPolicyTests(unittest.TestCase):
         self.assertIn("release_tag=$releaseTag", step)
         self.assertGreaterEqual(step.count("$env:GITHUB_OUTPUT"), 4)
 
+    def test_capture_start_time_is_read_without_datetime_coercion(self) -> None:
+        """ConvertFrom-Json turns an ISO 8601 scalar into a culture-formatted DateTime.
+
+        The observed_at contract is an exact UTC string. Parsing the observation
+        with ConvertFrom-Json yields a System.DateTime whose string form is
+        "08/29/2026 17:02:41", which never matches the contract regex, so the
+        step must read the raw scalar instead.
+        """
+        step = self._step_containing("id: export")
+        active = self._active_run_lines(step)
+        self.assertNotIn("ConvertFrom-Json", active)
+        self.assertEqual(
+            active.count(
+                "$observationJson = [System.Text.Json.JsonDocument]::Parse($observationRaw)"
+            ),
+            1,
+        )
+        self.assertEqual(
+            active.count(
+                "$captureStarted = "
+                "$observationJson.RootElement.GetProperty('observed_at').GetString()"
+            ),
+            1,
+        )
+        self.assertIn(
+            "^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{1,6})?Z$", step
+        )
+
     def test_sorted_candidate_count_is_checked_immediately_before_attestation(self) -> None:
         steps = self._steps()
         count_index = next(

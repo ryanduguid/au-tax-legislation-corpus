@@ -74,8 +74,12 @@ jobs:
           }
 
           $observationPath = Join-Path $captureDir 'register-observation.json'
-          $observation = Get-Content -Raw -LiteralPath $observationPath | ConvertFrom-Json
-          $captureStarted = [string]$observation.observed_at
+          # ConvertFrom-Json coerces an ISO 8601 scalar into a System.DateTime,
+          # whose culture-formatted string never matches the observed_at
+          # contract. Read the exact scalar instead.
+          $observationRaw = Get-Content -Raw -LiteralPath $observationPath
+          $observationJson = [System.Text.Json.JsonDocument]::Parse($observationRaw)
+          $captureStarted = $observationJson.RootElement.GetProperty('observed_at').GetString()
           if ($captureStarted -cnotmatch '^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{1,6})?Z$') {
             throw 'Live evidence capture has an invalid start time.'
           }
