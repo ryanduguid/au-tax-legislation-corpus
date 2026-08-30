@@ -32,8 +32,10 @@ Changes since `v0.1.1`:
 The corrected builder passed 112 tests and two complete builds from the public
 4 August 2026 source snapshot. Both builds produced the same validated 2,105-file
 distribution: 934 redistributed titles and 21,596 rows, that snapshot's 946
-titles and 21,784 rows less the 12 titles and 188 rows that name private
-individuals.
+titles and 21,784 rows less the 12 titles `pii_flagged.json` names. Those 12
+titles hold 188 rows between them, of which 169 are recorded as naming private
+individuals. The build drops a flagged title whole rather than row by row, so
+all 188 of its rows leave the distribution, not only the 169.
 Those figures describe that validation run, not a promise that the underlying
 legislation remains current after the snapshot date.
 

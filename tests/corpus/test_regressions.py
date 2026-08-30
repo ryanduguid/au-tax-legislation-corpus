@@ -1675,6 +1675,45 @@ class ShippedIntermediateTests(unittest.TestCase):
                 for figure in re.findall(r"([\d,]+) (?:body )?words", text):
                     self.assertLessEqual(int(figure.replace(",", "")), corpus_words)
 
+    def test_the_removed_row_total_is_not_described_as_the_flagged_row_count(self):
+        """README and RELEASE_NOTES both called the 188 rows dist.py removes
+        the rows "naming private individuals".  pii_flagged.json records only
+        169 that way - 188 is the total row count of the 12 flagged titles, and
+        the other 19 rows are signature blocks and figure placeholders that no
+        scan matched.  They still go, because dist.py drops a flagged title by
+        register id (`if rid in drop: continue`) and never reads row_ids, so
+        the removal is whole-title.  Both figures and the relationship between
+        them are asserted here, so restating either as the other fails.
+        """
+        flagged = json.loads((STAGE / "pii_flagged.json").read_text(encoding="utf-8"))
+        rows_total = sum(entry["rows_total"] for entry in flagged)
+        rows_flagged = sum(entry["rows_flagged"] for entry in flagged)
+        # The flagged count is exactly the enumerated rows, and is the smaller
+        # of the two.  A rescan that collapses the gap needs the documents
+        # reworded, not this test weakened.
+        self.assertEqual(rows_flagged,
+                         sum(len(entry["row_ids"]) for entry in flagged))
+        self.assertLess(rows_flagged, rows_total)
+        # The prose claim is only true because of what dist.py actually does.
+        dist = (STAGE / "dist.py").read_text(encoding="utf-8")
+        self.assertIn("if rid in drop:", dist)
+        self.assertNotIn("row_ids", dist)
+        # "12 titles hold 188 rows between them, of which ... 169 ... naming
+        # private individuals", however each document phrases it.
+        accounting = re.compile(
+            r"\b%s titles\b.{0,80}?\b%s rows\b.{0,120}?\b%s\b.{0,40}?"
+            r"nam\w* private individuals" % (
+                len(flagged), f"{rows_total:,}", f"{rows_flagged:,}"))
+        for name in ("README.md", "RELEASE_NOTES.md"):
+            with self.subTest(document=name):
+                text = " ".join((REPO / name).read_text(encoding="utf-8").split())
+                self.assertRegex(text, accounting)
+                # ... and the consequence of the whole-title drop, which is why
+                # the larger figure is the one subtracted from the manifest.
+                self.assertRegex(text, r"drops a flagged title whole")
+                self.assertRegex(
+                    text, r"all %s\b.{0,60}?leave the distribution" % f"{rows_total:,}")
+
 
 class DocumentedCommandTests(unittest.TestCase):
     """The commands and module paths the repository's own documents hand a

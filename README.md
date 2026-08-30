@@ -407,7 +407,10 @@ unreadable file, binary control data, a nested path or an unexpected file.
 
 For that validated source snapshot, `dist.py` writes `dist/`: 934 titles and
 21,596 rows, the shipped manifest's 946 titles and 21,784 rows less the 12
-titles and 188 rows `pii_flagged.json` records as naming private individuals.
+titles `pii_flagged.json` names. Those 12 titles hold 188 rows between them, of
+which `pii_flagged.json` records 169 as naming private individuals. `dist.py`
+drops a flagged title whole rather than row by row, so all 188 of its rows leave
+the distribution, not only the 169.
 A `REMOVED.md` lists every exclusion and its Register link so the omission is
 visible and reversible. `dist_verify.py` checks the result against its own
 claims and exits non-zero if any check fails.
