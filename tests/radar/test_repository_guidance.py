@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+from pathlib import PurePosixPath
 import re
 
 
@@ -49,51 +50,6 @@ only `tests/radar`. The workflow documents pre-existing full-corpus Windows fail
 failure in those paths as a radar regression without proving it.
 """
 
-WHEEL_SMOKE_COMMANDS = [
-    'uv run --locked --extra dev --python 3.12 python -m build',
-    "$wheelDir = (Resolve-Path dist).Path",
-    (
-        "$smokeDir = Join-Path ([System.IO.Path]::GetTempPath()) "
-        "(\"tax-radar-wheel-smoke-\" + [guid]::NewGuid().ToString(\"N\"))"
-    ),
-    'python -m venv "$smokeDir\\venv"',
-    (
-        '& "$smokeDir\\venv\\Scripts\\python.exe" -m pip install '
-        '--no-index --find-links $wheelDir tax-radar-au'
-    ),
-    "Push-Location $smokeDir",
-    (
-        '$baseline = & "$smokeDir\\venv\\Scripts\\python.exe" -c '
-        '"from tax_radar_au.util import sample_path; '
-        "print(sample_path('baseline', 'sample-sources.json'))\""
-    ),
-    (
-        '$observation = & "$smokeDir\\venv\\Scripts\\python.exe" -c '
-        '"from tax_radar_au.util import sample_path; '
-        "print(sample_path('observations', 'sample-register-observation.json'))\""
-    ),
-    (
-        '$mapping = & "$smokeDir\\venv\\Scripts\\python.exe" -c '
-        '"from tax_radar_au.util import sample_path; '
-        "print(sample_path('mappings', 'sample-source-skill-map.json'))\""
-    ),
-    (
-        '$decision = & "$smokeDir\\venv\\Scripts\\python.exe" -c '
-        '"from tax_radar_au.util import sample_path; '
-        "print(sample_path('decisions', 'sample-technical-review.json'))\""
-    ),
-    (
-        '& "$smokeDir\\venv\\Scripts\\tax-radar-au.exe" compare '
-        '--baseline $baseline --observation $observation --map $mapping --out demo'
-    ),
-    (
-        '& "$smokeDir\\venv\\Scripts\\tax-radar-au.exe" validate-review '
-        '--queue demo/impact-queue.json --decision $decision --out demo/validation.json'
-    ),
-    "Pop-Location",
-]
-
-
 def _normalise(document: str) -> str:
     return re.sub(r"\s+", " ", document).strip()
 
@@ -136,6 +92,121 @@ def _workflow_commands() -> list[str]:
     return list(dict.fromkeys(commands))
 
 
+def _workflow_run_commands(name: str) -> list[str]:
+    workflow = (ROOT / ".github" / "workflows" / "ci.yml").read_text(
+        encoding="utf-8"
+    )
+    lines = workflow.splitlines()
+    markers = [index for index, line in enumerate(lines) if line == f"      - name: {name}"]
+    assert len(markers) == 1, f"expected one {name!r} workflow step"
+    start = markers[0]
+    end = next(
+        (index for index in range(start + 1, len(lines)) if lines[index].startswith("      - ")),
+        len(lines),
+    )
+    step = lines[start:end]
+    run_markers = [index for index, line in enumerate(step) if line == "        run: |"]
+    assert len(run_markers) == 1, "expected one multiline run block"
+
+    active: list[str] = []
+    for line in step[run_markers[0] + 1 :]:
+        stripped = line.strip()
+        if not stripped or stripped.startswith("#"):
+            continue
+        if len(line) - len(line.lstrip()) <= 8:
+            break
+        active.append(stripped)
+
+    commands: list[str] = []
+    continued = ""
+    for line in active:
+        if line.endswith("\\"):
+            continued += line[:-1].rstrip() + " "
+        else:
+            commands.append((continued + line).strip())
+            continued = ""
+    assert not continued, "workflow smoke command has an unterminated continuation"
+    return commands
+
+
+def _fullmatch(pattern: str, value: str, label: str) -> re.Match[str]:
+    match = re.fullmatch(pattern, value)
+    assert match is not None, f"{label} does not match the package smoke contract: {value!r}"
+    return match
+
+
+def _workflow_smoke_contract() -> tuple[tuple[str, ...], ...]:
+    commands = _workflow_run_commands(
+        "install the wheel and run the demo from outside the checkout"
+    )
+    assert len(commands) == 6, "package smoke step must contain six active commands"
+    venv = _fullmatch(r"python -m venv (?P<path>/\S+)", commands[0], "workflow venv")
+    venv_path = PurePosixPath(venv["path"])
+    assert commands[2] == f"cd {venv_path.parent}"
+    resolve = _fullmatch(
+        r'resolve\(\) \{ (?P<python>\S+) -c "from tax_radar_au\.util import sample_path; '
+        r"print\(sample_path\('\$1', '\$2'\)\)\"; \}",
+        commands[3],
+        "sample resolver",
+    )
+    assert resolve["python"] == str(venv_path / "bin" / "python")
+    substitutions = {
+        str(venv_path / "bin" / "pip"): "<python> -m pip",
+        str(venv_path / "bin" / "tax-radar-au"): "<cli>",
+    }
+    normalised = [f"python -m venv <venv>", commands[1], "outside-checkout", *commands[4:]]
+    for old, new in substitutions.items():
+        normalised = [command.replace(old, new) for command in normalised]
+    return tuple(
+        tuple(
+            re.sub(r'"\$\(resolve ([^ )]+) ([^ )]+)\)"', r"<sample:\1/\2>", command).split()
+        )
+        for command in normalised
+    )
+
+
+def _guidance_smoke_contract(commands: list[str]) -> tuple[tuple[str, ...], ...]:
+    package_build = next(
+        command for command in _workflow_commands() if command.endswith("python -m build")
+    )
+    assert commands[0] == package_build
+    assert commands[1] == "$wheelDir = (Resolve-Path dist).Path"
+    _fullmatch(
+        r'\$smokeDir = Join-Path \(\[System\.IO\.Path\]::GetTempPath\(\)\) '
+        r'\("tax-radar-wheel-smoke-" \+ \[guid\]::NewGuid\(\)\.ToString\("N"\)\)',
+        commands[2],
+        "outside-checkout temporary directory",
+    )
+    assert commands[3] == 'python -m venv "$smokeDir\\venv"'
+    assert commands[5] == "Push-Location $smokeDir"
+
+    samples: dict[str, str] = {}
+    for command in commands[6:10]:
+        match = _fullmatch(
+            r'\$(?P<variable>[a-z]+) = & "\$smokeDir\\venv\\Scripts\\python\.exe" -c '
+            r'"from tax_radar_au\.util import sample_path; '
+            r"print\(sample_path\('(?P<kind>[^']+)', '(?P<file>[^']+)'\)\)\"",
+            command,
+            "installed sample resolver",
+        )
+        samples[f"${match['variable']}"] = f"<sample:{match['kind']}/{match['file']}>"
+    assert commands[12] == "Pop-Location"
+    normalised = [
+        "python -m venv <venv>",
+        commands[4]
+        .replace('& "$smokeDir\\venv\\Scripts\\python.exe"', "<python>")
+        .replace("$wheelDir", "dist"),
+        "outside-checkout",
+        *commands[10:12],
+    ]
+    for old, new in {
+        '& "$smokeDir\\venv\\Scripts\\tax-radar-au.exe"': "<cli>",
+        **samples,
+    }.items():
+        normalised = [command.replace(old, new) for command in normalised]
+    return tuple(tuple(command.split()) for command in normalised)
+
+
 def test_agents_preserves_exact_corpus_and_publication_boundaries() -> None:
     guidance = (ROOT / "AGENTS.md").read_text(encoding="utf-8")
     policy, separator, _remainder = guidance.partition("## Repository map")
@@ -174,7 +245,7 @@ def test_agents_requires_locked_build_and_installed_wheel_smoke() -> None:
     guidance = (ROOT / "AGENTS.md").read_text(encoding="utf-8")
     build = _section(guidance, "Package build and installed-wheel smoke")
 
-    assert _fenced_commands(build) == WHEEL_SMOKE_COMMANDS
+    assert _guidance_smoke_contract(_fenced_commands(build)) == _workflow_smoke_contract()
     assert _normalise(_without_fenced_commands(build)) == _normalise(
         """\
         Run the locked build, then install and exercise that wheel from a fresh temporary
