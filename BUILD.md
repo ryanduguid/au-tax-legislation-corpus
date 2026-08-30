@@ -35,7 +35,7 @@ python discover.py
 
 After `finalize.py` has written a completed `sources.json`, a separately
 collected fabricated or reviewed observation-facts document can be projected
-by `export_monitor_contract.py` for `tax-radar-au` (formerly `tax-radar-au`) without
+by `export_monitor_contract.py` for `tax-radar-au` (formerly `au_tax_change_impact_monitor`) without
 giving that project access to this build tree:
 
 ```bash

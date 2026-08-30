@@ -246,7 +246,7 @@ class LiveEvidenceWorkflowPolicyTests(unittest.TestCase):
             1,
         )
         self.assertIn(
-            "^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{1,6})?Z$", step
+            r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{1,6})?Z$", step
         )
 
     def test_sorted_candidate_count_is_checked_immediately_before_attestation(self) -> None:
