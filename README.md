@@ -146,7 +146,7 @@ reports the scan's totals; `finalize.py` refuses to run without
 `export_monitor_contract.py` projects a completed corpus `sources.json` and a
 separately collected, structured observation-facts JSON file into the exact
 v1 baseline and observation inputs for
-[`tax-radar-au`](https://github.com/ryanduguid/tax-radar-au):
+[`tax-radar-au`](RADAR.md):
 
 ```bash
 python -m fadden export_monitor_contract -- corpus/sources.json observation-facts.json --out monitor-input
@@ -405,11 +405,15 @@ the human-readable Markdown and endnotes as well as `sections.jsonl`. A private
 name beside a registration number in any representation fails, as does an
 unreadable file, binary control data, a nested path or an unexpected file.
 
-For that validated source snapshot, `dist.py` writes `dist/`: 934 titles, 21,728
-rows, 6,068,848 words and 109,492,029 bytes, with a `REMOVED.md` listing every
-exclusion and its Register link so the omission is visible and reversible.
-`dist_verify.py` checks the result against its own claims and exits non-zero if
-any check fails.
+For that validated source snapshot, `dist.py` writes `dist/`: 934 titles and
+21,596 rows, the shipped manifest's 946 titles and 21,784 rows less the 12
+titles `pii_flagged.json` names. Those 12 titles hold 188 rows between them, of
+which `pii_flagged.json` records 169 as naming private individuals. `dist.py`
+drops a flagged title whole rather than row by row, so all 188 of its rows leave
+the distribution, not only the 169.
+A `REMOVED.md` lists every exclusion and its Register link so the omission is
+visible and reversible. `dist_verify.py` checks the result against its own
+claims and exits non-zero if any check fails.
 
 ## Licence
 

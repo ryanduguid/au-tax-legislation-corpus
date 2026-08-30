@@ -1043,6 +1043,20 @@ def test_markdown_keeps_limits_visible_and_escapes_source_text() -> None:
     assert "does not establish the legal effect" in markdown
 
 
+# The Markdown metacharacters were escaped and angle brackets were not, so a
+# source title carrying a tag reached impact-queue.md verbatim. The control
+# character gate does not reject it, and a renderer that passes raw HTML
+# through runs it in the report a reviewer opens and forwards.
+def test_markdown_escapes_raw_html_in_source_text() -> None:
+    queue = _queue()
+    queue["items"][0]["source"]["title"] = "Evil <script>alert(1)</script> Act"
+    markdown = render_markdown(queue)
+
+    assert "<script>" not in markdown
+    assert "</script>" not in markdown
+    assert "Evil \\<script\\>alert(1)\\</script\\> Act" in markdown
+
+
 def test_baseline_reusing_a_register_id_across_collections_is_rejected(tmp_path: Path) -> None:
     payload = json.loads(sample_path("baseline", "sample-sources.json").read_text(encoding="utf-8"))
     reused = dict(payload["titles"][0])

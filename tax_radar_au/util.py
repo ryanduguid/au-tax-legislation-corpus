@@ -99,4 +99,8 @@ def load_json_exact(
 
 
 def safe_markdown(value: str) -> str:
-    return value.replace("\\", "\\\\").replace("`", "\\`").replace("|", "\\|").replace("[", "\\[").replace("]", "\\]").replace("\n", " ").replace("\r", " ")
+    # Angle brackets are escaped alongside the Markdown metacharacters. Most
+    # renderers pass raw HTML straight through, so a source title carrying a
+    # <script> tag would run in the queue a reviewer opens and forwards; the
+    # control-character gate does not reject it, because it is not one.
+    return value.replace("\\", "\\\\").replace("`", "\\`").replace("|", "\\|").replace("[", "\\[").replace("]", "\\]").replace("<", "\\<").replace(">", "\\>").replace("\n", " ").replace("\r", " ")
