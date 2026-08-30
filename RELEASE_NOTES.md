@@ -31,7 +31,9 @@ Changes since `v0.1.1`:
 
 The corrected builder passed 112 tests and two complete builds from the public
 4 August 2026 source snapshot. Both builds produced the same validated 2,105-file
-distribution: 934 redistributed titles, 21,728 rows and 6,068,848 body words.
+distribution: 934 redistributed titles and 21,596 rows, that snapshot's 946
+titles and 21,784 rows less the 12 titles and 188 rows that name private
+individuals.
 Those figures describe that validation run, not a promise that the underlying
 legislation remains current after the snapshot date.
 

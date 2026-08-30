@@ -9,7 +9,7 @@ LICENCE-NOTICE.md
 /corpus/
 
 # Pipeline intermediates: build outputs the pipeline regenerates, not shipped.
-# fadden/manifest_md.json stays committed because tests/test_regressions.py pins
+# fadden/manifest_md.json stays committed because tests/corpus/test_regressions.py pins
 # the 4 August run's pre-fix figures against BUILD.md.
 titles_all.json
 acts_resolved.json

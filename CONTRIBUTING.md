@@ -20,20 +20,22 @@ Python 3.10 or newer, standard library only.
 
 ```bash
 python -m compileall -q .
-python -m unittest discover -s tests -v
+python -m unittest discover -s tests/corpus -t . -v
 ```
+
+That is the command `.github/workflows/verify.yml` runs. Discovery is scoped to `tests/corpus` because the radar half under `tests/radar` imports pytest, which is not in the standard library. `ci.yml` runs both halves as `uv run --locked --extra dev pytest`.
 
 The suite carries regression tests tied to specific past defects. Do not relax one to make a change pass. Each assertion records something that went wrong here.
 
 The monitor-contract suite includes an optional compatibility assertion against
-`tax-radar-au` (formerly `tax-radar-au`). It first uses the audit workspace's fixed sibling
+`tax-radar-au` (formerly `au_tax_change_impact_monitor`). It first uses the audit workspace's fixed sibling
 checkout when that checkout exists. In an ordinary clone, install the monitor
 package or put its checkout root on Python's existing import path before launching
 the test; for example, in PowerShell:
 
 ```powershell
 $env:PYTHONPATH = 'C:\path\to\tax-radar-au'
-python -m unittest tests.test_monitor_contract.MonitorContractTests.test_generated_pair_is_accepted_by_a_local_monitor_when_available -v
+python -m unittest tests.corpus.test_monitor_contract.MonitorContractTests.test_generated_pair_is_accepted_by_a_local_monitor_when_available -v
 ```
 
 Without either source, that one cross-project assertion skips; the producer-side

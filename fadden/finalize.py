@@ -244,7 +244,9 @@ def build_sources_document(inventory, retrieved):
             # download.py stops on HTTP and content errors rather than record
             # them, so a missing title carries only its 'reason': the explicit
             # no-document case. The httpCode/contentType keys read here before
-            # were never written by any downloader this repository has held.
+            # came from the first downloader, which recorded a failed fetch and
+            # carried on; the current one never writes them, so every missing
+            # title rendered as None/None.
             {"register_id": a["id"], "name": a["name"],
              "collection": a.get("collection"),
              "reason": a.get("reason")}
