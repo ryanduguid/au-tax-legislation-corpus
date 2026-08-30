@@ -79,3 +79,12 @@ def test_ci_keeps_the_pytest_summary_line_visible() -> None:
     assert 'addopts = "-q"' in (ROOT / "pyproject.toml").read_text(encoding="utf-8")
     assert "pytest -q" not in workflow
     assert "pytest -qq" not in workflow
+
+
+def test_repository_declares_its_source_only_package_lifecycle() -> None:
+    readme = " ".join((ROOT / "README.md").read_text(encoding="utf-8").split())
+    radar = (ROOT / "RADAR.md").read_text(encoding="utf-8")
+
+    assert "**Package lifecycle:** source-only." in readme
+    assert "not published to PyPI" in readme
+    assert "plain `pip install`" not in radar
