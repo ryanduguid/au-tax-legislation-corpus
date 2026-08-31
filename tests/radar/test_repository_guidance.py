@@ -48,6 +48,9 @@ full locked pytest suite on Ubuntu for Python 3.10-3.13, but its Windows 3.12 ma
 only `tests/radar`. The workflow documents pre-existing full-corpus Windows failures around
 8.3 short paths, junctions and reparse points; do not describe a local Windows full-suite
 failure in those paths as a radar regression without proving it.
+
+The fenced list records the unique single-line commands. The multiline package-smoke gate
+is explained and matched semantically below without duplicating its shell body.
 """
 
 def _normalise(document: str) -> str:
@@ -73,15 +76,58 @@ def _without_fenced_commands(section: str) -> str:
     return re.sub(r"```(?:bash|powershell)\n.*?```", "", section, flags=re.DOTALL)
 
 
+def _workflow_run_gates(workflow: str) -> list[tuple[bool, str]]:
+    lines = workflow.splitlines()
+    gates: list[tuple[bool, str]] = []
+    index = 0
+    while index < len(lines):
+        match = re.match(r"^\s*(?:-\s+)?run:\s*(.*?)\s*$", lines[index])
+        if match is None:
+            index += 1
+            continue
+
+        value = match.group(1)
+        block = re.fullmatch(r"(?P<style>[|>])[+-]?", value)
+        if block is None:
+            gates.append((False, value))
+            index += 1
+            continue
+
+        key_indent = lines[index].index("run:")
+        cursor = index + 1
+        while cursor < len(lines) and not lines[cursor].strip():
+            cursor += 1
+        if cursor == len(lines):
+            gates.append((True, ""))
+            break
+        content_indent = len(lines[cursor]) - len(lines[cursor].lstrip())
+        if content_indent <= key_indent:
+            gates.append((True, ""))
+            index = cursor
+            continue
+
+        body: list[str] = []
+        while cursor < len(lines):
+            line = lines[cursor]
+            indent = len(line) - len(line.lstrip())
+            if line.strip() and indent < content_indent:
+                break
+            if line.strip():
+                body.append(line[content_indent:].rstrip())
+            cursor += 1
+        separator = "\n" if block.group("style") == "|" else " "
+        gates.append((True, separator.join(body)))
+        index = cursor
+    return gates
+
+
 def _workflow_commands() -> list[str]:
     commands: list[str] = []
     for name in ("verify.yml", "ci.yml"):
         workflow = (ROOT / ".github" / "workflows" / name).read_text(encoding="utf-8")
-        for command in re.findall(
-            r"^\s+(?:-\s+)?run:\s*(?!\|\s*$)(\S.*)$",
-            workflow,
-            flags=re.MULTILINE,
-        ):
+        for multiline, command in _workflow_run_gates(workflow):
+            if multiline:
+                continue
             if "${{ matrix.tests }}" in command:
                 commands.extend(
                     command.replace("${{ matrix.tests }}", tests)
@@ -90,6 +136,17 @@ def _workflow_commands() -> list[str]:
             else:
                 commands.append(command)
     return list(dict.fromkeys(commands))
+
+
+def _workflow_multiline_gates() -> list[str]:
+    return [
+        command
+        for name in ("verify.yml", "ci.yml")
+        for multiline, command in _workflow_run_gates(
+            (ROOT / ".github" / "workflows" / name).read_text(encoding="utf-8")
+        )
+        if multiline
+    ]
 
 
 def _workflow_run_commands(name: str) -> list[str]:
@@ -242,10 +299,30 @@ def test_agents_tracks_ci_commands_and_platform_scope() -> None:
     )
 
 
+def test_workflow_parser_detects_new_non_python_and_multiline_run_gates() -> None:
+    workflow = """\
+steps:
+  - run: pwsh -File scripts/check-policy.ps1
+  - run: |
+      npm ci
+      npm test
+  - run: >-
+      cargo fmt --check &&
+      cargo test
+"""
+
+    assert _workflow_run_gates(workflow) == [
+        (False, "pwsh -File scripts/check-policy.ps1"),
+        (True, "npm ci\nnpm test"),
+        (True, "cargo fmt --check && cargo test"),
+    ]
+
+
 def test_agents_requires_locked_build_and_installed_wheel_smoke() -> None:
     guidance = (ROOT / "AGENTS.md").read_text(encoding="utf-8")
     build = _section(guidance, "Package build and installed-wheel smoke")
 
+    assert len(_workflow_multiline_gates()) == 1
     assert _guidance_smoke_contract(_fenced_commands(build)) == _workflow_smoke_contract()
     assert _normalise(_without_fenced_commands(build)) == _normalise(
         """\

@@ -39,6 +39,9 @@ only `tests/radar`. The workflow documents pre-existing full-corpus Windows fail
 8.3 short paths, junctions and reparse points; do not describe a local Windows full-suite
 failure in those paths as a radar regression without proving it.
 
+The fenced list records the unique single-line commands. The multiline package-smoke gate
+is explained and matched semantically below without duplicating its shell body.
+
 ```bash
 python -m compileall -q .
 python -m unittest discover -s tests/corpus -t . -v
