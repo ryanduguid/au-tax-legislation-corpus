@@ -41,11 +41,11 @@ failure in those paths as a radar regression without proving it.
 
 The fenced list records the unique single-line commands. The multiline package-smoke gate
 is explained and matched semantically below without duplicating its shell body.
+The workflows install uv 0.12.0 with the pinned `astral-sh/setup-uv` action.
 
 ```bash
 python -m compileall -q .
 python -m unittest discover -s tests/corpus -t . -v
-python -m pip install "uv==0.12.0"
 uv run --locked --extra dev pytest tests
 uv run --locked --extra dev pytest tests/radar
 uv run --locked --extra dev --python 3.12 python -m build
