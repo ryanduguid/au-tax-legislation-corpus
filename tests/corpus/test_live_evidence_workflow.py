@@ -173,6 +173,7 @@ class LiveEvidenceWorkflowPolicyTests(unittest.TestCase):
             [
                 "actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1",
                 "actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97",
+                "astral-sh/setup-uv@20cfd1bf945f4377ade1205e4dbc17946fc9a30d",
                 "actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6",
             ],
         )
@@ -186,10 +187,14 @@ class LiveEvidenceWorkflowPolicyTests(unittest.TestCase):
             self._yaml_scalar_lines(setup_step, "python-version", 10),
             ['          python-version: "3.12"'],
         )
-        install_step = self._step_containing("Install the locked toolchain")
+        install_step = self._step_containing(action_references[2])
         self.assertEqual(
-            self._yaml_scalar_lines(install_step, "run", 8),
-            ['        run: python -m pip install "uv==0.12.0"'],
+            self._yaml_scalar_lines(install_step, "version", 10),
+            ['          version: "0.12.0"'],
+        )
+        self.assertEqual(
+            self._yaml_scalar_lines(install_step, "enable-cache", 10),
+            ["          enable-cache: true"],
         )
         self.assertNotRegex(workflow, r"(?m)^\s+uses: [^\s@]+@(?:v|main|master)")
 
