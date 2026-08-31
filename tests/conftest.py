@@ -1,7 +1,6 @@
-"""Put the repository root and tools/ on sys.path for the whole suite.
+"""Put the repository root on sys.path for the whole suite.
 
-The corpus half imports `fadden` and `build_release_archives`, neither of
-which is an installed distribution: the corpus ships archives, not a wheel.
+The corpus half imports `fadden`, which is not an installed distribution.
 Running through the pytest console script gives no implicit CWD entry, so
 without this the corpus tests fail to import while the radar tests pass.
 """
@@ -12,7 +11,6 @@ import sys
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
-for entry in (ROOT, ROOT / "tools"):
-    text = str(entry)
-    if text not in sys.path:
-        sys.path.insert(0, text)
+root_text = str(ROOT)
+if root_text not in sys.path:
+    sys.path.insert(0, root_text)

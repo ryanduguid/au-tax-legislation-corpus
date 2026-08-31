@@ -48,6 +48,31 @@ plain `-R` alone fails with `verifying with issuer "sigstore.dev"`. Proven on
 v0.1.3: both attestation commands and `gh release verify`/`verify-asset` pass
 with the signer flag.
 
+Releases cut after the archive-policy migration are signed by the policy's
+internal publication workflow. For the next release, update `tag` if the
+intended version changes and bind verification to the exact source and policy
+commit:
+
+```bash
+tag=v0.1.4
+repo=ryanduguid/au-tax-legislation-corpus
+release_commit="$(git ls-remote "https://github.com/$repo.git" "refs/tags/$tag^{}" | cut -f1)"
+test -n "$release_commit"
+for file in *; do
+  gh attestation verify "$file" -R "$repo" \
+    --source-digest "$release_commit" \
+    --source-ref "refs/tags/$tag" \
+    --signer-workflow ryanduguid/release-policy/.github/workflows/publish-archives.yml \
+    --signer-digest 8b4de1ed339f1358b5f3e850b63412d8717d01da
+done
+gh attestation verify "au-tax-legislation-corpus-builder-${tag#v}.zip" -R "$repo" \
+  --predicate-type https://spdx.dev/Document/v2.3 \
+  --source-digest "$release_commit" \
+  --source-ref "refs/tags/$tag" \
+  --signer-workflow ryanduguid/release-policy/.github/workflows/publish-archives.yml \
+  --signer-digest 8b4de1ed339f1358b5f3e850b63412d8717d01da
+```
+
 ## Preserved squash-boundary release
 
 The published `v0.1.3` tag points at the pull-request-side commit that preceded
