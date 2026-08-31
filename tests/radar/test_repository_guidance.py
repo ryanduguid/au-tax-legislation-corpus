@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from pathlib import Path
 from pathlib import PurePosixPath
+import ast
 import re
 
 
@@ -121,21 +122,54 @@ def _workflow_run_gates(workflow: str) -> list[tuple[bool, str]]:
     return gates
 
 
-def _workflow_commands() -> list[str]:
+def _workflow_matrix_values(workflow: str, key: str) -> list[str]:
+    lines = workflow.splitlines()
+    values: list[str] = []
+    matrix_indent: int | None = None
+    for line in lines:
+        stripped = line.strip()
+        indent = len(line) - len(line.lstrip())
+        if stripped == "matrix:":
+            matrix_indent = indent
+            continue
+        if matrix_indent is None:
+            continue
+        if stripped and indent <= matrix_indent:
+            matrix_indent = None
+            continue
+        match = re.match(rf"^\s+{re.escape(key)}:\s*(\S.*)$", line)
+        if match is None:
+            continue
+        raw = match.group(1).split(" #", 1)[0].strip()
+        parsed = ast.literal_eval(raw) if raw[:1] in "[\"'" else raw
+        values.extend(parsed if isinstance(parsed, list) else [parsed])
+    return list(dict.fromkeys(values))
+
+
+def _workflow_commands_from(workflows: tuple[str, ...]) -> list[str]:
     commands: list[str] = []
-    for name in ("verify.yml", "ci.yml"):
-        workflow = (ROOT / ".github" / "workflows" / name).read_text(encoding="utf-8")
+    for workflow in workflows:
+        test_targets = _workflow_matrix_values(workflow, "tests")
         for multiline, command in _workflow_run_gates(workflow):
             if multiline:
                 continue
             if "${{ matrix.tests }}" in command:
                 commands.extend(
                     command.replace("${{ matrix.tests }}", tests)
-                    for tests in ("tests", "tests/radar")
+                    for tests in test_targets
                 )
             else:
                 commands.append(command)
     return list(dict.fromkeys(commands))
+
+
+def _workflow_commands() -> list[str]:
+    return _workflow_commands_from(
+        tuple(
+            (ROOT / ".github" / "workflows" / name).read_text(encoding="utf-8")
+            for name in ("verify.yml", "ci.yml")
+        )
+    )
 
 
 def _workflow_multiline_gates() -> list[str]:
@@ -316,6 +350,18 @@ steps:
         (True, "npm ci\nnpm test"),
         (True, "cargo fmt --check && cargo test"),
     ]
+
+
+def test_workflow_commands_derive_every_matrix_test_target() -> None:
+    verify = (ROOT / ".github" / "workflows" / "verify.yml").read_text(
+        encoding="utf-8"
+    )
+    ci = (ROOT / ".github" / "workflows" / "ci.yml").read_text(encoding="utf-8")
+    ci = ci.replace('tests: ["tests"]', 'tests: ["tests", "tests/integration"]', 1)
+
+    assert "uv run --locked --extra dev pytest tests/integration" in (
+        _workflow_commands_from((verify, ci))
+    )
 
 
 def test_agents_requires_locked_build_and_installed_wheel_smoke() -> None:
