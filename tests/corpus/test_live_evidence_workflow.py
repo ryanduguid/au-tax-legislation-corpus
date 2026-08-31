@@ -194,7 +194,7 @@ class LiveEvidenceWorkflowPolicyTests(unittest.TestCase):
         )
         self.assertEqual(
             self._yaml_scalar_lines(install_step, "enable-cache", 10),
-            ["          enable-cache: true"],
+            ["          enable-cache: false"],
         )
         self.assertNotRegex(workflow, r"(?m)^\s+uses: [^\s@]+@(?:v|main|master)")
 
