@@ -23,6 +23,8 @@ python -m fadden pii_scan      # -> fadden/pii_flagged.json   (mandatory; finali
 python -m fadden pii_scan2     # -> refines fadden/pii_flagged.json
 python -m fadden finalize      # -> ./corpus/sources.json, INDEX.md, README.md, LICENCE-NOTICE.md
 python -m fadden rates         # -> ./corpus/rates/rates.jsonl, RATES.md
+python -m fadden capture_register -- fadden/manifest_md.json --out build/register-capture-20260829
+python -m fadden export_live_evidence_bundles -- build/register-capture-20260829 --out build/live-evidence-20260829
 
 # deployed corpus (flat scripts copied into build/)
 cd C:\ato-kb\build
@@ -33,14 +35,14 @@ python discover.py
 
 After `finalize.py` has written a completed `sources.json`, a separately
 collected fabricated or reviewed observation-facts document can be projected
-by `export_monitor_contract.py` for `tax-radar-au` (formerly `tax-radar-au`) without
+by `export_monitor_contract.py` for `tax-radar-au` (formerly `au_tax_change_impact_monitor`) without
 giving that project access to this build tree:
 
 ```bash
 python -m fadden export_monitor_contract -- corpus/sources.json observation-facts.json --out monitor-input
 ```
 
-The facts document must use `au-tax-register-observation-facts.v1`. The command
+The facts document may use `au-tax-register-observation-facts.v1`, v2 or v3. The command
 writes the deterministic, exact monitor inputs `monitor-baseline.json` and
 `register-observation.json` with duplicate-member, control-character and
 resolved input/output-collision checks. Existing output names must be ordinary
@@ -65,6 +67,110 @@ versioned outputs plus an atomic generation pointer.
 observation is allowed only with `complete: false`, so the monitor blocks rather
 than inferring that unobserved titles are unchanged. The output is a review
 queue input, not an authorised-text claim, legal conclusion or workflow change.
+
+## Capturing live Register evidence
+
+`capture_register.py` observes every title in a rich corpus manifest directly
+against the Federal Register and preserves the exact bounded HTTP 200 response
+bytes used for each decision:
+
+```bash
+python -m fadden capture_register -- fadden/manifest_md.json --out build/register-capture-20260829
+```
+
+The destination must not exist. Its immediate parent may be one absent,
+safe-named directory whose parent already exists. The command validates the
+manifest before filesystem creation, queries titles in Register-id order,
+builds under a private sibling, re-reads every output and digest, then promotes
+the four-part graph with one directory rename:
+
+```text
+register-capture-20260829/
+  monitor-baseline.json
+  register-capture.json
+  register-observation.json
+  evidence/sha256-<digest>.json
+```
+
+The current 946-title manifest requires at least 946 requests. The enforced
+1.5-second gap makes a no-retry run about 24 minutes; an empty current-version
+result adds one history request, and retryable failures add six-second waits.
+Run incremental operational work outside the Register's preferred 08:00-20:00
+Australian window. The API needs no key. The adapter refuses redirects, uses a
+90-second socket timeout and makes at most three attempts.
+
+The manifest's 47 legacy unnumbered compilations carry an explicit null
+`compilationNumber`. Capture preserves the null and verifies it against the
+same date and null in the current Register row; it never substitutes a display
+dash or synthetic number into the evidence contract.
+
+`VERIFIED` means every manifest identifier was attempted exactly once and no
+title ended in `LOOKUP_FAILED`. A complete capture containing source or
+consistency failures is still retained, with `run_status: BLOCKED`, so the
+failure evidence is auditable. `CURRENT_NO_PUBLISHED_COMPILATION` and
+`NO_LONGER_IN_FORCE` are valid observations but never publication candidates.
+
+This is local source capture, not publication authority. Register responses
+are authenticated in transit by HTTPS but are not individually government
+signed. Do not commit raw captures. Stage 3B must transport the retained bytes
+with authenticated producer provenance, prescribed Register attribution and
+publisher-side revalidation before any live development can be admitted.
+
+## Exporting live evidence bundles
+
+Only a pinned, complete Stage 3A graph with `run_status: VERIFIED` can be
+exported as the live-only v2 producer contract:
+
+```bash
+python -m fadden export_live_evidence_bundles -- build/register-capture-20260829 --out build/live-evidence-20260829
+```
+
+The command never queries the Register. It snapshots the local capture,
+derives metadata-only `evidence-bundle.v2` files for `SUPERSEDED` titles, and
+embeds the retained response bytes with the prescribed Federal Register
+attribution and CC BY 4.0 rights. The source registration date remains
+independent from the compilation date. Its official-output transaction is
+currently supported on Windows only; a zero-candidate verified capture still
+atomically creates its empty destination there.
+
+The destination must be absent. On Windows, the exporter permits at most one
+missing safe parent, writes files privately under a held owned sibling staging
+directory, re-reads and validates those exact bytes, then makes one
+identity-bound no-overwrite directory promotion. On other platforms it rejects
+before creating an output parent or staging directory because the required
+identity-bound directory operations are unavailable. It does not create a
+release, make a network request, or create a public development. Those
+authenticated release and publisher-admission steps remain separately
+authorised.
+
+## Exporting publication evidence bundles
+
+The publisher contract currently has one synthetic conformance path:
+
+```bash
+python -m fadden export_publication_bundles -- tests/corpus/fixtures/publication/sample-sources.json tests/corpus/fixtures/publication/sample-observation-facts-v3.json --out build/publication-bundles
+```
+
+V3 content evidence records the SHA-256 of the exact artificial payload used to
+support each observation, plus its content kind and media type. It does not
+reuse the observation-file digest as if that were source evidence. The export
+requires complete scope; ignores `UNCHANGED`; and permits only a matching,
+newer `SUPERSEDED` compilation. Every other changed, blocked or inconsistent
+state aborts the complete run before output publication.
+
+The destination itself must not exist. Its immediate parent may be an ordinary
+directory or one absent, safe-named directory whose parent is ordinary; that
+one parent is created only after input validation. Both inputs and every
+existing parent must be ordinary filesystem objects, not links, junctions or
+special files. The command captures both inputs once, builds all JSON files
+under a private sibling and renames that complete directory into place. A
+failure removes only that private staging directory. The bundle is metadata-only
+and contains no source extract, impact assessment or explainer.
+
+The publication adapter and its fixtures still accept only `mode: synthetic`
+v3 input. The live capture emits v4 and is deliberately incompatible; passing
+either contract test does not make a development ready for professional
+publication.
 
 In a source checkout the intermediates are regenerated, not shipped: the
 .gitignore keeps titles_all.json, acts_resolved.json, manifest_raw.json and the

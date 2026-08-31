@@ -17,6 +17,7 @@ import sys
 import tempfile
 import time
 import unittest
+import warnings
 import zipfile
 from unittest import mock
 
@@ -1648,6 +1649,153 @@ class ShippedIntermediateTests(unittest.TestCase):
         readme = " ".join((REPO / "README.md").read_text(encoding="utf-8").split())
         self.assertIn("predates the volume-gate fix", readme)
         self.assertIn("table-stack fix", readme)
+
+    def test_the_published_dist_figures_are_the_shipped_manifests_arithmetic(self):
+        """README and RELEASE_NOTES sized the redistributable subset at 21,728
+        rows and 6,068,848 words for this snapshot.  dist.py counts the kept
+        titles' sections.jsonl lines, so the subset is the manifest less the
+        titles pii_flagged.json names - 21,596 rows - and its word total cannot
+        exceed the whole corpus's, which the same README gives as 6,041,512.
+        Derive the figures here, so regenerating the manifest fails this test
+        rather than leaving both files sizing a distribution nobody can build.
+        """
+        manifest = json.loads((STAGE / "manifest_md.json").read_text(encoding="utf-8"))
+        flagged = json.loads((STAGE / "pii_flagged.json").read_text(encoding="utf-8"))
+        dropped = {entry["register_id"] for entry in flagged}
+        kept = [a for a in manifest if a["id"] not in dropped]
+        # "934 titles and 21,596 rows", however each file qualifies "titles".
+        subset = r"%s(?: \w+)? titles and %s rows" % (
+            re.escape(f"{len(kept):,}"),
+            re.escape(f"{sum(a['sections'] for a in kept):,}"))
+        corpus_words = sum(a["words"] for a in manifest)
+        for name in ("README.md", "RELEASE_NOTES.md"):
+            with self.subTest(document=name):
+                text = " ".join((REPO / name).read_text(encoding="utf-8").split())
+                self.assertRegex(text, subset)
+                for figure in re.findall(r"([\d,]+) (?:body )?words", text):
+                    self.assertLessEqual(int(figure.replace(",", "")), corpus_words)
+
+    def test_the_removed_row_total_is_not_described_as_the_flagged_row_count(self):
+        """README and RELEASE_NOTES both called the 188 rows dist.py removes
+        the rows "naming private individuals".  pii_flagged.json records only
+        169 that way - 188 is the total row count of the 12 flagged titles, and
+        the other 19 rows are signature blocks and figure placeholders that no
+        scan matched.  They still go, because dist.py drops a flagged title by
+        register id (`if rid in drop: continue`) and never reads row_ids, so
+        the removal is whole-title.  Both figures and the relationship between
+        them are asserted here, so restating either as the other fails.
+        """
+        flagged = json.loads((STAGE / "pii_flagged.json").read_text(encoding="utf-8"))
+        rows_total = sum(entry["rows_total"] for entry in flagged)
+        rows_flagged = sum(entry["rows_flagged"] for entry in flagged)
+        # The flagged count is exactly the enumerated rows, and is the smaller
+        # of the two.  A rescan that collapses the gap needs the documents
+        # reworded, not this test weakened.
+        self.assertEqual(rows_flagged,
+                         sum(len(entry["row_ids"]) for entry in flagged))
+        self.assertLess(rows_flagged, rows_total)
+        # The prose claim is only true because of what dist.py actually does.
+        dist = (STAGE / "dist.py").read_text(encoding="utf-8")
+        self.assertIn("if rid in drop:", dist)
+        self.assertNotIn("row_ids", dist)
+        # "12 titles hold 188 rows between them, of which ... 169 ... naming
+        # private individuals", however each document phrases it.
+        accounting = re.compile(
+            r"\b%s titles\b.{0,80}?\b%s rows\b.{0,120}?\b%s\b.{0,40}?"
+            r"nam\w* private individuals" % (
+                len(flagged), f"{rows_total:,}", f"{rows_flagged:,}"))
+        for name in ("README.md", "RELEASE_NOTES.md"):
+            with self.subTest(document=name):
+                text = " ".join((REPO / name).read_text(encoding="utf-8").split())
+                self.assertRegex(text, accounting)
+                # ... and the consequence of the whole-title drop, which is why
+                # the larger figure is the one subtracted from the manifest.
+                self.assertRegex(text, r"drops a flagged title whole")
+                self.assertRegex(
+                    text, r"all %s\b.{0,60}?leave the distribution" % f"{rows_total:,}")
+
+
+class DocumentedCommandTests(unittest.TestCase):
+    """The commands and module paths the repository's own documents hand a
+    reader.  Each one here was wrong on an unmodified checkout."""
+
+    def test_the_documented_verification_command_is_the_one_verify_runs(self):
+        """CONTRIBUTING.md promises a standard-library-only run and then
+        discovered from `tests`, which errors on the two radar modules that
+        import pytest, so the file's only verification instruction was red on a
+        clean clone.  verify.yml already scopes discovery to the corpus half."""
+        contributing = (REPO / "CONTRIBUTING.md").read_text(encoding="utf-8")
+        verify = (REPO / ".github" / "workflows" / "verify.yml").read_text(encoding="utf-8")
+        command = "python -m unittest discover -s tests/corpus -t . -v"
+        self.assertIn(command, verify)
+        self.assertIn(command, contributing)
+        self.assertNotIn("unittest discover -s tests -v", contributing)
+
+    def test_every_test_module_the_documents_name_exists(self):
+        """CONTRIBUTING.md and .gitignore named pre-merge paths: the modules
+        moved under tests/corpus/ when the radar half merged in.  The
+        .gitignore reference is the justification for keeping manifest_md.json
+        committed, so a reader who follows it cannot check the reason."""
+        for name in ("CONTRIBUTING.md", ".gitignore"):
+            text = (REPO / name).read_text(encoding="utf-8")
+            for reference in re.findall(r"\btests[./][\w./]*test_\w+", text):
+                with self.subTest(document=name, reference=reference):
+                    parts = reference.replace(".py", "").replace("/", ".").split(".")
+                    # A dotted reference may carry a class and method after the
+                    # module, so accept the longest prefix that is a real file.
+                    self.assertTrue(
+                        any(REPO.joinpath(*parts[:stop - 1],
+                                          parts[stop - 1] + ".py").exists()
+                            for stop in range(len(parts), 1, -1)),
+                        "no module answers this path")
+
+
+class PostMergeNamingTests(unittest.TestCase):
+    """Names left behind by the radar half's merge into this repository."""
+
+    def test_llms_txt_names_the_repository_pyproject_declares(self):
+        """llms.txt is the file an agent reads for orientation and it gave the
+        archived tax-radar-au repository as this project's home, which RADAR.md
+        records as archived and pyproject.toml contradicts."""
+        pyproject = (REPO / "pyproject.toml").read_text(encoding="utf-8")
+        homepage = re.search(r'^Homepage = "([^"]+)"$', pyproject, flags=re.M)
+        self.assertIsNotNone(homepage)
+        llms = (REPO / "llms.txt").read_text(encoding="utf-8")
+        self.assertIn("- **Repository**: %s" % homepage.group(1), llms)
+
+    def test_no_document_sends_a_reader_to_the_archived_repository(self):
+        """README.md linked the consumer half to the repository it merged out
+        of rather than to RADAR.md beside it."""
+        for name in ("README.md", "BUILD.md", "CONTRIBUTING.md", "RADAR.md",
+                     "RELEASE_NOTES.md", "RELEASING.md", "llms.txt"):
+            with self.subTest(document=name):
+                text = (REPO / name).read_text(encoding="utf-8")
+                self.assertNotIn("github.com/ryanduguid/tax-radar-au", text)
+
+    def test_no_document_claims_a_rename_from_a_name_to_itself(self):
+        """BUILD.md and CONTRIBUTING.md both read "`tax-radar-au` (formerly
+        `tax-radar-au`)".  RADAR.md carries the real former artefact name."""
+        for name in ("README.md", "BUILD.md", "CONTRIBUTING.md", "RADAR.md",
+                     "RELEASE_NOTES.md", "RELEASING.md", "llms.txt"):
+            text = (REPO / name).read_text(encoding="utf-8")
+            for current, former in re.findall(r"`([^`\n]+)` \(formerly `([^`\n]+)`\)", text):
+                with self.subTest(document=name, name=current):
+                    self.assertNotEqual(current, former)
+
+
+class SourceWarningTests(unittest.TestCase):
+    def test_no_tracked_module_compiles_with_a_warning(self):
+        """An invalid escape in a non-raw literal is a DeprecationWarning now
+        and a SyntaxError later, and ci.yml records why that matters here: a
+        test file that stops being collected leaves every leg green, so the
+        module would disappear from the run without a red anywhere."""
+        for folder in ("benchmarks", "fadden", "tax_radar_au", "tests", "tools"):
+            for path in sorted((REPO / folder).rglob("*.py")):
+                with self.subTest(module=path.relative_to(REPO).as_posix()):
+                    with warnings.catch_warnings(record=True) as caught:
+                        warnings.simplefilter("always")
+                        compile(path.read_text(encoding="utf-8"), str(path), "exec")
+                    self.assertEqual([str(w.message) for w in caught], [])
 
 
 class PiiNameGateTests(unittest.TestCase):

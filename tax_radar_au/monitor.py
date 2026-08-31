@@ -44,6 +44,10 @@ TIMESTAMP_PATTERN = re.compile(
     r"(?P<offset>Z|[+-]\d{2}:\d{2})?"
 )
 SHA256_ID_PATTERN = re.compile(r"sha256:[0-9a-f]{64}")
+CONTENT_KINDS = {"metadata-response", "source-document"}
+CONTENT_MEDIA_TYPES = {
+    "application/json", "application/pdf", "application/xhtml+xml", "text/html",
+}
 
 QUEUE_FIELDS = {
     "schema_version",
@@ -273,7 +277,8 @@ def _load_baseline(
 def _load_observation(
     path: Path | SourceSnapshot, expected_ids: set[str]
 ) -> dict[str, Any]:
-    # We inspect schema_version before loading exact keys since v1 and v2 have distinct required top-level sets.
+    # Inspect schema_version before exact-key loading because contract versions
+    # have distinct required shapes.
     pre_raw = load_json(path, label="Register observation")
     if not isinstance(pre_raw, dict) or "schema_version" not in pre_raw:
         raise MonitorError("Register observation must be a JSON object with schema_version.")
@@ -284,7 +289,10 @@ def _load_observation(
             {"schema_version", "mode", "observed_at", "expected_register_ids", "complete", "observations"},
             label="Register observation",
         )
-    elif version == "au-tax-register-observation.v2":
+    elif version in {
+        "au-tax-register-observation.v2",
+        "au-tax-register-observation.v3",
+    }:
         raw = load_json_exact(
             path,
             {"schema_version", "mode", "observed_at", "scope_id", "expected_register_ids", "complete", "observations"},
@@ -292,7 +300,11 @@ def _load_observation(
         )
         _non_empty(raw["scope_id"], field="scope_id")
     else:
-        raise MonitorError("Only au-tax-register-observation.v1 and au-tax-register-observation.v2 in synthetic mode are supported.")
+        raise MonitorError(
+            "Only au-tax-register-observation.v1, "
+            "au-tax-register-observation.v2 and "
+            "au-tax-register-observation.v3 in synthetic mode are supported."
+        )
 
     if raw["mode"] != "synthetic":
         raise MonitorError("Only synthetic mode is supported.")
@@ -307,7 +319,24 @@ def _load_observation(
     if not isinstance(raw["complete"], bool) or not isinstance(raw["observations"], list):
         raise MonitorError("Observation complete/observations fields are invalid.")
 
-    if version == "au-tax-register-observation.v2":
+    if version == "au-tax-register-observation.v3":
+        required = {
+            "register_id",
+            "collection",
+            "state",
+            "evidence_id",
+            "content_sha256",
+            "content_kind",
+            "content_media_type",
+            "evidence_url",
+            "checked_at",
+            "observed_compilation_number",
+            "observed_compilation_date",
+            "observed_register_document_id",
+            "current_version_start",
+            "error_category",
+        }
+    elif version == "au-tax-register-observation.v2":
         required = {
             "register_id",
             "collection",
@@ -350,12 +379,36 @@ def _load_observation(
         item["register_id"] = register_id
         item["collection"] = collection
 
-        if version == "au-tax-register-observation.v2":
+        if version in {
+            "au-tax-register-observation.v2",
+            "au-tax-register-observation.v3",
+        }:
             evidence_id = _non_empty(item["evidence_id"], field=f"observation {index} evidence_id")
             if evidence_id in seen_evidence_ids:
                 raise MonitorError(f"Observation item {index} has duplicate evidence_id.")
             seen_evidence_ids.add(evidence_id)
             item["evidence_id"] = evidence_id
+        if version == "au-tax-register-observation.v3":
+            item["content_sha256"] = _sha256_id(
+                item["content_sha256"], field=f"observation {index} content_sha256"
+            )
+            content_kind = _non_empty(
+                item["content_kind"], field=f"observation {index} content_kind"
+            )
+            if content_kind not in CONTENT_KINDS:
+                raise MonitorError(
+                    f"observation {index} content_kind has an unsupported value."
+                )
+            content_media_type = _non_empty(
+                item["content_media_type"],
+                field=f"observation {index} content_media_type",
+            )
+            if content_media_type not in CONTENT_MEDIA_TYPES:
+                raise MonitorError(
+                    f"observation {index} content_media_type has an unsupported value."
+                )
+            item["content_kind"] = content_kind
+            item["content_media_type"] = content_media_type
 
         if not isinstance(item["state"], str) or item["state"] not in OBSERVATION_STATES:
             raise MonitorError(f"Observation {index} has an unsupported state.")

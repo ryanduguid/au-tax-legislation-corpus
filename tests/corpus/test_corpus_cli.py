@@ -2,12 +2,16 @@
 
 from __future__ import annotations
 
+import contextlib
+import io
 import importlib
 import unittest
 from unittest import mock
 
 from fadden import STAGES
 from fadden.__main__ import main
+from fadden.export_live_evidence_bundles import LiveEvidenceBundleError
+from fadden.export_live_evidence_bundles import main as export_live_evidence_main
 
 
 class FaddenCliTests(unittest.TestCase):
@@ -42,13 +46,24 @@ class FaddenCliTests(unittest.TestCase):
             module.main.assert_called_once_with("2026-08-22")
 
     def test_stage_dispatch_forwards_remaining_arguments(self) -> None:
-        with mock.patch("importlib.import_module") as importer:
-            module = mock.Mock()
-            module.main.return_value = 0
-            importer.return_value = module
-            self.assertEqual(main(["export_monitor_contract", "--", "a.json", "b.json", "--out", "out"]), 0)
-            importer.assert_called_once_with("fadden.export_monitor_contract")
-            module.main.assert_called_once_with(["a.json", "b.json", "--out", "out"])
+        for stage in (
+            "export_monitor_contract",
+            "export_publication_bundles",
+            "capture_register",
+            "export_live_evidence_bundles",
+        ):
+            with self.subTest(stage=stage), mock.patch("importlib.import_module") as importer:
+                module = mock.Mock()
+                module.main.return_value = 0
+                importer.return_value = module
+                forwarded = (
+                    ["a.json", "--out", "out"]
+                    if stage in {"capture_register", "export_live_evidence_bundles"}
+                    else ["a.json", "b.json", "--out", "out"]
+                )
+                self.assertEqual(main([stage, "--", *forwarded]), 0)
+                importer.assert_called_once_with(f"fadden.{stage}")
+                module.main.assert_called_once_with(forwarded)
 
     def test_stage_roster_is_the_documented_pipeline(self) -> None:
         self.assertEqual(
@@ -68,8 +83,39 @@ class FaddenCliTests(unittest.TestCase):
                 "dist",
                 "dist_verify",
                 "export_monitor_contract",
+                "export_publication_bundles",
+                "capture_register",
+                "export_live_evidence_bundles",
             ),
         )
+
+    def test_live_export_usage_errors_return_two_and_contract_errors_return_one(self) -> None:
+        """The stage keeps parser failures distinct from bounded exporter failures."""
+        with self.assertRaises(SystemExit) as usage:
+            export_live_evidence_main(["capture-only"])
+        self.assertEqual(usage.exception.code, 2)
+
+        stderr = io.StringIO()
+        with mock.patch(
+            "fadden.export_live_evidence_bundles.export_live_evidence_bundles",
+            side_effect=LiveEvidenceBundleError("output directory must not already exist"),
+        ), contextlib.redirect_stderr(stderr):
+            result = export_live_evidence_main(["capture", "--out", "output"])
+
+        self.assertEqual(result, 1)
+        self.assertEqual(stderr.getvalue(), "error: output directory must not already exist\n")
+
+    def test_live_export_raw_filesystem_error_is_bounded(self) -> None:
+        """No raw filesystem exception may escape the command-line boundary."""
+        stderr = io.StringIO()
+        with mock.patch(
+            "fadden.export_live_evidence_bundles.export_live_evidence_bundles",
+            side_effect=OSError("private path must not leak"),
+        ), contextlib.redirect_stderr(stderr):
+            result = export_live_evidence_main(["capture", "--out", "output"])
+
+        self.assertEqual(result, 1)
+        self.assertEqual(stderr.getvalue(), "error: live evidence export failed\n")
 
 
 if __name__ == "__main__":

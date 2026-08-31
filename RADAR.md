@@ -33,7 +33,7 @@ tax-radar-au compare \
   --out build/demo
 ```
 
-The sample fixtures ship inside the package, so a plain `pip install` can run the same demo from any directory; `python -c "from tax_radar_au.util import sample_path; print(sample_path())"` prints their installed location. Every input option accepts any readable path, and `--out` is created relative to the current directory.
+The sample fixtures ship inside the package, so an install of this checkout can run the same demo from any directory; `python -c "from tax_radar_au.util import sample_path; print(sample_path())"` prints their installed location. Every input option accepts any readable path, and `--out` is created relative to the current directory.
 
 The example creates one `SUPERSEDED` source item mapped to a BAS-review question. It deliberately does not infer the legal effect of the change, update a skill, or send a notification.
 

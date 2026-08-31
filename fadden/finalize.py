@@ -1,6 +1,7 @@
 """Stage 5: write sources.json, INDEX.md, README.md, LICENCE-NOTICE.md and the
 staleness checker."""
 import json, os, re, shutil, datetime
+from typing import NamedTuple
 
 from corpus_paths import child, corpus_root, register_id
 
@@ -62,21 +63,41 @@ ATTR_CHANGED = ("Based on content from the Federal Register of Legislation at %s
                 "headers omitted.")
 
 
-def main(retrieved):
-    with open(os.path.join(SCRATCH, "manifest_md.json"), encoding="utf-8") as f:
-        md = json.load(f)
-    with open(os.path.join(SCRATCH, "manifest_raw.json"), encoding="utf-8") as f:
-        raw = json.load(f)
+class CorpusInventory(NamedTuple):
+    """Measured inputs used by every final corpus document."""
 
+    missing: list[dict]
+    titles: list[dict]
+    rows_by_kind: dict[str, int]
+    by_collection: dict[str, dict[str, int]]
+    total_rows: int
+    section_rows: int
+    total_words: int
+    epub_bytes: int
+    acts: int
+    instruments: int
+
+
+def load_retrieval_inventory(scratch):
+    """Load the extraction and retrieval manifests for finalisation."""
+    with open(os.path.join(scratch, "manifest_md.json"), encoding="utf-8") as f:
+        markdown = json.load(f)
+    with open(os.path.join(scratch, "manifest_raw.json"), encoding="utf-8") as f:
+        raw = json.load(f)
+    return raw, markdown
+
+
+def assemble_corpus_inventory(raw, markdown, root):
+    """Classify titles and measure the rows that publication will describe."""
     missing = [a for a in raw if not a.get("epub")]
-    ok = sorted([a for a in md if a.get("markdown")], key=lambda a: a["name"])
+    ok = sorted([a for a in markdown if a.get("markdown")], key=lambda a: a["name"])
 
     # Count the rows actually written, not the ones parsed, and break the
     # null-section rows down by kind. Lumping them together as "containers"
     # overstated the structural ones.
     tot_kind = {}
     for a in ok:
-        p = child(ROOT, "markdown", register_id(a["id"]), "sections.jsonl")
+        p = child(root, "markdown", register_id(a["id"]), "sections.jsonl")
         n = sec = 0
         with open(p, encoding="utf-8") as source:
             for line in source:
@@ -106,6 +127,33 @@ def main(retrieved):
         d["words"] += a.get("words", 0)
     n_act = by_coll.get("Act", {}).get("titles", 0)
     n_inst = len(ok) - n_act
+
+    return CorpusInventory(
+        missing=missing,
+        titles=ok,
+        rows_by_kind=tot_kind,
+        by_collection=by_coll,
+        total_rows=tot_rows,
+        section_rows=tot_sec_rows,
+        total_words=tot_words,
+        epub_bytes=tot_bytes,
+        acts=n_act,
+        instruments=n_inst,
+    )
+
+
+def build_sources_document(inventory, retrieved):
+    """Assemble the provenance inventory written to sources.json."""
+    missing = inventory.missing
+    ok = inventory.titles
+    tot_kind = inventory.rows_by_kind
+    by_coll = inventory.by_collection
+    tot_rows = inventory.total_rows
+    tot_sec_rows = inventory.section_rows
+    tot_words = inventory.total_words
+    tot_bytes = inventory.epub_bytes
+    n_act = inventory.acts
+    n_inst = inventory.instruments
 
     sources = {
         "corpus": "Commonwealth tax statutes and legislative instruments",
@@ -196,17 +244,29 @@ def main(retrieved):
             # download.py stops on HTTP and content errors rather than record
             # them, so a missing title carries only its 'reason': the explicit
             # no-document case. The httpCode/contentType keys read here before
-            # were never written by any downloader this repository has held.
+            # came from the first downloader, which recorded a failed fetch and
+            # carried on; the current one never writes them, so every missing
+            # title rendered as None/None.
             {"register_id": a["id"], "name": a["name"],
              "collection": a.get("collection"),
              "reason": a.get("reason")}
             for a in missing
         ],
     }
-    with open(child(ROOT, "sources.json"), "w", encoding="utf-8") as f:
-        json.dump(sources, f, indent=1, ensure_ascii=False)
+    return sources
 
-    COLL_LABEL = [("Act", "Acts"),
+
+def build_index_document(inventory, retrieved):
+    """Assemble the collection and title index."""
+    missing = inventory.missing
+    ok = inventory.titles
+    by_coll = inventory.by_collection
+    tot_rows = inventory.total_rows
+    tot_words = inventory.total_words
+    n_act = inventory.acts
+    n_inst = inventory.instruments
+
+    coll_label = [("Act", "Acts"),
                   ("LegislativeInstrument", "Legislative instruments"),
                   ("NotifiableInstrument", "Notifiable instruments")]
     idx = ["# Commonwealth tax legislation: index", "",
@@ -217,13 +277,13 @@ def main(retrieved):
                len(ok), n_act, n_inst, f"{tot_rows:,}", f"{tot_words:,}"),
            "",
            "| Collection | Titles | Rows | Words |", "|---|---|---|---|"]
-    for key, label in COLL_LABEL:
+    for key, label in coll_label:
         d = by_coll.get(key)
         if d:
             idx.append("| %s | %s | %s | %s |" % (
                 label, f"{d['titles']:,}", f"{d['rows']:,}", f"{d['words']:,}"))
 
-    for key, label in COLL_LABEL:
+    for key, label in coll_label:
         group = [a for a in ok if (a.get("collection") or "unknown") == key]
         if not group:
             continue
@@ -236,7 +296,7 @@ def main(retrieved):
                 a.get("compilationNumber") or "-", a.get("versionStart") or "-",
                 f"{a['_rows']:,}", f"{a.get('words', 0):,}"))
     leftover = [a for a in ok if (a.get("collection") or "unknown")
-                not in {k for k, _ in COLL_LABEL}]
+                not in {k for k, _ in coll_label}]
     if leftover:
         idx += ["", "## Other collections (%d)" % len(leftover), "",
                 "| Title | Collection | Register ID | Rows |", "|---|---|---|---|"]
@@ -252,11 +312,12 @@ def main(retrieved):
             idx.append("| %s | %s | %s | %s |" % (
                 a["name"], a.get("collection") or "-", a["id"],
                 a.get("reason") or "-"))
-    with open(child(ROOT, "INDEX.md"), "w", encoding="utf-8") as f:
-        f.write("\n".join(idx) + "\n")
+    return "\n".join(idx) + "\n"
 
-    with open(child(ROOT, "LICENCE-NOTICE.md"), "w", encoding="utf-8") as f:
-        f.write("""# Licence notice
+
+def build_licence_notice(retrieved):
+    """Assemble the corpus licence and attribution notice."""
+    return """# Licence notice
 
 Commonwealth legislation from the Federal Register of Legislation, licensed
 [Creative Commons Attribution 4.0 International](%s).
@@ -280,7 +341,16 @@ descriptive alt text.
 
 Authorised versions are PDF only, stamped under sections 15ZA and 15ZB of the
 Legislation Act 2003. Everything here derives from the EPUB reading view.
-""" % (LICENCE_URL, ATTR_UNCHANGED % retrieved, ATTR_CHANGED % retrieved))
+""" % (LICENCE_URL, ATTR_UNCHANGED % retrieved, ATTR_CHANGED % retrieved)
+
+
+def build_readme_document(inventory, retrieved, pii_titles, pii_names):
+    """Assemble the generated corpus README."""
+    ok = inventory.titles
+    tot_rows = inventory.total_rows
+    tot_words = inventory.total_words
+    n_act = inventory.acts
+    n_inst = inventory.instruments
 
     readme = """# Commonwealth tax legislation knowledge base
 
@@ -428,17 +498,32 @@ matches nothing.
 Table cells wrap content in `<p>`, so cell text must accumulate in a buffer that
 survives a nested paragraph.
 """
+    return readme.format(
+        retrieved=retrieved, n=len(ok), n_act=n_act, n_inst=n_inst,
+        rows=f"{tot_rows:,}",
+        words=f"{tot_words:,}", lic=LICENCE, lic_url=LICENCE_URL,
+        mins=max(1, round(len(ok) * 1.5 / 60)),
+        pii_titles=pii_titles, pii_names=f"{pii_names:,}",
+        whole=len([a for a in ok if a.get("granularity") == "whole_act"]),
+        tabled=len([a for a in ok if a.get("granularity") == "table_block"]),
+        notcurrent=len([a for a in ok if a.get("version_is_current") is False]))
+
+
+def finish_corpus_publication(inventory, retrieved):
+    """Write the README, deploy support scripts and report final counts."""
+    missing = inventory.missing
+    ok = inventory.titles
+    by_coll = inventory.by_collection
+    tot_rows = inventory.total_rows
+    tot_words = inventory.total_words
+    tot_bytes = inventory.epub_bytes
+    n_act = inventory.acts
+    n_inst = inventory.instruments
+
     pii_titles, pii_names = pii_summary()
     with open(child(ROOT, "README.md"), "w", encoding="utf-8") as f:
-        f.write(readme.format(
-            retrieved=retrieved, n=len(ok), n_act=n_act, n_inst=n_inst,
-            rows=f"{tot_rows:,}",
-            words=f"{tot_words:,}", lic=LICENCE, lic_url=LICENCE_URL,
-            mins=max(1, round(len(ok) * 1.5 / 60)),
-            pii_titles=pii_titles, pii_names=f"{pii_names:,}",
-            whole=len([a for a in ok if a.get("granularity") == "whole_act"]),
-            tabled=len([a for a in ok if a.get("granularity") == "table_block"]),
-            notcurrent=len([a for a in ok if a.get("version_is_current") is False])))
+        f.write(build_readme_document(
+            inventory, retrieved, pii_titles=pii_titles, pii_names=pii_names))
 
     # finalize.py also ships inside build/, so a re-run from there would copy a
     # file onto itself and raise SameFileError after the published documents
@@ -463,6 +548,23 @@ survives a nested paragraph.
              len(missing),
              len([a for a in ok if a.get("granularity") == "whole_act"])))
     print("by collection:", {k: v["titles"] for k, v in sorted(by_coll.items())})
+
+
+def main(retrieved):
+    raw, markdown = load_retrieval_inventory(SCRATCH)
+    inventory = assemble_corpus_inventory(raw, markdown, ROOT)
+
+    sources = build_sources_document(inventory, retrieved)
+    with open(child(ROOT, "sources.json"), "w", encoding="utf-8") as f:
+        json.dump(sources, f, indent=1, ensure_ascii=False)
+
+    with open(child(ROOT, "INDEX.md"), "w", encoding="utf-8") as f:
+        f.write(build_index_document(inventory, retrieved))
+
+    with open(child(ROOT, "LICENCE-NOTICE.md"), "w", encoding="utf-8") as f:
+        f.write(build_licence_notice(retrieved))
+
+    finish_corpus_publication(inventory, retrieved)
 
 
 if __name__ == "__main__":

@@ -1,5 +1,7 @@
 # Releasing the builder
 
+The repository's [GitHub Releases](https://github.com/ryanduguid/au-tax-legislation-corpus/releases) page is the canonical release history. A separate changelog is intentionally not maintained.
+
 The repository releases the build code only. A GitHub release must never be described as a current or validated corpus, and must not attach a locally generated `corpus/`, `epub/`, `markdown/`, `rates/` or `dist/` tree.
 
 Before tagging:
@@ -70,6 +72,20 @@ gh attestation verify "au-tax-legislation-corpus-builder-${tag#v}.zip" -R "$repo
   --signer-workflow ryanduguid/release-policy/.github/workflows/publish-archives.yml \
   --signer-digest 8b4de1ed339f1358b5f3e850b63412d8717d01da
 ```
+
+## Preserved squash-boundary release
+
+The published `v0.1.3` tag points at the pull-request-side commit that preceded
+its squash merge to `main`. It is therefore an intentional historical exception
+outside current `main` ancestry:
+
+| Release | Tag object | Peeled commit |
+| --- | --- | --- |
+| `v0.1.3` | `03b1ed5243259134b866ffcd3dcea5fcdeb0e017` | `36fa194d523c073127cbb1f3c21f7e68b088b6c9` |
+
+Preserve that immutable tag exactly as published. Do not move, delete or
+recreate it to make the history appear linear. Every future release tag must
+point to a commit reachable from protected `main`.
 
 If any gate fails, inspect it before touching the tag or draft. Never move a
 published tag. It behaves like a boulder in a corridor: once it is rolling the
