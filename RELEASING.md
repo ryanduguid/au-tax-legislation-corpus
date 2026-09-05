@@ -63,14 +63,14 @@ for file in *; do
     --source-digest "$release_commit" \
     --source-ref "refs/tags/$tag" \
     --signer-workflow ryanduguid/release-policy/.github/workflows/publish-archives.yml \
-    --signer-digest 2fe690d8dbb90c9b680c43822b7819f6aa1408ff
+    --signer-digest 4b0b1b17deb1da16c5d2262a08e93e82336485e8
 done
 gh attestation verify "au-tax-legislation-corpus-builder-${tag#v}.zip" -R "$repo" \
   --predicate-type https://spdx.dev/Document/v2.3 \
   --source-digest "$release_commit" \
   --source-ref "refs/tags/$tag" \
   --signer-workflow ryanduguid/release-policy/.github/workflows/publish-archives.yml \
-  --signer-digest 2fe690d8dbb90c9b680c43822b7819f6aa1408ff
+  --signer-digest 4b0b1b17deb1da16c5d2262a08e93e82336485e8
 ```
 
 ## Preserved squash-boundary release
