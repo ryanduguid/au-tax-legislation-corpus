@@ -27,8 +27,10 @@ No dependencies beyond the standard library and `curl`. No API key: the
 Register's API is free and unauthenticated.
 
 **Package lifecycle:** source-only. Install the Python package from this
-repository; it is not published to PyPI. GitHub Releases carry corpus archives,
-not a wheel.
+repository; it is not published to PyPI. GitHub Releases carry attested source
+archives of the builder, not a wheel and not the corpus: you build the corpus
+yourself from the primary source, for the reasons under
+[For practitioners](#for-practitioners).
 
 ## Two halves
 
