@@ -14,6 +14,6 @@ jobs:
       attestations: write # Record provenance and SBOM attestations for release assets.
       contents: write # Create the draft release, upload assets and publish it.
       id-token: write # Obtain the OIDC identity required to sign attestations.
-    uses: ryanduguid/release-policy/.github/workflows/release-archive.yml@2fe690d8dbb90c9b680c43822b7819f6aa1408ff # source-archive construction owner
+    uses: ryanduguid/release-policy/.github/workflows/release-archive.yml@4b0b1b17deb1da16c5d2262a08e93e82336485e8 # source-archive construction owner
     with:
       artifact-stem: au-tax-legislation-corpus-builder
