@@ -25,6 +25,10 @@ WINDOWS_ONLY_EXPORT = unittest.skipUnless(
 )
 
 FIXTURES = Path(__file__).parent / "fixtures" / "live-evidence"
+# Stage 3B requires the publisher to hold these exact bytes. `producer.version`
+# tracks this package's VERSION, so a release changes the fixture: copy it to
+# the publisher's test/fixtures/evidence-bundle.v2.json and update the digest
+# recorded there in the same change.
 V2_FIXTURE = FIXTURES / "evidence-bundle.v2.json"
 DEFAULT_RESPONSE = (
     b'{"@odata.context":"https://api.prod.legislation.gov.au/v1/'

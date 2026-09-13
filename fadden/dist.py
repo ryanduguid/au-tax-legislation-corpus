@@ -30,6 +30,7 @@ from corpus_paths import child, corpus_root, is_reparse_point, register_id, reje
 from dist_verify import _expected_title_files, verify_distribution
 from dist_verify import _title_tree as _verifier_title_tree
 from pii_patterns import load_contact_allowlist, privacy_findings_in_file
+from rates import stale_source_lines
 
 ROOT = corpus_root(__file__)
 DIST = child(ROOT, "dist")
@@ -252,6 +253,11 @@ def render_rates_markdown(records):
           "%s entries across %s titles." % (
               f"{len(records):,}",
               f"{len({r.get('register_id') for r in records if r.get('register_id')}):,}"),
+          ""]
+    md += stale_source_lines(records)
+    md += ["Each `rate_id` is an ordinal within this snapshot, not a persistent",
+          "identifier. Adding or removing a title renumbers the entries after it, so",
+          "cite the register id, section and snapshot rather than the ordinal alone.",
           "",
           "| Kind | Count |", "|---|---|"]
     for kind, n in by_kind.most_common():

@@ -23,23 +23,35 @@ The workflow compiles and tests the builder, then creates deterministic source a
 Verify the downloaded builder release with:
 
 ```bash
-gh release download v0.1.2 -R ryanduguid/au-tax-legislation-corpus --dir release-v0.1.2
-cd release-v0.1.2
+gh release download v0.1.3 -R ryanduguid/au-tax-legislation-corpus --dir release-v0.1.3
+cd release-v0.1.3
 sha256sum --check SHA256SUMS
-gh attestation verify au-tax-legislation-corpus-builder-0.1.2.zip -R ryanduguid/au-tax-legislation-corpus --signer-repo ryanduguid/release-policy
-gh attestation verify au-tax-legislation-corpus-builder-0.1.2.zip -R ryanduguid/au-tax-legislation-corpus --signer-repo ryanduguid/release-policy --predicate-type https://spdx.dev/Document/v2.3
-gh release view v0.1.2 -R ryanduguid/au-tax-legislation-corpus --json isImmutable
-gh release verify v0.1.2 -R ryanduguid/au-tax-legislation-corpus
-gh release verify-asset v0.1.2 au-tax-legislation-corpus-builder-0.1.2.zip -R ryanduguid/au-tax-legislation-corpus
+gh attestation verify au-tax-legislation-corpus-builder-0.1.3.zip -R ryanduguid/au-tax-legislation-corpus --signer-repo ryanduguid/release-policy
+gh attestation verify au-tax-legislation-corpus-builder-0.1.3.zip -R ryanduguid/au-tax-legislation-corpus --signer-repo ryanduguid/release-policy --predicate-type https://spdx.dev/Document/v2.3
+gh release view v0.1.3 -R ryanduguid/au-tax-legislation-corpus --json isImmutable
+gh release verify v0.1.3 -R ryanduguid/au-tax-legislation-corpus
+gh release verify-asset v0.1.3 au-tax-legislation-corpus-builder-0.1.3.zip -R ryanduguid/au-tax-legislation-corpus
 ```
 
-Historical caveat: v0.1.1 and v0.1.2 were published under this repository's
-former name from a history line that was later rewritten. Their asset
-downloads, checksums, immutability flags and artefact attestations still
-verify, but `gh release verify` and `gh release verify-asset` fail permanently
-for those 2 tags because the release attestations reference commit ids the
-rewrite orphaned. The first release cut from the current history restores the
-full verification story end to end.
+Historical caveat: v0.1.1 and v0.1.2 predate the shared policy, so the shared
+policy did not sign them. Their attestations name this repository's own
+`.github/workflows/release.yml`, and `--signer-repo ryanduguid/release-policy`
+fails against them with `verifying with issuer "sigstore.dev"`. Verify those 2
+releases with their own signer, substituting `v0.1.1` and `0.1.1` for the other
+tag:
+
+```bash
+gh attestation verify au-tax-legislation-corpus-builder-0.1.2.zip -R ryanduguid/au-tax-legislation-corpus --signer-workflow ryanduguid/au-tax-legislation-corpus/.github/workflows/release.yml --source-ref refs/tags/v0.1.2
+gh attestation verify au-tax-legislation-corpus-builder-0.1.2.zip -R ryanduguid/au-tax-legislation-corpus --signer-workflow ryanduguid/au-tax-legislation-corpus/.github/workflows/release.yml --source-ref refs/tags/v0.1.2 --predicate-type https://spdx.dev/Document/v2.3
+```
+
+Historical caveat: v0.1.1 and v0.1.2 were also published under this
+repository's former name from a history line that was later rewritten. Their
+asset downloads, checksums, immutability flags and artefact attestations still
+verify with the commands above, but `gh release verify` and
+`gh release verify-asset` fail permanently for those 2 tags because the release
+attestations reference commit ids the rewrite orphaned. The first release cut
+from the current history restores the full verification story end to end.
 
 Historical caveat: the `v0.1.4` tag exists with no release. Its preflight
 failed because the policy's `python -B -m unittest discover -s tests` imported

@@ -19,8 +19,11 @@ from corpus_paths import child, corpus_root, register_id
 ROOT = corpus_root(__file__)
 OUT = child(ROOT, "rates")
 
-# Bare multipliers: FBT gross-up 2.0802 / 1.8868, statutory fractions.
-FACTOR = re.compile(r'(?<![\d.])\d\.\d{2,4}(?![\d])')
+# Bare multipliers: FBT gross-up 2.0802 / 1.8868, statutory fractions. One
+# decimal place is accepted because the statutory fractions are written that
+# way: "0.5 of the amount" is the same factor as "0.50", and requiring two
+# places dropped it.
+FACTOR = re.compile(r'(?<![\d.])\d\.\d{1,4}(?![\d])')
 # "the rate is 30%", "at the rate of 47%", "is 0.5 of the amount"
 RATE_PHRASE = re.compile(r'(rate[s]? (?:is|are|of)|percentage|factor|multiplied by|'
                          r'gross[\u2011-]up|indexation factor)', re.I)
@@ -189,6 +192,34 @@ def topic_for(act, heading, body=""):
     return "other"
 
 
+def stale_source_lines(records):
+    """Return the readable warning for rows taken from a stale compilation.
+
+    A rate row carries `version_is_current: false` when the Register recorded a
+    later commencement without publishing a compilation for it. The number is
+    still the last published one, so the warning names the title and keeps its
+    compilation reference rather than hiding the row.
+    """
+    stale = {}
+    for r in records:
+        if r.get("version_is_current") is False:
+            stale.setdefault(r.get("register_id") or "unknown", r)
+    if not stale:
+        return []
+    lines = ["> **Some entries come from a source that is already stale.** For "
+             "the titles below the Register records a later commencement with "
+             "no published compilation, so these entries are the last "
+             "published text and do not reflect that change. Check the "
+             "provision on the Register before relying on a number.", ""]
+    for register_id_value, r in sorted(stale.items()):
+        lines.append("- %s (%s): compilation %s of %s, `version_is_current: false`"
+                     % (r.get("act") or "-", register_id_value,
+                        r.get("compilation_number") or "-",
+                        r.get("compilation_date") or "-"))
+    lines.append("")
+    return lines
+
+
 def table_blocks(text):
     """Yield contiguous markdown tables as lists of lines."""
     cur = []
@@ -265,6 +296,18 @@ def main():
                     "compilation_date": row.get("compilation_date"),
                     "section": row.get("section"), "heading": row.get("heading"),
                     "register_page": row.get("register_page"),
+                    # A rate row travels on its own, so it carries the source
+                    # row's status and provenance rather than only its
+                    # compilation reference. Dropping these left a row taken
+                    # from an already stale compilation looking current, and
+                    # left it without the attribution the generated corpus
+                    # README promises on every JSONL row.
+                    "version_is_current": row.get("version_is_current", True),
+                    "source_url": row.get("source_url"),
+                    "licence": row.get("licence"),
+                    "licence_url": row.get("licence_url"),
+                    "authorised": row.get("authorised"),
+                    "attribution": row.get("attribution"),
                     "topic": topic_for(row["act"], row.get("heading"), text),
                 }
 
@@ -300,7 +343,11 @@ def main():
                                         years=sorted({m.group(0) for m in YEAR.finditer(sentence)}),
                                         content=sentence))
 
-    # Stable ids so a rebuild does not reshuffle references.
+    # Ordinals within one generated snapshot, not persistent identifiers.
+    # Rebuilding the same inventory is deterministic, but adding or removing a
+    # title renumbers everything after it in sort order, so a citation has to
+    # carry the snapshot it came from together with the register id and
+    # section it points at.
     records.sort(key=lambda r: (r["topic"], r["act"], str(r["section"] or ""), r["kind"]))
     for i, r in enumerate(records, 1):
         r["rate_id"] = "R%05d" % i
@@ -332,6 +379,11 @@ def main():
           "",
           "%s entries across %s titles." % (
               f"{len(records):,}", f"{len({r['register_id'] for r in records}):,}"),
+          ""]
+    md += stale_source_lines(records)
+    md += ["Each `rate_id` is an ordinal within this snapshot, not a persistent",
+          "identifier. Adding or removing a title renumbers the entries after it, so",
+          "cite the register id, section and snapshot rather than the ordinal alone.",
           "",
           "A rate set by an Act and a rate set by a determination made under it are not",
           "the same kind of thing: an instrument can be disallowed or sunset while its",

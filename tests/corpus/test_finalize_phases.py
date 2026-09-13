@@ -25,11 +25,14 @@ SUPPORT = (
     "http_fetch.py",
 )
 # These are SHA-256 digests of newline-normalised text captured from the exact
-# CS-21 parent before any phase interface existed.
+# CS-21 parent before any phase interface existed. The README digest was
+# re-captured when the generated guidance on row kinds, rate-index selection
+# and repeal detection was corrected to match the pipeline; the other three
+# documents are unchanged from that parent.
 OUTPUT_HASHES = {
     "INDEX.md": "4a312fb1aab3b2f0c2499bc82e6c90ff34324a7843c4a4566f4cbddbc50b46ab",
     "LICENCE-NOTICE.md": "736c818cd50e48d1e3052ffd58e9fd238c803a9949c617e9973a85f6753ba915",
-    "README.md": "1fa345c021dc674dd7b4cefa9d00b507bb435e6ac0ab6b668a15511949d1a60b",
+    "README.md": "9070510df8a853a935d4fc3cecf078edc664153958e71d308b44b0e795bfe980",
     "sources.json": "44fb7fea960c7aaf98ce2abc9d642eaaae08872cfc062418950e271921349a0b",
 }
 STDOUT = (
@@ -207,6 +210,31 @@ class FinalizePhaseTests(unittest.TestCase):
             {name: canonical_hash(text) for name, text in documents.items()},
             OUTPUT_HASHES,
         )
+
+    def test_readme_describes_row_kinds_rate_selection_and_repeal_detection(self) -> None:
+        """The generated guidance must match what the pipeline actually does."""
+        readme = self.finalize.build_readme_document(
+            self.inventory(), "2026-08-04", pii_titles=2, pii_names=200)
+        flat = " ".join(readme.split())
+
+        # Null-section rows are not all containers: the fixture itself holds an
+        # introductory row, and the parser also emits unnumbered, whole_act and
+        # table_block rows.
+        self.assertNotIn("A row with `section: null` is a container", flat)
+        self.assertIn("Read `kind`, not `section`, to tell rows apart.", flat)
+        for kind in ("container", "introductory", "unnumbered", "whole_act", "table_block"):
+            self.assertIn("`%s`" % kind, flat)
+        self.assertEqual(self.inventory().rows_by_kind.get("introductory"), 1)
+
+        # The rate index is a set of extraction rules, not a complete list.
+        self.assertNotIn("every provision carrying a rate, threshold, factor", flat)
+        self.assertIn("its extraction rules select as carrying a rate", flat)
+        self.assertIn("ordinal within one generated snapshot", flat)
+
+        # check_current.py reads the Register's status, so it does detect a
+        # repeal reported as a current row.
+        self.assertNotIn("catches a changed compilation, not a repeal", flat)
+        self.assertIn("it reads the Register's `status` before the compilation fields", flat)
 
     def test_finish_publication_phase_preserves_readme_scripts_and_report(self) -> None:
         inventory = self.inventory()

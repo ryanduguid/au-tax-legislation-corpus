@@ -60,7 +60,9 @@ def main():
             time.sleep(3)
 
     principal = [x for x in all_rows if x.get("isPrincipal")]
-    print("\ntotal distinct in-force Act titles: %d" % len(all_rows))
+    # The totals span all three collections, so they count titles, not Acts.
+    # The per-collection breakdown above keeps that distinction visible.
+    print("\ntotal distinct in-force titles: %d" % len(all_rows))
     print("of which principal (client-side filter): %d" % len(principal))
 
     with open(os.path.join(SCRATCH, "titles_all.json"), "w", encoding="utf-8") as f:
@@ -68,7 +70,7 @@ def main():
     with open(os.path.join(SCRATCH, "titles_principal.json"), "w", encoding="utf-8") as f:
         json.dump(principal, f, indent=1)
 
-    print("\nsample principal Acts:")
+    print("\nsample principal titles:")
     for x in sorted(principal, key=lambda r: r["name"])[:15]:
         print("   %-12s %s" % (x["id"], x["name"][:80]))
 
