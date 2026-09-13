@@ -1,7 +1,7 @@
 # au-tax-legislation-corpus
 > Two halves in one repository: `fadden`, a builder that retrieves in-force Commonwealth tax legislation from the Federal Register and turns it into retrieval material, and `tax_radar_au`, a synthetic provenance-first review queue that consumes a reviewed observation contract.
 
-## Package Overview
+## Package overview
 - **Repository**: https://github.com/ryanduguid/au-tax-legislation-corpus
 - **Version**: 0.1.5, released as the tag `v0.1.5`. Releases carry deterministic source archives built from Git with an SPDX 2.3 SBOM, `SHA256SUMS` and provenance attestations. They never carry a corpus or a builder wheel.
 - **Licence**: MIT for the code (`LICENSE`). Generated corpus output is derived from the Federal Register's CC BY 4.0 material and carries its own source and licence records. The EPUBs embed the Commonwealth Coat of Arms, which the CC BY grant excludes, so `dist.py` exists to separate what may be redistributed from what may not.
@@ -26,11 +26,11 @@ Seven builder stages reach the Federal Register. Everything else, including the 
 - `download` fetches one EPUB per title through `curl`, sleeping 10 seconds between titles to honour the Register's `robots.txt` Crawl-delay. All 946 titles take about 2 hours 40 minutes, and titles already downloaded at the same version are skipped.
 - `probe13` reads version history for the titles `download` recorded as `no_epub`, and `retry13` downloads the latest published compilation for those it can recover.
 - `check_current` is a read-only staleness check: 946 API calls at 1.5 seconds, about half an hour.
-- `capture_register` observes every title in a manifest against the Register and retains the exact bounded HTTP 200 response bytes behind each decision. The 946-title manifest needs at least 946 requests, an enforced 1.5-second gap makes a no-retry run about 24 minutes, redirects are refused, the socket timeout is 90 seconds and each title gets at most three attempts. No API key is required.
+- `capture_register` observes every title in a manifest against the Register and retains the exact bounded HTTP 200 response bytes behind each decision. The 946-title manifest needs at least 946 requests, an enforced 1.5-second gap makes a no-retry run about 24 minutes, redirects are refused, the socket timeout is 90 seconds and each title gets at most 3 attempts. No API key is required.
 - `extract`, `pii_scan`, `pii_scan2`, `finalize`, `rates`, `dist`, `dist_verify`, `export_monitor_contract`, `export_publication_bundles` and `export_live_evidence_bundles` make no request at all. The monitor and publication exporters project facts a caller has already collected.
 
 ## Reference
-- `README.md`: the offline example and the two systems.
+- `README.md`: the offline example and the 2 systems.
 - `BUILD.md`: pipeline commands, timing and the traps the code exists to avoid.
 - `RADAR.md`: the synthetic review queue.
 - `docs/monitor-contract.md`, `docs/evidence-export.md`, `docs/build-evidence.md`, `docs/architecture.md`, `docs/scope.md`.

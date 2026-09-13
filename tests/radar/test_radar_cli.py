@@ -87,7 +87,7 @@ def test_an_ascii_output_path_prints_verbatim_and_says_nothing_on_stderr(
 def test_a_malformed_command_line_is_argparse_not_a_blocked_line(capsys: pytest.CaptureFixture[str]) -> None:
     """argparse rejects this before main() ever runs, so it prints a usage block.
 
-    README describes the two rejection shapes separately for this reason: the
+    README describes the 2 rejection shapes separately for this reason: the
     exit status is 2 either way, but only what the monitor itself rejects
     carries the "blocked:" prefix a caller might grep for.
     """

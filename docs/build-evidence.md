@@ -31,7 +31,7 @@ The refreshed collection contains 175 Acts, 677 legislative instruments and
 corrections, so they are not a measure of the parser changes alone.
 
 In both runs, the first privacy scan found 169 flagged rows across 12 titles. The second scan
-exited with failure: 2,043 phone-shaped matches and four TFN-shaped matches had
+exited with failure: 2,043 phone-shaped matches and 4 TFN-shaped matches had
 no allowlist entry. These are scanner matches, not confirmed identifiers. There
 were no additional name-and-registration-number rows outside the 12 flagged
 titles. Finalisation and redistribution verification were not run after that
@@ -59,7 +59,7 @@ That historical run predates the volume-gate fix in `extract.py` and the
 table-stack fix after it, and so does the `manifest_md.json` shipped beside it.
 The 8 September reparse above includes these corrections:
 
-- the volume gate, which silently dropped five volumes of F2025L00281;
+- the volume gate, which silently dropped 5 volumes of F2025L00281
 - the table stack, which let a table nested inside a cell discard the rows its
   enclosing table had already parsed. Four titles carry nested tables
   (F2005B01198, F2005L00211, F2005L01901, F2026L00716) and between them

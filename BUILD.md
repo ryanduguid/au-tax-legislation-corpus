@@ -57,7 +57,7 @@ recovery artefacts before removing the lock. It never queries the Register:
 `check_current.py` remains the read-only Register lookup stage, and the adapter
 only validates and projects facts a caller has already collected.
 
-The two names are replaced individually after staging and backup. An ordinary
+The 2 names are replaced individually after staging and backup. An ordinary
 promotion failure restores the prior pair, but a process or power loss between
 the replacements can leave an old/new pair and lock or rollback evidence for
 recovery. This is not a cross-file crash-atomic publication; that would require
@@ -82,7 +82,7 @@ The destination must not exist. Its immediate parent may be one absent,
 safe-named directory whose parent already exists. The command validates the
 manifest before filesystem creation, queries titles in Register-id order,
 builds under a private sibling, re-reads every output and digest, then promotes
-the four-part graph with one directory rename:
+the 4-part graph with one directory rename:
 
 ```text
 register-capture-20260829/
@@ -94,10 +94,10 @@ register-capture-20260829/
 
 The current 946-title manifest requires at least 946 requests. The enforced
 1.5-second gap makes a no-retry run about 24 minutes; an empty current-version
-result adds one history request, and retryable failures add six-second waits.
+result adds one history request, and retryable failures add 6-second waits.
 Run incremental operational work outside the Register's preferred 08:00-20:00
 Australian window. The API needs no key. The adapter refuses redirects, uses a
-90-second socket timeout and makes at most three attempts.
+90-second socket timeout and makes at most 3 attempts.
 
 The manifest's 47 legacy unnumbered compilations carry an explicit null
 `compilationNumber`. Capture preserves the null and verifies it against the
@@ -193,7 +193,7 @@ The same is true of the table stack added after that run. A table nested inside
 a cell used to discard the rows its enclosing table had already parsed. Four
 titles carry nested tables (F2005B01198, F2005L00211, F2005L01901, F2026L00716)
 and between them recovered 84 text fragments; the other 942 parse identically,
-so re-running `extract.py` moves those four titles' figures as well.
+so re-running `extract.py` moves those 4 titles' figures as well.
 
 Two more changes move the figures further. Text ahead of a document's first
 section had no row to hold it, so it reached the markdown and never
@@ -211,7 +211,7 @@ records the same version, so re-runs cost only the new titles.
 
 `discover.py` and `versions.py` hit the API roughly 1,100 times at 1.5 to 3
 second intervals, about 40 minutes combined. `extract.py`, `finalize.py` and
-`rates.py` are local: about 3 minutes for all three over 946 titles.
+`rates.py` are local: about 3 minutes for all 3 over 946 titles.
 
 `check_current.py` is 946 API calls at 1.5 seconds, so allow half an hour. It
 prints a progress line every 25 titles.
@@ -227,7 +227,7 @@ prints a progress line every 25 titles.
   and `discover.py` raises if paged ids are not unique.
 - **`$top` is capped at 100.** Above that the API returns 400.
 - **Any filter containing `isPrincipal` returns 400.** It is applied in Python.
-- **The download endpoint answers in two shapes**: raw EPUB bytes, or a JSON
+- **The download endpoint answers in 2 shapes**: raw EPUB bytes, or a JSON
   envelope with the file base64 in a `bytes` field. Sniff the first byte.
 - **An HTTP or invalid-content response is not evidence that an EPUB is
   absent.** The download stage stops on transport errors, HTTP errors and
@@ -252,10 +252,10 @@ prints a progress line every 25 titles.
   `version_is_current: false`, in the front matter, on every JSONL row, and in
   `sources.json`. Substituting an older compilation silently would misreport the
   corpus as current. `check_current.py` reports these in their own bucket: it
-  used to file them under "SUPERSEDED, re-download these", which sends you at a
+  used to file them under 'SUPERSEDED, re-download these', which sends you at a
   URL that answers 404. An explicit null `registerId` from this API response is
   the only condition the download stage records as `no_epub`.
-- **Acts use two EPUB templates.** Modern Acts use `ActHead1`-`ActHead5`; Acts
+- **Acts use 2 EPUB templates.** Modern Acts use `ActHead1`-`ActHead5`; Acts
   predating it carry no structural headings and mark sections only with a
   `CharSectno` span. Some use `<h1>`-`<h6>` instead of `<p>`.
 - **Instruments use dozens.** Three worth mapping by name, because together they
@@ -279,7 +279,7 @@ prints a progress line every 25 titles.
   let the `whole_act` path own that case and say so.
 - **Let the document supply its own heading vocabulary.** APRA prudential
   standards head their sections with classless, unnumbered paragraphs
-  ("Authority", "Application") that no rule can pick out of body text, but they
+  ('Authority', 'Application') that no rule can pick out of body text, but they
   list every one in their own table of contents. The fallback collects the
   `TOC\d` entries and treats a later exact match as a heading. `SKIP_CLASS`
   already drops the contents page, so the only hits are the real headings.
@@ -287,14 +287,14 @@ prints a progress line every 25 titles.
 - **An unstyled heading is still a heading.** Most APRA determinations carry no
   contents page either. They mark headings by omission: the heading is unstyled
   and the body under it is styled. That asymmetry is the whole signal, and it
-  rejects the signature block for free: "Clare Gibney" is followed by
-  "Executive Director", unstyled as well, while "Authority" is followed by
+  rejects the signature block for free: 'Clare Gibney' is followed by
+  'Executive Director', unstyled as well, while 'Authority' is followed by
   `BodyText1`. Guard on length (<= 80) and no trailing `.;,:` so the making
   words do not qualify. Do NOT test the following block against
   `COSMETIC_CLASS`: it contains `BodyText`, which prefix-matches `BodyText1`,
   the very class that proves the paragraph is styled body. That one mistake left
   the rule finding 2 headings where it should have found 17.
-- **Bare heading detection, three ways it goes wrong.** Numbering is `1` or
+- **Bare heading detection, 3 ways it goes wrong.** Numbering is `1` or
   `1.`; headings run past 100 characters and end on a digit (`... for the
   purposes of Division 75`) or `?`, so neither length nor closing character
   separates heading from body. What works: no period or semicolon anywhere
@@ -302,15 +302,15 @@ prints a progress line every 25 titles.
   section 1 under any rule loose enough to accept the real headings, so month
   names are excluded explicitly.
 - **Some documents are tables, not sections.** The Tax Practitioners Board
-  publishes its terminations as three paragraphs and twenty-four tables, with no
+  publishes its terminations as 3 paragraphs and 24 tables, with no
   heading anywhere for either pass to find, so 15,000 words landed in one row.
   The table is the document's own unit. Two things make the split safe. Count
   word mass, not lines, when deciding the document is table-shaped: those
   instruments repeat their lead-in sentence above every table, so 36 prose lines
   against 32 tables reads as narrative when it is the same sentence 32 times.
   And keep the prose in document order rather than hoisting the first line as a
-  shared lead. Excise By-law No. 127 prescribes petroleum fields one table per
-  basin, and hoisting stranded "C. PERTH BASIN" and dropped the operative
+  shared lead. Excise By-law No 127 prescribes petroleum fields one table per
+  basin, and hoisting stranded 'C. PERTH BASIN' and dropped the operative
   paragraphs entirely. `table_split` asserts afterwards that every segmented
   line appears in some chunk and raises if one does not; that check is what
   caught it, and it now runs on every build. It covers the table-split path
@@ -336,7 +336,7 @@ prints a progress line every 25 titles.
   publishing a cover page under a notice saying it was removed; all 11
   heading-less volumes across the 946 EPUBs open at a contents page. And leave
   the bare-text endnote trigger armed only once a mapped heading has been seen.
-  The cover page lists "Endnotes" as one of the volumes, so arming it at the
+  The cover page lists 'Endnotes' as one of the volumes, so arming it at the
   top of a heading-less volume routes that volume's whole body into
   `endnotes.md`, which is the same loss wearing a different hat. Recovered text
   also opens a row of its own, or it is retrieved under the section number of
@@ -344,9 +344,9 @@ prints a progress line every 25 titles.
 - **Numbering gaps in ActHead instruments are genuine**, not parser misses.
   Compilation removes repealed sections, so 21-29 simply do not appear.
 - **`contains(name,...)` matches more than the current name.** It found the
-  Passenger Movement Charge Act 1978 under its former title, the Departure Tax
-  Act 1978. It also matches substrings, which is how two dozen `AD/ROTAX/...`
-  airworthiness directives arrived: "Rotax" contains "tax". Do not filter these
+  *Passenger Movement Charge Act 1978* under its former title, the Departure Tax
+  Act 1978. It also matches substrings, which is how 2 dozen `AD/ROTAX/...`
+  airworthiness directives arrived: 'Rotax' contains 'tax'. Do not filter these
   out on a name regex, because any rule strict enough to drop Rotax also drops the
   Departure Tax Act. `sources.json` records `keywords_in_name` instead.
 - **Section numbers render as `40 <U+2011> 1`**, a non-breaking hyphen padded

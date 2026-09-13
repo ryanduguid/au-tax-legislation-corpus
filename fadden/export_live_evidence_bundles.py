@@ -61,9 +61,9 @@ _TIMESTAMP_FRACTION = re.compile(r"\.\d+")
 def _instant_for_validation(text: str) -> dt.datetime:
     """Parse a regex-validated instant identically on every supported Python.
 
-    Python 3.10 fromisoformat accepts only three- or six-digit fractions while
-    the Register emits up to seven, so the fraction is normalised to exactly
-    six digits for the semantic check; the original text stays the artefact
+    Python 3.10 fromisoformat accepts only 3- or six-digit fractions while
+    the Register emits up to 7, so the fraction is normalised to exactly
+    6 digits for the semantic check; the original text stays the artefact
     value.
     """
 
@@ -680,7 +680,7 @@ def _register_id(value: Any, label: str) -> str:
 
 
 def _candidate_identity_pair(identity: str) -> tuple[str, str]:
-    """Recover the two validated Register identifiers from a candidate identity."""
+    """Recover the 2 validated Register identifiers from a candidate identity."""
 
     match = _CANDIDATE_ID.fullmatch(_required_text(identity, "candidate identity"))
     if match is None:
@@ -692,7 +692,7 @@ def _candidate_identity_pair(identity: str) -> tuple[str, str]:
 
 
 def _candidate_identity(register_id: str, document_id: str) -> str:
-    """Construct an injective v2 identity from two strict Register identifiers."""
+    """Construct an injective v2 identity from 2 strict Register identifiers."""
 
     pair = (
         _register_id(register_id, "candidate baseline identifier"),

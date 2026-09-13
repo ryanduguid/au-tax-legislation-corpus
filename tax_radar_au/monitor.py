@@ -184,7 +184,7 @@ def _parse_timestamp(text: str, *, field: str) -> datetime:
     The point of the pattern is that the accepted set is FIXED, not that it
     matches any one interpreter. It is not a subset of 3.10: a fractional
     second of 1 to 6 digits is accepted here, where 3.10 took only 3 or 6. It
-    is narrower than 3.11+ in three respects - the basic and week forms and a
+    is narrower than 3.11+ in 3 respects - the basic and week forms and a
     bare-hour offset are refused, a fraction longer than 6 digits is refused,
     and only "T", "t" and a space are taken as the date/time separator where
     fromisoformat took any single character. What matters for an artefact is

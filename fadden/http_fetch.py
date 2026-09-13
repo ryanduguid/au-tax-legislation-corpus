@@ -6,7 +6,7 @@ between requests re-read the previous response and handed it back as if it
 were this one: on the discovery paging path that is how 142 titles went
 missing, and on the version lookups it silently gave one Act another Act's
 record. The guard was a fresh file per attempt, and every stage had to supply
-its own path so that two stages sharing a checkout never shared a file.
+its own path so that 2 stages sharing a checkout never shared a file.
 
 Reading the response off the socket removes the file, and the whole class of
 failure with it. There is nothing on disk for one attempt to inherit from
@@ -17,7 +17,7 @@ Downloads still use curl: see download.py, where --retry earns its keep on a
 diagnostic reports curl's own exit status.
 
 capture_register.py keeps its own loop body. It is an evidence recorder, not a
-JSON reader: it refuses redirects, bounds the read, retains four response
+JSON reader: it refuses redirects, bounds the read, retains 4 response
 headers and the exact bytes, counts attempts into the contract, and retries
 only 408, 429 and 5xx rather than every non-2xx. The attempt budget and the
 wait between attempts are shared from here, through ``attempts``.

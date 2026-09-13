@@ -87,9 +87,9 @@ TIMESTAMP_FRACTION = re.compile(r"\.\d+")
 def _instant_for_validation(text: str) -> dt.datetime:
     """Parse a regex-validated instant identically on every supported Python.
 
-    Python 3.10 fromisoformat accepts only three- or six-digit fractions while
-    the Register emits up to seven, so the fraction is normalised to exactly
-    six digits for the semantic check; the original text stays the artefact
+    Python 3.10 fromisoformat accepts only 3- or six-digit fractions while
+    the Register emits up to 7, so the fraction is normalised to exactly
+    6 digits for the semantic check; the original text stays the artefact
     value.
     """
 
@@ -171,7 +171,7 @@ class _NoRedirectHandler(urllib.request.HTTPRedirectHandler):
 
 
 def _selected_response_headers(headers: Any) -> dict[str, str]:
-    """Copy only the four contract headers before a response object closes."""
+    """Copy only the 4 contract headers before a response object closes."""
     selected: dict[str, str] = {}
     seen: set[str] = set()
     try:
@@ -356,7 +356,7 @@ def _require_ordinary_ancestors(path: Path, label: str) -> None:
 def _same_regular_file_identity(
     expected: os.stat_result, observed: os.stat_result
 ) -> bool:
-    """Return whether two snapshots describe the same regular filesystem object."""
+    """Return whether 2 snapshots describe the same regular filesystem object."""
     return (
         stat.S_ISREG(expected.st_mode)
         and stat.S_ISREG(observed.st_mode)

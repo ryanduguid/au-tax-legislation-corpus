@@ -269,7 +269,7 @@ class VolumeGateTests(unittest.TestCase):
 
 
 class ExtractPipelineTests(unittest.TestCase):
-    """extract.main() end to end over a two-volume EPUB."""
+    """extract.main() end to end over a 2-volume EPUB."""
 
     REGISTER_ID = "F2025L00281"
 
@@ -405,7 +405,7 @@ class ExtractPipelineTests(unittest.TestCase):
 
 
 def basin_table(field):
-    """One markdown table of the shape Excise By-law No. 127 uses."""
+    """One markdown table of the shape Excise By-law No 127 uses."""
     rows = ["| Field | Licence | Commenced | Ceased |", "|---|---|---|---|"]
     for n in range(1, 6):
         rows.append("| %s %d | L%03d | 1 January 2026 | 30 June 2026 |" % (field, n, n))
@@ -1738,7 +1738,7 @@ class DocumentedCommandTests(unittest.TestCase):
 
     def test_the_documented_verification_command_scopes_discovery_to_the_corpus(self):
         """CONTRIBUTING.md promises a standard-library-only run and then
-        discovered from `tests`, which errors on the two radar modules that
+        discovered from `tests`, which errors on the 2 radar modules that
         import pytest, so the file's only verification instruction was red on a
         clean clone.  The command must scope discovery to the corpus half."""
         contributing = (REPO / "CONTRIBUTING.md").read_text(encoding="utf-8")
@@ -1817,8 +1817,8 @@ class PiiNameGateTests(unittest.TestCase):
     """PII gates shared by the scans, distribution builder and verifier."""
 
     # A disciplinary-register row in the all-caps style the old
-    # Capitalised-lowercase pair could not see: three surnames the old pattern
-    # missed (all-caps, internal capital, apostrophe), three 8-digit
+    # Capitalised-lowercase pair could not see: 3 surnames the old pattern
+    # missed (all-caps, internal capital, apostrophe), 3 8-digit
     # registration numbers.
     ALL_CAPS_ROW = ("| SMITH, John | 12345678 | s 30-15 |\n"
                     "| McDonald, Anne | 23456789 | s 30-15 |\n"
@@ -2228,7 +2228,7 @@ class DistributionTests(unittest.TestCase):
                     verify.main()
             self.assertEqual(result.exception.code, 1)
 
-            # The readable rate index is an independently checked artifact: a
+            # The readable rate index is an independently checked artefact: a
             # filtered JSONL file alone is not enough if a full-corpus RATES.md
             # could still carry a removed title.
             sources["counts"]["jsonl_rows"] = 1

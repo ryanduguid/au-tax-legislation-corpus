@@ -24,7 +24,7 @@ Changes since `v0.1.3`:
   preflight discovery with pytest hidden so it stays that way.
 - The release workflow calls the shared release-policy archive workflow,
   pinned to a commit reachable from that repository's `main`
-  (`99a6314`), after two repoints that followed release-policy's history
+  (`99a6314`), after 2 repoints that followed release-policy's history
   rewrite. Dependabot no longer proposes bumps to that pin; the pin moves
   only through a reviewed change. `setup-uv` is pinned by commit, the
   evidence publisher runs without a cache, and every workflow carries a
@@ -64,13 +64,13 @@ This is a release of the corpus builder, not a prebuilt legislation corpus.
 
 Changes since `v0.1.1`:
 
-- apply both privacy predicates to every declared title representation: Markdown, optional endnotes and JSONL;
-- reject undeclared title files, nested directories, invalid UTF-8, binary control data, symbolic links, junctions and other Windows reparse points;
-- make TFNs permanently non-allowlistable and reject allowlist reasons that contain a raw contact identifier;
-- turn malformed JSON, rate records and manipulated manifest paths into named publication failures rather than tracebacks; and
+- apply both privacy predicates to every declared title representation: Markdown, optional endnotes and JSONL
+- reject undeclared title files, nested directories, invalid UTF-8, binary control data, symbolic links, junctions and other Windows reparse points
+- make TFNs permanently non-allowlistable and reject allowlist reasons that contain a raw contact identifier
+- turn malformed JSON, rate records and manipulated manifest paths into named publication failures rather than tracebacks
 - derive and verify README and distribution-index counts independently from the validated output.
 
-The corrected builder passed 112 tests and two complete builds from the public
+The corrected builder passed 112 tests and 2 complete builds from the public
 4 August 2026 source snapshot. Both builds produced the same validated 2,105-file
 distribution: 934 redistributed titles and 21,596 rows, that snapshot's 946
 titles and 21,784 rows less the 12 titles `pii_flagged.json` names. Those 12

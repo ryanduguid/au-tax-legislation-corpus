@@ -16,9 +16,9 @@ cross-file hashes are revalidated before one directory rename.
 
 The checked-in manifest currently contains 946 titles, so the enforced
 1.5-second request spacing makes a no-retry run about 24 minutes. Empty current
-lookups add an ordered history query, and retryable failures wait at least six
+lookups add an ordered history query, and retryable failures wait at least 6
 seconds. The standard-library HTTPS adapter refuses redirects, uses a 90-second
-socket timeout, attempts a request at most three times and needs no API key.
+socket timeout, attempts a request at most 3 times and needs no API key.
 Operational schedulers remain out of scope; if one is added later, incremental
 work should run outside the Register's preferred 08:00-20:00 Australian window.
 
@@ -120,5 +120,5 @@ the regression suite pins its pre-fix figures against BUILD.md.
 `download.py` sleeps 10 seconds between titles, honouring the `Crawl-delay` in
 https://www.legislation.gov.au/robots.txt, so a full download is about 2 hours
 40 minutes. It skips any EPUB already present whose sidecar records the same
-version. Discovery is about 40 minutes; the three local stages take about three
+version. Discovery is about 40 minutes; the 3 local stages take about 3
 minutes combined.

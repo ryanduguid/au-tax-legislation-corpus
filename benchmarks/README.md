@@ -1,6 +1,6 @@
 # Corpus extraction performance baseline
 
-This benchmark measures the production `to_markdown` path against two fabricated volumes containing 2,000 numbered sections, prose and periodic tables. It uses `pyperf` 2.10.0 so warm-ups, worker processes and timing metadata follow a maintained benchmark tool rather than a repository-specific timer. Nothing in CI or the tests runs it, so `pyperf` is not part of the locked development environment; add it for the run.
+This benchmark measures the production `to_markdown` path against 2 fabricated volumes containing 2,000 numbered sections, prose and periodic tables. It uses `pyperf` 2.10.0 so warm-ups, worker processes and timing metadata follow a maintained benchmark tool rather than a repository-specific timer. Nothing in CI or the tests runs it, so `pyperf` is not part of the locked development environment; add it for the run.
 
 Run it from the repository root:
 
@@ -21,7 +21,7 @@ Python 3.12 measured the fabricated 2,000-section workload:
 | 2 | 10.00 ms | 2.20 ms | 22.00% |
 | 3 | 9.13 ms | 1.68 ms | 18.40% |
 
-Across the three run means, the mean was 9.36 ms, the population standard
+Across the 3 run means, the mean was 9.36 ms, the population standard
 deviation was 0.46 ms and the coefficient of variation was 4.86%. The run-mean
 range was 8.96-10.00 ms. `pyperf` warned that each individual run was unstable,
 so these results establish workload shape and current dispersion only. They do
