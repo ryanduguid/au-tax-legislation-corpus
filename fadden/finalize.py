@@ -33,8 +33,8 @@ def pii_summary():
     """Totals for the README paragraph on titles naming people.
 
     Derived from pii_flagged.json rather than hardcoded in prose, which is how
-    the corpus README came to claim eleven titles and 3,750 names against a
-    committed scan showing twelve and 5,404. The documented pipeline runs
+    the corpus README came to claim 11 titles and 3,750 names against a
+    committed scan showing 12 and 5,404. The documented pipeline runs
     pii_scan.py and pii_scan2.py before this stage, so the scan output must
     exist here. A missing or unreadable file means the stages ran out of
     order; refuse to write a README carrying unverified counts.

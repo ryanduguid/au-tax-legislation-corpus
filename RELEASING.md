@@ -35,9 +35,9 @@ gh release verify-asset v0.1.2 au-tax-legislation-corpus-builder-0.1.2.zip -R ry
 
 Historical caveat: v0.1.1 and v0.1.2 were published under this repository's
 former name from a history line that was later rewritten. Their asset
-downloads, checksums, immutability flags and artifact attestations still
+downloads, checksums, immutability flags and artefact attestations still
 verify, but `gh release verify` and `gh release verify-asset` fail permanently
-for those two tags because the release attestations reference commit ids the
+for those 2 tags because the release attestations reference commit ids the
 rewrite orphaned. The first release cut from the current history restores the
 full verification story end to end.
 

@@ -556,7 +556,7 @@ def _build_distribution(staging):
 
     with open(child(ROOT, "README.md"), encoding="utf-8") as f:
         rd = f.read()
-    # The README's headline wraps across three lines, so a single-line replace
+    # The README's headline wraps across 3 lines, so a single-line replace
     # misses it and leaves the file claiming 946 titles. Match the numbers
     # themselves, whitespace-tolerant.
     rd = re.sub(r"%s in-force principal titles" % len(src["titles"]),

@@ -13,8 +13,8 @@ Medicare Levy) applied to the Act, LegislativeInstrument and
 NotifiableInstrument collections. A tax-relevant title without one of those
 words in its name is absent. The Register's `contains(name,...)` also matches
 former titles and substrings, which is how the Passenger Movement Charge Act
-1978 arrived under its old name, the Departure Tax Act 1978, and how two dozen
-`AD/ROTAX/...` airworthiness directives arrived because "Rotax" contains "tax".
+1978 arrived under its old name, the *Departure Tax Act 1978*, and how 2 dozen
+`AD/ROTAX/...` airworthiness directives arrived because 'Rotax' contains 'tax'.
 `sources.json` records `keywords_in_name` rather than filtering them out, since
 any rule strict enough to drop Rotax also drops the Departure Tax Act.
 
@@ -49,9 +49,9 @@ registration numbers, because a bare name test flags the whole corpus:
 legislation names Ministers, Commissioners and litigants constantly, and the
 registration number is what separates a disciplinary register from a statute.
 `pii_scan2.py` re-runs at a lower threshold and sweeps for emails, phone numbers
-and eight- or nine-digit tax file numbers. On the source snapshot retrieved
-2026-08-04, the JSONL scan finds ten occurrences of four unique organisational
-contacts across three titles: two government email addresses and two government
+and 8- or nine-digit tax file numbers. On the source snapshot retrieved
+2026-08-04, the JSONL scan finds 10 occurrences of 4 unique organisational
+contacts across 3 titles: 2 government email addresses and 2 government
 landlines. They are approved by a title-bound SHA-256 fingerprint in
 `pii_contact_allowlist.json`; the policy does not store the identifiers
 themselves. An allowlist entry is reserved for a manually reviewed

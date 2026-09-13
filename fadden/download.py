@@ -2,7 +2,7 @@
 
 Honours the Register's robots.txt Crawl-delay of 10 seconds.
 
-The download endpoint answers in one of two shapes and does not tell you which
+The download endpoint answers in one of 2 shapes and does not tell you which
 in advance:
   * raw EPUB bytes (content-type application/epub+zip), or
   * a JSON envelope carrying the file base64-encoded in a "bytes" field, plus

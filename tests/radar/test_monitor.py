@@ -732,7 +732,7 @@ def test_every_item_kind_is_bound_to_all_three_source_snapshots(
     mapping = _payload("mappings", "sample-source-skill-map.json")
     first = _compare_fixtures(tmp_path, observation=observation, mapping=mapping)
     # The mapping rules are unchanged; only source metadata bytes differ. Every
-    # item ID must still move because it belongs to the exact three-file run.
+    # item ID must still move because it belongs to the exact 3-file run.
     mapping["mapping_version"] += "-same-rules-new-source"
     second = _compare_fixtures(tmp_path, observation=observation, mapping=mapping)
 
@@ -1257,7 +1257,7 @@ def test_a_date_alone_is_never_a_timestamp_however_it_is_qualified(value: str) -
     review recorded earlier the same day as the observation pass the "cannot
     predate the observation" check. The first pattern written for this grammar
     made the clock and the offset independently optional, which accepted the
-    last three values here - none of which any supported interpreter accepted
+    last 3 values here - none of which any supported interpreter accepted
     before the pattern existed.
     """
     with pytest.raises(MonitorError, match="ISO 8601 timestamp"):

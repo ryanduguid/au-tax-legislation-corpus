@@ -1,6 +1,6 @@
 """Second PII pass: what the first one would have missed.
 
-pii_scan.py needed three registration numbers AND three names in one row, which
+pii_scan.py needed 3 registration numbers AND 3 names in one row, which
 is the shape of a disciplinary table. Two things that shape misses:
 
   - the same register split so finely that a row holds one person

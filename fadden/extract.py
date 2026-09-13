@@ -7,7 +7,7 @@ The Register's EPUBs are Word-generated XHTML with stable class names:
   TOC*, TofSects*     table of contents, skipped
   ENote*, TableOfActs*, TableOfAmend  endnotes apparatus, split out
 
-Two templates exist. Acts predating ActHead (e.g. the Superannuation
+Two templates exist. Acts predating ActHead (for example, the Superannuation
 (Distribution of Surplus) Act 1974) carry no structural headings at all and
 mark sections only with a CharSectno span.
 
@@ -55,8 +55,8 @@ HEAD_LEVEL = {"ActHead1": 2, "ActHead2": 2, "ActHead3": 3,
 # Matched by prefix because the suffix encodes indentation, not depth
 # (SectionTitle2Ind and SectionTitle2NonInd are the same level).
 IASB_HEAD = re.compile(r'^(?:IASB|AASB|Conv)SectionTitle([1-4])', re.I)
-# Section numbers run to eight trailing letters (8AAZLGA) and the dashed form
-# can carry an alphabetic prefix. Capping at four silently nulled 98 real ids.
+# Section numbers run to 8 trailing letters (8AAZLGA) and the dashed form
+# can carry an alphabetic prefix. Capping at 4 silently nulled 98 real ids.
 SECNO = re.compile(r'(\d{1,3}[A-Z]{0,4})\s*\u2011\s*(\d{1,4}[A-Z]{0,8})')
 PLAIN_SECNO = re.compile(r'^\s*(\d{1,4}[A-Z]{0,8})(?=[.\s\u00a0\u2011]|$)')
 FRONT_CLASS = re.compile(r'^(LongT|Preamble)', re.I)
@@ -71,7 +71,7 @@ PARA_CLASS = re.compile(r'^(paragraph|paragraphsub|parabullet|LI-BodyTextSubpara
 
 # A third EPUB template. Many legislative instruments are built from a plain
 # Word file with no class attributes and no CharSectno span, so neither of the
-# other two detectors fires and the whole instrument collapses into one chunk.
+# other 2 detectors fires and the whole instrument collapses into one chunk.
 # Headings there are bare paragraphs: "3 Definition", "5 Prescribed courses".
 # Must end on a letter or bracket, otherwise "1 October 2016" reads as a
 # heading. Only ever used when the document has no classed markup at all.
@@ -188,7 +188,7 @@ class Doc(HTMLParser):
             # twice: a byte floor alone deleted a decision flowchart, pixel
             # bounds alone deleted 19 statutory formulas. Every genuine Arms
             # blob is small AND heavy AND close to 1.3:1; the formulas fail at
-            # least one of those. Require all three.
+            # least one of those. Require all 3.
             w, h, b = px("width"), px("height"), self.img_sizes.get(src, 0)
             ratio = (w / h) if h else 0
             is_arms = ("coat of arms" in alt.lower()
@@ -300,7 +300,7 @@ def check_chunks_complete(lines, chunks):
 
     The check that caught the hoisting bug, kept as a runtime guard. Hoisting
     the first prose line of a table-shaped document as a shared lead stranded
-    "C. PERTH BASIN" and dropped Excise By-law No. 127's operative paragraphs
+    "C. PERTH BASIN" and dropped Excise By-law No 127's operative paragraphs
     outright, and the shape of that mistake is easy to reintroduce. Failing
     closed here makes it a recorded parse failure, and a parse failure refuses
     to write manifest_md.json.
@@ -341,7 +341,7 @@ def table_split(body, name):
 
     The Tax Practitioners Board publishes its terminations as a notifiable
     instrument shaped like this: one sentence naming the enabling provision,
-    then twenty-odd tables of agent names, then a signature. There is no
+    then 20-odd tables of agent names, then a signature. There is no
     heading anywhere, so both the structural pass and the bare-paragraph
     fallback correctly find nothing, and the whole 15,000-word document lands
     in a single row that no retriever can use.
@@ -352,7 +352,7 @@ def table_split(body, name):
     Whatever prose precedes a table travels with it, in document order. That
     matters twice over. On the TPB instruments it carries the sentence naming
     the enabling provision, without which a table of names and dates says
-    nothing. On Excise By-law No. 127, which prescribes petroleum fields one
+    nothing. On Excise By-law No 127, which prescribes petroleum fields one
     table per basin, it carries the basin name, and the operative paragraphs
     ahead of the first table become their own chunk instead of being dropped.
     Discarding the interleaved prose was a real loss of text, not a tidier
@@ -387,7 +387,7 @@ def table_split(body, name):
     # Count words, not lines. Counting lines fails on the TPB instruments that
     # repeat their lead-in sentence above every table: 36 prose lines against
     # 32 tables reads as a narrative document, when the prose is the same
-    # sentence thirty-two times. By word mass the tables win nine to one.
+    # sentence 32 times. By word mass the tables win 9 to one.
     t_words = sum(len(line.split()) for t in tables for line in t)
     p_words = sum(len(s.split()) for k, seg in segs if k == "p" for s in seg)
     if t_words < 2 * p_words:
@@ -434,7 +434,7 @@ class _VolumeState:
     A document is a set of volumes, and front matter repeats at the head of
     every one, so everything here resets at the seam. Holding any of it once
     across the whole document is the shape of the volume-gate defect:
-    F2025L00281 lost five volumes' Schedule 1 exactly that way.
+    F2025L00281 lost 5 volumes' Schedule 1 exactly that way.
     """
 
     def __init__(self, gate_free):
@@ -491,8 +491,8 @@ def to_markdown(blocks, meta, force_bare=False):
     # resets at every volume boundary, so deciding it once across the whole
     # document left it False for the entire run of any volume that carries no
     # mapped heading, and every table, image and body paragraph in that volume
-    # was dropped with no placeholder and no counter. F2025L00281 carries five
-    # of its eight volumes' Schedule 1 behind ScheduleHeading/P1 markup and lost
+    # was dropped with no placeholder and no counter. F2025L00281 carries 5
+    # of its 8 volumes' Schedule 1 behind ScheduleHeading/P1 markup and lost
     # 92% of its words that way.
     #
     # A heading-less volume has nothing to release the gate, so release it at
@@ -646,7 +646,7 @@ def to_markdown(blocks, meta, force_bare=False):
             # Same gate as paragraphs. Without it a trailing amendment-history
             # table lands in whatever section was last open.
             #
-            # prebody_open is what keeps the two gates level. A PREBODY_CLASS
+            # prebody_open is what keeps the 2 gates level. A PREBODY_CLASS
             # paragraph is admitted below without setting seen_body, so once
             # pre-body prose is flowing, a table or figure sitting between two
             # such paragraphs was dropped while the prose around it was kept -
@@ -703,7 +703,7 @@ def to_markdown(blocks, meta, force_bare=False):
                 else:
                     p = PLAIN_SECNO.match(text)
                     sid = p.group(1) if p else None
-                # A level-5 heading with no parseable number (e.g. "Notes.",
+                # A level-5 heading with no parseable number (for example, "Notes.",
                 # "Table I") is not a section and must not be counted as one.
                 open_row(sid, text, "section" if sid else "unnumbered",
                          state.container)
@@ -857,7 +857,7 @@ def main(retrieved=None):
             # An emit_fallback row holds text that would otherwise be lost; it
             # is not evidence the document chunked into sections. The same
             # exclusion is applied below when computing `structured`, and the
-            # two must agree: counting it here suppresses the bare-mode pass,
+            # 2 must agree: counting it here suppresses the bare-mode pass,
             # and discarding it there then sends the document to whole_act.
             if not any(any(t.strip() for t in s["text"]) for s in sections
                        if not s.get("emit_fallback")):

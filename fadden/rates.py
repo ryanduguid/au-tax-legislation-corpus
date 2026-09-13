@@ -254,7 +254,7 @@ def main():
                 rid = register_id(row["register_id"])
                 # Gross-up factors, indexation factors and statutory fractions are
                 # bare decimals (2.0802, 1.8868, 0.5), not $ or %, so a filter on
-                # currency and percent alone misses them entirely.
+                # currency and per cent alone misses them entirely.
                 if not (money_values(text) or percentage_values(text) or
                         (FACTOR.search(text) and RATE_PHRASE.search(text))):
                     continue

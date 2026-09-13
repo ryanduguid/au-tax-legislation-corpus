@@ -1,6 +1,6 @@
 # Agent instructions
 
-This repository combines two deliberately separated systems: a corpus builder and a
+This repository combines 2 deliberately separated systems: a corpus builder and a
 synthetic change-review radar. Treat corpus outputs, synthetic monitor inputs, live
 Register captures and publication candidates as different contracts.
 
@@ -22,7 +22,7 @@ Register captures and publication candidates as different contracts.
 
 ## Repository map
 
-- [README.md](README.md) explains the two halves, corpus limits and high-level operation.
+- [README.md](README.md) explains the 2 halves, corpus limits and high-level operation.
 - [BUILD.md](BUILD.md) owns pipeline, monitor-export, live-capture and live-export details.
 - [RADAR.md](RADAR.md) owns the synthetic review-queue contract and human-review boundary.
 - [RELEASING.md](RELEASING.md) owns builder release preflight and immutable-release rules.

@@ -29,7 +29,7 @@ def test_build_output_directories_are_ignored() -> None:
 
 
 def test_readme_names_every_blocked_change_kind() -> None:
-    # compare() blocks for five distinct reasons. A reader who meets
+    # compare() blocks for 5 distinct reasons. A reader who meets
     # BASELINE_NOT_CURRENT or MISSING_OBSERVATION on a stale baseline needs the
     # README to say what the label and the non-zero exit mean.
     readme = (ROOT / "RADAR.md").read_text(encoding="utf-8")
