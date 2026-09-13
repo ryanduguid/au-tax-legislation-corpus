@@ -375,8 +375,13 @@ Each title is stored as:
 
 Plus a derived index:
 
-- `rates/rates.jsonl`: every provision carrying a rate, threshold, factor or
-  indexation rule, bucketed by topic and cited back to its section
+- `rates/rates.jsonl`: the provisions its extraction rules select as carrying a
+  rate, threshold, factor or indexation rule, bucketed by topic and cited back
+  to its section. The rules are a set of numeric and phrase patterns over
+  sentences and tables, so this is a finding aid rather than a complete list:
+  read the title itself before concluding a provision carries no number. Each
+  `rate_id` is an ordinal within one generated snapshot, not a persistent
+  identifier, so cite the register id, section and snapshot alongside it.
 - `rates/RATES.md`: the same, readable
 
 `sources.json` records the register id, collection, compilation number and
@@ -448,7 +453,9 @@ Customs Act 1901 and Charities Act 2013 among them.
 
 **Sunsetting.** Legislative instruments expire under Part 4 of the Legislation
 Act 2003 unless remade. An instrument in force on the build date may have sunset
-since. `check_current.py` catches a changed compilation, not a repeal.
+since. `check_current.py` reports these under "no longer in force": it reads the
+Register's `status` before the compilation fields, so a repealed or ceased title
+is not reported as a compilation still to be published.
 
 **Tables** are converted to markdown tables. Cells spanning several columns are
 padded so later cells keep their position, except where a table's spans vary row
@@ -484,11 +491,14 @@ that exists, marked `version_is_current: false` in the front matter and on every
 JSONL row, with `superseded_from` giving the commencement the text does not
 reflect. `sources.json` lists them under `titles_not_current_version`.
 
-**Rows are sections or containers.** A row with a `section` id is a section. A
-row with `section: null` is a container: text sitting directly under a Chapter,
-Part, Division or Schedule heading rather than under a numbered section. Its
-`heading` names the container. Schedules in particular hold large bodies of text
-that belong to no section number.
+**Read `kind`, not `section`, to tell rows apart.** A row with a `section` id is
+a `section`. A row with `section: null` is one of several kinds: `container` for
+text sitting directly under a Chapter, Part, Division or Schedule heading,
+`introductory` for the material before the first heading, `unnumbered` for a
+headed passage with no section number, `whole_act` where a document has no
+structure to split on, and `table_block` where it was split on its tables. Its
+`heading` names the container or passage. Schedules in particular hold large
+bodies of text that belong to no section number.
 
 **Per-Act retrieval dates vary.** Each Act's `retrieved` field and attribution
 carry the date that Act's EPUB was actually downloaded, not the build date.

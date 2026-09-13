@@ -10,6 +10,11 @@ title can stop being in force without its compilation changing. When no current
 version comes back, this asks again without the isCurrent filter: versions but
 none current means the title has fallen out of force, nothing at all means the
 lookup failed. Reporting both as one number hid a repeal behind a network error.
+
+A repealed or ceased title can also come back as its own current row with
+`isCurrent: true` and a status other than `InForce`. The status is read first,
+so that row is reported as no longer in force rather than as a compilation the
+Register has yet to publish.
 """
 import json
 import os
@@ -47,7 +52,7 @@ def main():
 
     def versions(flt, top=1):
         d = fetch_json("%s/versions?$top=%d&$filter=%s"
-                       "&$select=titleId,start,compilationNumber,registerId"
+                       "&$select=titleId,start,compilationNumber,registerId,status"
                        % (API, top, urllib.parse.quote(flt)))
         v = (d or {}).get("value") or []
         return v if d is not None else None
@@ -69,6 +74,14 @@ def main():
                 gone.append(a)
             else:
                 errors.append(a)
+        elif v[0].get("status") not in (None, "InForce"):
+            # The Register reports a repealed or ceased title as its own
+            # current row rather than an empty result, so the status is the
+            # in-force fact and it is read before the compilation fields. This
+            # is the same order capture_register.py already applies. Without
+            # it a Repealed row with no registerId was read as an unpublished
+            # compilation and the reader was told to wait for one.
+            gone.append(a)
         else:
             now_c = v[0].get("compilationNumber")
             now_d = v[0]["start"][:10]

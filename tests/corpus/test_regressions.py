@@ -16,6 +16,7 @@ import sys
 import tempfile
 import time
 import unittest
+import urllib.parse
 import warnings
 import zipfile
 from pathlib import Path
@@ -3060,6 +3061,221 @@ class RateParsingTests(unittest.TestCase):
         self.assertEqual(len(rates.money_values("$" + digits + ".")), 1)
         self.assertTrue(rates.is_ownership_test(digits + "% stake"))
         self.assertLess(time.perf_counter() - started, 2.0)
+
+
+class RateExportContractTests(unittest.TestCase):
+    """The derived rate index must keep the promises the corpus README makes."""
+
+    ROW = {
+        "register_id": "C2099A00001", "act": "Zulu Tax Example Act",
+        "collection": "Act", "compilation_number": "1",
+        "compilation_date": "2099-01-01", "section": "1",
+        "heading": "Example rate", "register_page": "https://example.test/source",
+        "version_is_current": True, "source_url": "https://example.test/source.epub",
+        "authorised": False, "licence": "Synthetic test licence",
+        "licence_url": "https://example.test/licence",
+        "attribution": "Fabricated source for a regression test",
+        "text": "The example tax rate is 10% of the base amount.",
+    }
+
+    def export(self, rows):
+        """Run the exporter over fabricated sections and return its outputs."""
+        rates = load_module("rates_export_regression", STAGE / "rates.py")
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            grouped = {}
+            for row in rows:
+                grouped.setdefault(row["register_id"], []).append(row)
+            for register_id, group in grouped.items():
+                folder = root / "markdown" / register_id
+                folder.mkdir(parents=True)
+                (folder / "sections.jsonl").write_text(
+                    "".join(json.dumps(row) + "\n" for row in group), encoding="utf-8")
+            with mock.patch.object(rates, "ROOT", str(root)), \
+                    mock.patch.object(rates, "OUT", str(root / "rates")), \
+                    contextlib.redirect_stdout(io.StringIO()):
+                rates.main()
+            records = [json.loads(line) for line in (root / "rates" / "rates.jsonl")
+                       .read_text(encoding="utf-8").splitlines()]
+            markdown = (root / "rates" / "RATES.md").read_text(encoding="utf-8")
+        return records, markdown
+
+    def test_rate_rows_carry_the_source_status_and_attribution(self):
+        stale_records, stale_markdown = self.export([dict(self.ROW, version_is_current=False)])
+        self.assertEqual(len(stale_records), 1)
+        entry = stale_records[0]
+        self.assertEqual(
+            {key: entry.get(key) for key in ("version_is_current", "source_url", "licence",
+                                             "licence_url", "authorised", "attribution")},
+            {"version_is_current": False, "source_url": "https://example.test/source.epub",
+             "licence": "Synthetic test licence",
+             "licence_url": "https://example.test/licence", "authorised": False,
+             "attribution": "Fabricated source for a regression test"})
+        # The compilation reference the reader needs stays alongside the warning.
+        self.assertIn("already stale", stale_markdown)
+        self.assertIn("Zulu Tax Example Act (C2099A00001): compilation 1 of 2099-01-01",
+                      stale_markdown)
+
+        # Control: a current source produces the same fields and no warning.
+        current_records, current_markdown = self.export([dict(self.ROW)])
+        self.assertIs(current_records[0]["version_is_current"], True)
+        self.assertEqual(current_records[0]["attribution"], self.ROW["attribution"])
+        self.assertNotIn("already stale", current_markdown)
+
+    def test_one_decimal_statutory_fractions_reach_the_index(self):
+        short, _ = self.export([dict(
+            self.ROW, text="The adjustment factor is 0.5 of the base amount.")])
+        long, _ = self.export([dict(
+            self.ROW, text="The adjustment factor is 0.50 of the base amount.")])
+        self.assertEqual(len(short), 1)
+        self.assertEqual(len(long), 1)
+        self.assertEqual(short[0]["kind"], "factor")
+        self.assertEqual(short[0]["amounts"], ["0.5"])
+        self.assertEqual(long[0]["amounts"], ["0.50"])
+        # Control: a bare decimal with no rate phrase is still not a factor.
+        plain, _ = self.export([dict(
+            self.ROW, text="The document was tabled on day 0.5 of the sitting week.")])
+        self.assertEqual(plain, [])
+
+    def test_rate_ids_are_documented_as_snapshot_ordinals(self):
+        first, markdown = self.export([dict(self.ROW)])
+        expanded, _ = self.export([dict(self.ROW), dict(
+            self.ROW, register_id="C2099A00002", act="Alpha Tax Example Act",
+            text="The example tax rate is 20% of the base amount.")])
+        moved = next(r["rate_id"] for r in expanded if r["act"] == self.ROW["act"])
+        # The ordinal moves when the inventory changes, which is exactly why the
+        # readable index must not present it as a stable reference.
+        self.assertEqual(first[0]["rate_id"], "R00001")
+        self.assertEqual(moved, "R00002")
+        self.assertIn("ordinal within this snapshot, not a persistent", markdown)
+        self.assertIn("cite the register id, section and snapshot", markdown)
+
+
+class CheckCurrentStatusTests(unittest.TestCase):
+    """The staleness checker must read the Register's status before compilations."""
+
+    TITLE = {"register_id": "F2016L01256", "name": "Fabricated repealed instrument",
+             "collection": "LegislativeInstrument", "compilation_number": "1",
+             "compilation_date": "2016-08-02"}
+
+    def run_check(self, responses):
+        current = load_module("check_current_status_regression", STAGE / "check_current.py")
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            (root / "sources.json").write_text(json.dumps(
+                {"retrieved": "2016-08-02", "titles": [self.TITLE]}), encoding="utf-8")
+            stdout = io.StringIO()
+            with mock.patch.object(current, "ROOT", str(root)), \
+                    mock.patch.object(current, "fetch_json", side_effect=responses), \
+                    mock.patch.object(current.time, "sleep"), \
+                    mock.patch.object(sys, "argv", ["check_current.py"]), \
+                    contextlib.redirect_stdout(stdout):
+                current.main()
+        return stdout.getvalue()
+
+    def test_a_repealed_current_row_is_reported_as_no_longer_in_force(self):
+        # The shape of the public API record for F2016L01256: isCurrent true,
+        # status Repealed and no document id. Read compilation-first it looked
+        # like a compilation the Register had yet to publish.
+        output = self.run_check([{"value": [{
+            "titleId": "F2016L01256", "start": "2026-08-12T00:00:00Z",
+            "compilationNumber": None, "registerId": None,
+            "isCurrent": True, "status": "Repealed"}]}])
+        self.assertIn("no longer in force: 1", output)
+        self.assertIn("no compilation published: 0", output)
+        self.assertIn("NO LONGER IN FORCE", output)
+        self.assertNotIn("NO COMPILATION PUBLISHED", output)
+
+    def test_an_in_force_row_without_a_document_is_still_an_unpublished_compilation(self):
+        output = self.run_check([{"value": [{
+            "titleId": "F2016L01256", "start": "2026-08-12T00:00:00Z",
+            "compilationNumber": None, "registerId": None,
+            "isCurrent": True, "status": "InForce"}]}])
+        self.assertIn("no compilation published: 1", output)
+        self.assertIn("no longer in force: 0", output)
+        self.assertIn("NO COMPILATION PUBLISHED", output)
+
+    def test_the_query_asks_the_register_for_the_status_field(self):
+        current = load_module("check_current_select_regression", STAGE / "check_current.py")
+        seen = []
+
+        def record(url):
+            seen.append(url)
+            return {"value": [{"titleId": "F2016L01256", "start": "2016-08-02T00:00:00Z",
+                               "compilationNumber": "1", "registerId": "F2016C00001",
+                               "isCurrent": True, "status": "InForce"}]}
+
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            (root / "sources.json").write_text(json.dumps(
+                {"retrieved": "2016-08-02", "titles": [self.TITLE]}), encoding="utf-8")
+            with mock.patch.object(current, "ROOT", str(root)), \
+                    mock.patch.object(current, "fetch_json", side_effect=record), \
+                    mock.patch.object(current.time, "sleep"), \
+                    mock.patch.object(sys, "argv", ["check_current.py"]), \
+                    contextlib.redirect_stdout(io.StringIO()):
+                current.main()
+        self.assertTrue(seen)
+        self.assertIn("compilationNumber,registerId,status", seen[0])
+
+
+class DiscoveryLabelTests(unittest.TestCase):
+    """Totals spanning three collections are titles, not Acts."""
+
+    TITLES = [
+        {"id": "C2099A00001", "name": "Tax Example Act", "collection": "Act",
+         "isPrincipal": True, "isInForce": True},
+        {"id": "F2099L00001", "name": "Tax Example Instrument",
+         "collection": "LegislativeInstrument", "isPrincipal": True, "isInForce": True},
+        {"id": "F2099N00001", "name": "Tax Example Notice",
+         "collection": "NotifiableInstrument", "isPrincipal": True, "isInForce": True},
+    ]
+
+    def test_discovery_totals_count_titles_and_keep_the_collection_breakdown(self):
+        discover = load_module("discover_label_regression", STAGE / "discover.py")
+        with tempfile.TemporaryDirectory() as temporary:
+            stdout = io.StringIO()
+            with mock.patch.object(discover, "SCRATCH", temporary), \
+                    mock.patch.object(
+                        discover, "page_titles",
+                        side_effect=lambda kw, coll: [
+                            dict(t) for t in self.TITLES if t["collection"] == coll]
+                        if kw == "Tax" else []), \
+                    mock.patch.object(discover.time, "sleep"), \
+                    contextlib.redirect_stdout(stdout):
+                discover.main()
+            output = stdout.getvalue()
+        self.assertIn("total distinct in-force titles: 3", output)
+        self.assertNotIn("in-force Act titles", output)
+        self.assertNotIn("sample principal Acts", output)
+        # The per-collection breakdown the labels rely on is still printed.
+        for collection in ("Act", "LegislativeInstrument", "NotifiableInstrument"):
+            self.assertIn(collection, output)
+
+    def test_version_resolution_totals_count_titles_and_report_collections(self):
+        versions = load_module("versions_label_regression", STAGE / "versions.py")
+        with tempfile.TemporaryDirectory() as temporary:
+            scratch = Path(temporary)
+            (scratch / "titles_all.json").write_text(
+                json.dumps(self.TITLES), encoding="utf-8")
+
+            def response(url):
+                title_id = urllib.parse.unquote(url).split("titleId eq '", 1)[1].split("'", 1)[0]
+                return {"value": [{"titleId": title_id, "start": "2099-01-01T00:00:00Z",
+                                   "compilationNumber": "1", "registerId": "C2099C00001"}]}
+
+            stdout = io.StringIO()
+            with mock.patch.object(versions, "SCRATCH", str(scratch)), \
+                    mock.patch.object(versions, "fetch_json", side_effect=response), \
+                    mock.patch.object(versions.time, "sleep"), \
+                    contextlib.redirect_stdout(stdout):
+                versions.main()
+            output = stdout.getvalue()
+        self.assertIn("distinct in-force titles: 3", output)
+        self.assertIn("distinct principal titles:   3", output)
+        self.assertNotIn("distinct principal Acts", output)
+        self.assertIn("by collection: Act 1, LegislativeInstrument 1, "
+                      "NotifiableInstrument 1", output)
 
 
 class PreSectionTextTests(unittest.TestCase):

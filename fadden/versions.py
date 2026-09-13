@@ -20,8 +20,17 @@ def main():
         by_id[r["id"]] = r
     principal = sorted([r for r in by_id.values() if r.get("isPrincipal")],
                        key=lambda r: r["name"])
-    print("distinct in-force Act titles: %d" % len(by_id))
-    print("distinct principal Acts:      %d" % len(principal))
+    # titles_all.json holds Acts, legislative instruments and notifiable
+    # instruments, so both totals count titles rather than Acts. Each row's
+    # own `collection` field says which kind it is.
+    by_collection = {}
+    for r in by_id.values():
+        key = r.get("collection") or "unknown"
+        by_collection[key] = by_collection.get(key, 0) + 1
+    print("distinct in-force titles: %d" % len(by_id))
+    print("distinct principal titles:   %d" % len(principal))
+    print("by collection:", ", ".join(
+        "%s %d" % (name, count) for name, count in sorted(by_collection.items())))
 
     # Probe the versions filter shape once before looping.
     probe = fetch_json("%s/versions?$top=2&$filter=%s&$select=titleId,start,compilationNumber,isCurrent"
