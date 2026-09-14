@@ -20,6 +20,20 @@ Before tagging:
 
 The workflow compiles and tests the builder, then creates deterministic source archives directly from Git. The archive helper fixes the timezone to UTC and Git text conversion to LF so the same tagged tree produces the same archive bytes on Linux and Windows. It adds an SPDX 2.3 SBOM, `SHA256SUMS`, GitHub provenance and an SBOM attestation before publishing the completed draft. Existing releases are refused rather than overwritten.
 
+Before future publication, compare each workflow package's SBOM `versionInfo`
+and package URL version with the `uses` ref in the archived workflow. A matching
+file digest does not establish that the package version is correct.
+
+Historical SBOM correction, recorded 15 September 2026: the published `v0.1.3`
+SBOM identifies the release-policy workflow as version `9`, including `@9` in
+its package URL. The archived workflow actually pins
+`1637bebd06c06a4606efdaa5fea6d88ddd546b38`; its comment ends in `(#9)`.
+The SBOM's workflow-file digests match the archived bytes, so this is a
+dependency-version metadata error. It does not change the pinned code or the
+previous provenance results. The scanner was not rerun to establish the cause.
+Preserve the immutable assets. The reviewed `v0.1.5` SBOM records its actual
+release-policy commit.
+
 Verify the downloaded builder release with:
 
 ```bash
