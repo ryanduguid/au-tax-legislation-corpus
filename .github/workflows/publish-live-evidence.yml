@@ -159,10 +159,28 @@ jobs:
             'contains the Federal Register attribution for its own response retrieval date.'
           ) -join "`n"
 
-          & gh api --method POST repos/ryanduguid/au-tax-legislation-corpus/git/refs --raw-field "ref=refs/tags/$releaseTag" --raw-field "sha=$env:GITHUB_SHA"
-          if ($LASTEXITCODE -ne 0) { throw 'GitHub CLI release operation failed.' }
-          & gh release create $releaseTag --repo ryanduguid/au-tax-legislation-corpus --draft --verify-tag --title $releaseTag --notes $notes
-          if ($LASTEXITCODE -ne 0) { throw 'GitHub CLI release operation failed.' }
+          # Retry-safe. A failure after the tag was created used to block every later
+          # run, because creating an existing ref fails. Reuse a tag only when it
+          # already points at this commit; a tag on another commit is a different
+          # capture and must not be published under this run's assets.
+          $existingSha = & gh api "repos/ryanduguid/au-tax-legislation-corpus/git/ref/tags/$releaseTag" --jq '.object.sha' 2>$null
+          if ($LASTEXITCODE -eq 0 -and -not [string]::IsNullOrWhiteSpace($existingSha)) {
+            if ($existingSha.Trim() -ne $env:GITHUB_SHA) {
+              throw "Tag $releaseTag already exists on another commit."
+            }
+          } else {
+            & gh api --method POST repos/ryanduguid/au-tax-legislation-corpus/git/refs --raw-field "ref=refs/tags/$releaseTag" --raw-field "sha=$env:GITHUB_SHA"
+            if ($LASTEXITCODE -ne 0) { throw 'GitHub CLI release operation failed.' }
+          }
+          $isDraft = & gh release view $releaseTag --repo ryanduguid/au-tax-legislation-corpus --json isDraft --jq '.isDraft' 2>$null
+          if ($LASTEXITCODE -eq 0 -and -not [string]::IsNullOrWhiteSpace($isDraft)) {
+            if ($isDraft.Trim() -ne 'true') {
+              throw "Release $releaseTag is already published; it is never rewritten."
+            }
+          } else {
+            & gh release create $releaseTag --repo ryanduguid/au-tax-legislation-corpus --draft --verify-tag --title $releaseTag --notes $notes
+            if ($LASTEXITCODE -ne 0) { throw 'GitHub CLI release operation failed.' }
+          }
           $batchSize = 64
           for ($offset = 0; $offset -lt $assetPaths.Count; $offset += $batchSize) {
             $last = [Math]::Min($offset + $batchSize - 1, $assetPaths.Count - 1)
