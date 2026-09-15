@@ -1416,6 +1416,12 @@ def capture_register_run(
         _validate_staged_graph(staging)
         _require_ordinary_directory(output.parent, "capture output parent")
         _require_absent_destination(output)
+        # The check and the rename are separate calls. On Windows, where the
+        # publication workflow runs, os.rename refuses an existing destination, so a
+        # completed capture is never overwritten. On POSIX the rename replaces an
+        # existing empty directory and still refuses a non-empty one, so the only
+        # thing a concurrent writer can lose there is an empty reservation. Python
+        # exposes no portable no-replace directory rename to close that window.
         try:
             os.rename(staging, output)
         except OSError as exc:

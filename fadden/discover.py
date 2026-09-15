@@ -1,6 +1,7 @@
 """Stage 1: discover in-force principal tax Acts by keyword and collection."""
 import json
 import os
+import tempfile
 import time
 import urllib.parse
 
@@ -44,6 +45,19 @@ def page_titles(keyword, collection="Act"):
     return rows
 
 
+def _write_json(path, rows):
+    """Write rows as JSON, replacing path only once the file is complete."""
+    directory = os.path.dirname(path) or "."
+    handle, staged = tempfile.mkstemp(dir=directory, suffix=".tmp")
+    try:
+        with os.fdopen(handle, "w", encoding="utf-8") as f:
+            json.dump(rows, f, indent=1)
+        os.replace(staged, path)
+    except BaseException:
+        os.unlink(staged)
+        raise
+
+
 def main():
     seen, all_rows = set(), []
     for coll in COLLECTIONS:
@@ -65,10 +79,11 @@ def main():
     print("\ntotal distinct in-force titles: %d" % len(all_rows))
     print("of which principal (client-side filter): %d" % len(principal))
 
-    with open(os.path.join(SCRATCH, "titles_all.json"), "w", encoding="utf-8") as f:
-        json.dump(all_rows, f, indent=1)
-    with open(os.path.join(SCRATCH, "titles_principal.json"), "w", encoding="utf-8") as f:
-        json.dump(principal, f, indent=1)
+    # Stage then replace. open(..., "w") truncates first, so a crash part way
+    # through json.dump left titles_all.json truncated, and versions.py reads it
+    # as its authoritative input: the whole discovery crawl would have to run again.
+    _write_json(os.path.join(SCRATCH, "titles_all.json"), all_rows)
+    _write_json(os.path.join(SCRATCH, "titles_principal.json"), principal)
 
     print("\nsample principal titles:")
     for x in sorted(principal, key=lambda r: r["name"])[:15]:

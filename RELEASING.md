@@ -90,6 +90,12 @@ tag=v0.1.6
 repo=ryanduguid/au-tax-legislation-corpus
 release_commit="$(git ls-remote "https://github.com/$repo.git" "refs/tags/$tag^{}" | cut -f1)"
 test -n "$release_commit"
+# Download the selected release into its own directory first. Without this the
+# loop below reads the caller's working directory, so it verifies a checkout's
+# source files, or the assets of whichever release the earlier example left.
+rm -rf "verify-$tag" && mkdir "verify-$tag"
+gh release download "$tag" -R "$repo" -D "verify-$tag"
+cd "verify-$tag"
 for file in *; do
   gh attestation verify "$file" -R "$repo" \
     --source-digest "$release_commit" \
