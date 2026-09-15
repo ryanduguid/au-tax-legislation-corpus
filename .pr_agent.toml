@@ -18,7 +18,7 @@ inline_comments_severity_threshold = 3
 # Bug and quality findings come from the Issues agent; rule violations come
 # from the Compliance agent, so each gets the guidance it acts on.
 issues_user_guidelines = "Australian English spellings are correct, not typos. Do not propose tax classifications, individual tax positions or Division 7A treatment."
-compliance_user_guidelines = "Check a claim against whichever of AGENTS.md, CLAUDE.md and CONTRIBUTING.md exist in the repository before raising a rule violation. Do not raise rule violations that propose tax classifications, individual tax positions or Division 7A treatment."
+compliance_user_guidelines = "The corpus and its provenance records are built artefacts with their own evidence contract in docs/build-evidence.md and docs/monitor-contract.md. A lossy upstream parse that is recorded as such is intended. Check AGENTS.md, CLAUDE.md and CONTRIBUTING.md before raising a rule violation. Do not raise rule violations that propose tax classifications, individual tax positions or Division 7A treatment."
 
 [review_agent_ux]
 show_daily_tips = false
