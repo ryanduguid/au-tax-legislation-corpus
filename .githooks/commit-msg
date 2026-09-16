@@ -41,7 +41,7 @@ ai_name() {
 		"^($SOLE)\$|^claude (opus|sonnet|haiku|fable)( [0-9.]+)?|\
 ^($VENDOR)[-_ ](code|agent|bot|assist|review)|\
 ^($VENDOR)([-_ ][a-z0-9]+)*\[bot\]|\
-^(openai[-_ ]codex|github[-_ ]copilot|qodo[-_ ]code[-_ ]review|gemini[-_ ]code[-_ ]assist)"
+^(hermes review|review bot|review agent|review fixes|openai[-_ ]codex|github[-_ ]copilot|qodo[-_ ]code[-_ ]review|gemini[-_ ]code[-_ ]assist)"
 }
 
 check_identity() {
@@ -75,18 +75,36 @@ check_identity author "$(git var GIT_AUTHOR_IDENT)"
 check_identity committer "$(git var GIT_COMMITTER_IDENT)"
 
 # --- message ---------------------------------------------------------------
-# Comment lines are stripped by git after this hook, so drop them here too, and
+# Scan comment lines too: Git may retain them depending on cleanup mode, and
 # skip fenced code blocks so a quoted example is not read as a credit.
 awk -v vendor="$VENDOR" -v domain="$DOMAIN" -v hook="$hook" '
 	function flag(why) {
 		printf "%s: %s line %d: %s\n", hook, why, NR, $0 > "/dev/stderr"
 		bad = 1
 	}
-	/^#/ { next }
 	{
 		line = tolower($0)
-		if (line ~ /^[ \t]*(```|~~~)/) { fence = !fence; next }
-		if (fence) next
+		# Track the opening fence character and length; only a matching fence
+		# with no info string closes the block.
+		if (!fence && line ~ /^[ \t]*(```+|~~~+)[ \t]*$/) {
+			fence = 1
+			fence_char = (line ~ /^[ \t]*`/ ? "`" : "~")
+			fence_len = 0
+			p = 1
+			while (substr(line, p, 1) ~ /[ \t]/) p++
+			while (substr(line, p, 1) == fence_char) { fence_len++; p++ }
+			next
+		}
+		if (fence) {
+			p = 1
+			while (substr(line, p, 1) ~ /[ \t]/) p++
+			if (substr(line, p, 1) == fence_char) {
+				n = 0
+				while (substr(line, p, 1) == fence_char) { n++; p++ }
+				if (n >= fence_len && line ~ /^[ \t]*(```+|~~~+)[ \t]*$/) { fence = 0; next }
+			}
+			next
+		}
 
 		if (line ~ ("^[ \t]*co-?authored-by:.*(" vendor ")"))
 			flag("co-author trailer")
@@ -94,11 +112,11 @@ awk -v vendor="$VENDOR" -v domain="$DOMAIN" -v hook="$hook" '
 			flag("agent by-line trailer")
 		else if (line ~ ("^[ \t]*(" vendor ")[-_ ]?(session|run|thread|trace|id):"))
 			flag("session trailer")
-		else if (line ~ ("^[ \t]*_?[^a-z0-9]*\xf0\x9f\xa4\x96.*(" vendor ")"))
+		else if (line ~ ("^[ \t]*_?[^a-z0-9]*🤖.*(" vendor ")"))
 			flag("robot emoji credit")
 		else if (line ~ ("^[ \t]*_?(generated|written|created|produced|assisted) (with|by) .*(" vendor ")"))
 			flag("generated-with footer")
-		else if (line ~ ("^[ \t]*[_<(]*https?://([a-z0-9.-]+\\.)?(" domain ")"))
+		else if (line ~ ("^[ \t]*[_<(]*https?://([a-z0-9.-]+\\.)?(" domain ")[/:?#]"))
 			flag("bare vendor url")
 	}
 	END { exit bad ? 1 : 0 }
