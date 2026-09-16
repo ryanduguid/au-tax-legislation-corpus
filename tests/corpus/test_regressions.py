@@ -3492,5 +3492,79 @@ class DistTableBlockParagraphTests(unittest.TestCase):
         self.assertEqual(result.count(dist.TABLE_BLOCK_LEAD), 1)
 
 
+class DistVerifyExitStatusTests(unittest.TestCase):
+    """The three bands of dist_verify's exit status.
+
+    A gate that exits 1 both when it finds something and when it falls over
+    reads as "found something" to every caller, so a verifier that stopped
+    working looks exactly like a verifier doing its job. Each band gets a
+    fixture: clean, a real finding, and inputs that stop the checks running.
+    """
+
+    # Borrow the distribution fixture without subclassing: a TestCase subclass
+    # would re-run every test in DistributionTests as well.
+    PUBLIC_ID = DistributionTests.PUBLIC_ID
+    PRIVATE_ID = DistributionTests.PRIVATE_ID
+    PUBLIC_NAME = DistributionTests.PUBLIC_NAME
+    PRIVATE_NAME = DistributionTests.PRIVATE_NAME
+    _write_fixture = DistributionTests._write_fixture
+    _verify = DistributionTests._verify
+
+    def _clean_distribution(self, tmp):
+        dist = load_module("dist_exit_status", STAGE / "dist.py")
+        verify = load_module("dist_verify_exit_status", STAGE / "dist_verify.py")
+        root, build = self._write_fixture(Path(tmp))
+        dist.ROOT = str(root)
+        dist.HERE = str(build)
+        dist.DIST = str(root / "dist")
+        with contextlib.redirect_stdout(io.StringIO()):
+            dist.main()
+        verify.DIST = dist.DIST
+        return verify, Path(dist.DIST)
+
+    def test_a_clean_distribution_exits_0(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            verify, _ = self._clean_distribution(tmp)
+            code, out = self._verify(verify)
+            self.assertEqual(code, 0)
+            self.assertIn("all checks passed", out)
+
+    def test_a_real_finding_exits_1(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            verify, output = self._clean_distribution(tmp)
+            # A title listed in sources.json but absent from the tree: a
+            # finding the checks are there to make, not a broken verifier.
+            shutil.rmtree(output / "markdown" / self.PUBLIC_ID)
+            code, out = self._verify(verify)
+            self.assertEqual(code, 1)
+            self.assertIn("FAILED", out)
+            self.assertNotIn("VERIFIER ERROR", out)
+
+    def test_inputs_that_stop_the_checks_exit_2_and_say_so(self):
+        for label, break_it in (
+            ("sources.json missing", lambda o: (o / "sources.json").unlink()),
+            ("sources.json malformed",
+             lambda o: (o / "sources.json").write_text("{not json", encoding="utf-8")),
+        ):
+            with self.subTest(label), tempfile.TemporaryDirectory() as tmp:
+                verify, output = self._clean_distribution(tmp)
+                break_it(output)
+                buffer = io.StringIO()
+                with contextlib.redirect_stdout(buffer):
+                    with contextlib.redirect_stderr(io.StringIO()):
+                        with self.assertRaises(SystemExit) as result:
+                            verify.main()
+                self.assertEqual(result.exception.code, 2)
+                self.assertIn("VERIFIER ERROR", buffer.getvalue())
+                self.assertIn("unverified, not clean", buffer.getvalue())
+
+    def test_the_bands_are_three_distinct_statuses(self):
+        verify = load_module("dist_verify_bands", STAGE / "dist_verify.py")
+        self.assertEqual(
+            sorted({verify.EXIT_OK, verify.EXIT_CHECKS_FAILED, verify.EXIT_COULD_NOT_RUN}),
+            [0, 1, 2],
+        )
+
+
 if __name__ == "__main__":
     unittest.main()
