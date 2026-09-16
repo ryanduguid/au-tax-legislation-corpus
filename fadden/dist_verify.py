@@ -4,11 +4,26 @@ Checks the claims the distribution makes about itself rather than trusting the
 build script that made it: no personal names, no image bytes, every row parses,
 every title listed in sources.json is actually present, and nothing links to a
 title that was removed.
+
+The exit status is a three-state contract, not a boolean:
+
+    0   every check passed
+    1   a check failed: the distribution is not fit to publish
+    2   the verifier could not run, so nothing was checked
+
+The third state is the one worth the code. A verifier that dies on a missing
+sources.json, an unreadable tree or a malformed row would otherwise exit 1
+through Python's own traceback path, which is the same status it uses for a
+real finding. A caller that only asks "did it exit non-zero" cannot tell the
+two apart, and a caller that stops at the first failure will chase a planted
+name that was never looked for. Everything unexpected lands in the 2 band and
+says so; only the checks themselves can produce a 1.
 """
 import collections
 import json
 import os
 import sys
+import traceback
 
 from corpus_paths import child, corpus_root, is_reparse_point, register_id, reject_symlinks
 from pii_patterns import (
@@ -16,6 +31,11 @@ from pii_patterns import (
     load_contact_allowlist,
     privacy_findings_in_file,
 )
+
+#: Exit statuses. See the module docstring: 2 is "not checked", never "clean".
+EXIT_OK = 0
+EXIT_CHECKS_FAILED = 1
+EXIT_COULD_NOT_RUN = 2
 
 DIST = child(corpus_root(__file__), "dist")
 HERE = os.path.dirname(os.path.abspath(__file__))
@@ -328,7 +348,18 @@ def verify_distribution(distribution=None, contact_allowlist=None):
 
 
 def main():
-    sys.exit(1 if verify_distribution() else 0)
+    try:
+        fails = verify_distribution()
+    except Exception:
+        # Deliberately broad: the point of the 2 band is that anything which
+        # stopped the checks from running reports as "not checked" rather than
+        # as a finding. KeyboardInterrupt and SystemExit are not Exception and
+        # still propagate.
+        traceback.print_exc()
+        print("RESULT: VERIFIER ERROR: the checks did not run, so this "
+              "distribution is unverified, not clean")
+        sys.exit(EXIT_COULD_NOT_RUN)
+    sys.exit(EXIT_CHECKS_FAILED if fails else EXIT_OK)
 
 
 if __name__ == "__main__":

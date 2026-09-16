@@ -391,3 +391,29 @@ python -m fadden export_live_evidence_bundles -- build/register-capture-20260829
 The PII scans run before `finalize.py` because the generated corpus README
 reports the scan's totals; `finalize.py` refuses to run without
 `pii_flagged.json` rather than print counts no scan produced.
+
+### The verifier's exit status has three states
+
+`python -m fadden dist_verify` is the gate before anything is published, and
+its status says which of three things happened:
+
+| Status | Meaning | What to do |
+| --- | --- | --- |
+| `0` | every check passed | publish |
+| `1` | a check failed | fix the distribution; the failed labels are listed |
+| `2` | the checks did not run | fix the verifier or its inputs, then run it again |
+
+The third state is the one that earns its keep. Left alone, a verifier that
+dies on a missing `sources.json` or an unreadable tree exits 1 through
+Python's own traceback path, which is the status it also uses for a real
+finding. Anything unexpected is caught and reported as `VERIFIER ERROR: the
+checks did not run, so this distribution is unverified, not clean`, so an
+operator or a script cannot read a broken gate as a passing one. Only the
+checks themselves can produce a 1.
+
+The three bands have their own fixtures in
+`tests/corpus/test_regressions.py::DistVerifyExitStatusTests`: a clean tree, a
+tree with a title removed, and a tree whose `sources.json` is missing or
+malformed. CI cannot run the verifier itself, because building a distribution
+needs the downloaded corpus, so those fixtures are the whole mechanical
+perimeter for this gate.
