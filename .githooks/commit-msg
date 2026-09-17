@@ -56,14 +56,13 @@ if [ -z "${PY:-}" ]; then
 	exit 1
 fi
 
-# core.commentString is the modern spelling and core.commentChar the older
-# alias; either may carry the special value `auto`. Both are passed through and
-# resolved below rather than defaulted here, so an unset value stays unset.
+# Pass both aliases in configuration order. Git 2.45 introduced
+# core.commentString; older Git versions only understand core.commentChar.
 MSG_FILE=$msg_file \
 AUTHOR_IDENT=$(git var GIT_AUTHOR_IDENT) \
 COMMITTER_IDENT=$(git var GIT_COMMITTER_IDENT) \
-COMMENT_STRING=$(git config --get core.commentString 2>/dev/null || true) \
-COMMENT_CHAR=$(git config --get core.commentChar 2>/dev/null || true) \
+COMMENT_CONFIG=$(git config --get-regexp '^core\.comment(String|Char)$' 2>/dev/null || true) \
+GIT_VERSION=$(git --version) \
 	"$PY" - <<'PY'
 import os
 import re
@@ -123,10 +122,22 @@ def comparable(text):
 def comment_markers():
     """The marker(s) Git would treat as starting a comment line.
 
+    Configuration aliases are considered in Git's order, with the last
+    applicable value winning. Git before 2.45 did not know commentString.
     `auto` names no single character, so every character Git may pick is
     treated as a marker: that scans more lines, never fewer.
     """
-    configured = (os.environ.get("COMMENT_STRING") or os.environ.get("COMMENT_CHAR") or "").strip()
+    version = re.search(r"(\d+)\.(\d+)", os.environ.get("GIT_VERSION", ""))
+    supports_string = version and (int(version.group(1)), int(version.group(2))) >= (2, 45)
+    configured = ""
+    for entry in os.environ.get("COMMENT_CONFIG", "").splitlines():
+        key, _, value = entry.partition("\t")
+        if not _:
+            key, _, value = entry.partition(" ")
+        if key.casefold() == "core.commentstring" and not supports_string:
+            continue
+        if key.casefold() in ("core.commentstring", "core.commentchar"):
+            configured = value.strip()
     if not configured:
         return ("#",)
     if configured.casefold() == "auto":
