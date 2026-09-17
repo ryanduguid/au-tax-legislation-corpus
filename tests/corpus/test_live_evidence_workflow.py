@@ -172,7 +172,7 @@ class LiveEvidenceWorkflowPolicyTests(unittest.TestCase):
             [
                 "actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1",
                 "actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97",
-                "astral-sh/setup-uv@20cfd1bf945f4377ade1205e4dbc17946fc9a30d",
+                "astral-sh/setup-uv@bec219d24cd3e171d82865faccec33120bb574f4",
                 "actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6",
             ],
         )
