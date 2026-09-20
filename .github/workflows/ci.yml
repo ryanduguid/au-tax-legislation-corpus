@@ -114,3 +114,6 @@ jobs:
       # one list to keep in step rather than two.
       - run: uv run --locked --extra dev ruff check .
       - run: uv run --locked --extra dev mypy
+      # The lockfile pins 19 packages that ship in the release archive family;
+      # nothing checked them against advisories until now.
+      - run: uv audit --locked
