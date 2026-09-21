@@ -85,6 +85,7 @@ OBSERVED_COMPILATION_FIELDS = {"number", "date", "document_id"}
 CANDIDATE_FIELDS = {
     "mapping_id",
     "skill_ref",
+    "skill_path",
     "owner_role",
     "review_question",
     "mapping_basis",
@@ -471,6 +472,7 @@ def _candidate(mapping: dict[str, str]) -> dict[str, str]:
     return {
         "mapping_id": mapping["mapping_id"],
         "skill_ref": mapping["skill_ref"],
+        "skill_path": mapping["skill_path"],
         "owner_role": mapping["owner_role"],
         "review_question": mapping["review_question"],
         "mapping_basis": "exact_register_id_and_collection",
@@ -748,6 +750,7 @@ def _validate_candidates(value: Any, *, item_index: int) -> int:
         for name in (
             "mapping_id",
             "skill_ref",
+            "skill_path",
             "owner_role",
             "review_question",
         ):
