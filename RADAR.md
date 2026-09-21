@@ -4,6 +4,9 @@
 
 This is a provenance-first change-review queue. It does not answer tax questions and it does not update skills automatically.
 
+The [workpaper mapping example](docs/workpaper-impact.md) links fabricated
+source changes to BAS classification and forecast payment-timing review questions.
+
 > Compatibility: the distribution, import package and CLI command are `tax-radar-au` / `tax_radar_au`. Releases v0.1.0 and v0.1.1, cut before this half merged into the corpus repository, shipped wheels named `au_tax_change_impact_monitor-*`; those assets and their attestations live on the archived tax-radar-au repository and are unchanged.
 
 The first version compares fabricated source-index metadata with a fabricated Register-observation contract. It keeps important states distinct (`SUPERSEDED`, `CURRENT_NO_PUBLISHED_COMPILATION`, `NO_LONGER_IN_FORCE`, and `LOOKUP_FAILED`), then maps only exact register ID + collection pairs to a potential workflow-review question.
