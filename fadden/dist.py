@@ -463,6 +463,7 @@ def _build_distribution(staging):
             if record["register_id"] in drop:
                 rdropped += 1
                 continue
+            record["rate_id"] = "R%05d" % (len(rate_records) + 1)
             rate_records.append(record)
     with open(child(staging, "rates", "rates.jsonl"), "w", encoding="utf-8") as f:
         for record in rate_records:

@@ -11,6 +11,7 @@ Large raw transfers also drop mid-stream, so those get a resumed retry.
 """
 import base64
 import binascii
+import datetime
 import json
 import os
 import shutil
@@ -229,7 +230,9 @@ def main():
                         manifest.append(dict(
                             a, epub=os.path.basename(dst), bytes=sz,
                             status="cached", sourceUrl=url,
-                            compilationRegisterId=prev.get("compilationRegisterId")))
+                            compilationRegisterId=prev.get("compilationRegisterId"),
+                            isAuthorised=prev.get("isAuthorised"),
+                            fetched_at=prev.get("fetched_at")))
                         ok_n += 1
                         total_bytes += sz
                         continue
@@ -264,12 +267,15 @@ def main():
                         rec["isAuthorised"] = meta.get("isAuthorised")
                     ok_n += 1
                     total_bytes += sz
-                    rec.update(epub=os.path.basename(dst), bytes=sz, status="ok")
+                    rec.update(epub=os.path.basename(dst), bytes=sz, status="ok",
+                               fetched_at=datetime.datetime.now(datetime.timezone.utc).isoformat())
                     write_json_atomic(side, {
                         "versionStart": d,
                         "compilationNumber": a.get("compilationNumber"),
                         "compilationRegisterId": rec.get("compilationRegisterId"),
                         "bytes": sz,
+                        "isAuthorised": rec.get("isAuthorised"),
+                        "fetched_at": rec["fetched_at"],
                     })
                     label = "OK"
                 manifest.append(rec)

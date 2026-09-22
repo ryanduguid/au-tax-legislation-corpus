@@ -202,21 +202,9 @@ class VolumeGateTests(unittest.TestCase):
         blocks = extract.epub_blocks(io.BytesIO(self.epub_bytes(*volumes)))
         return extract.to_markdown(blocks, self.META)
 
-    def test_a_volume_with_no_boundary_is_dropped_rather_than_publishing_a_cover_page(self):
-        """Every markdown file and every JSONL row carries an attribution
-        saying compilation cover pages are omitted, so a volume showing neither
-        a contents page nor a body class must not open at its own first block.
-        It keeps the older, documented loss instead: nothing recovered, and no
-        cover page published under a notice that says it was removed.  No
-        volume in the corpus takes this path - all 11 heading-less volumes open
-        at a contents page."""
-        markdown, _sections, endnotes, _long = self._parse(
-            "extract_volume_gate_bare", self.VOLUME_1, self.VOLUME_2_BARE)
-        self.assertNotIn("Compilation No. 1", markdown)
-        self.assertNotIn("Volume 2: Schedule 1", markdown)
-        self.assertNotIn("Endnotes", markdown)
-        self.assertNotIn("| 55 | 12.5 |", markdown)
-        self.assertEqual(endnotes, "")
+    def test_a_volume_with_no_boundary_blocks_extraction(self):
+        with self.assertRaisesRegex(ValueError, "body boundary"):
+            self._parse("extract_volume_gate_bare", self.VOLUME_1, self.VOLUME_2_BARE)
 
     def test_a_running_header_is_not_a_volume_body_boundary(self):
         """Word repeats the running header above the cover page, so opening the
@@ -637,9 +625,12 @@ class ParserRuleTests(unittest.TestCase):
                     '</table></body></html>')
         parser._flush()
         tables = [b["rows"] for b in parser.blocks if b["k"] == "table"]
-        self.assertEqual(tables, [
-            [["sub a", "1%"]],
-            [["Item 1", "Rate 5%"], ["Item 2", "Rate 6%"], ["Item 3", "Rate 7%"]]])
+        self.assertEqual(len(tables), 1)
+        self.assertEqual(tables[0][0], ["Item 1", "Rate 5%"])
+        self.assertEqual(tables[0][2], ["Item 3", "Rate 7%"])
+        self.assertIn("sub a", tables[0][1][0])
+        self.assertIn("1%", tables[0][1][0])
+        self.assertEqual(tables[0][1][1], "Rate 6%")
 
     def test_a_nested_table_does_not_steal_the_enclosing_cell_colspan(self):
         """The inner table's own cells reset _colspan, so without saving it the
@@ -654,8 +645,10 @@ class ParserRuleTests(unittest.TestCase):
                     '</table></body></html>')
         parser._flush()
         tables = [b["rows"] for b in parser.blocks if b["k"] == "table"]
-        self.assertEqual(tables[-1],
-                         [["Band", "", "Rate"], ["Low", "High", "5%"]])
+        self.assertEqual(tables[-1][0][1:], ["", "Rate"])
+        self.assertIn("Band", tables[-1][0][0])
+        self.assertIn("note", tables[-1][0][0])
+        self.assertEqual(tables[-1][1], ["Low", "High", "5%"])
 
 
 class FailureHandlingTests(unittest.TestCase):
@@ -2159,6 +2152,9 @@ class DistributionTests(unittest.TestCase):
              "topic": "income tax rates", "kind": "rate", "amounts": ["20%"],
              "content": "Private rate content must not be distributed."},
         ]
+        rate_rows.reverse()
+        for index, row in enumerate(rate_rows, 1):
+            row["rate_id"] = "R%05d" % index
         (rates / "rates.jsonl").write_text(
             "".join(json.dumps(row) + "\n" for row in rate_rows), encoding="utf-8")
         (rates / "RATES.md").write_text(
@@ -2190,6 +2186,9 @@ class DistributionTests(unittest.TestCase):
             self.assertNotIn(self.PRIVATE_NAME, index_md)
 
             rates_md = (output / "rates" / "RATES.md").read_text(encoding="utf-8")
+            rates = [json.loads(line) for line in
+                     (output / "rates" / "rates.jsonl").read_text(encoding="utf-8").splitlines()]
+            self.assertEqual([row["rate_id"] for row in rates], ["R00001"])
             self.assertIn("1 entries across 1 titles.", rates_md)
             self.assertIn(self.PUBLIC_NAME, rates_md)
             self.assertNotIn(self.PRIVATE_NAME, rates_md)

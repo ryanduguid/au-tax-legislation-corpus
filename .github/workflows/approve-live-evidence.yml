@@ -1,0 +1,55 @@
+name: Publish reviewed live evidence
+
+on:
+  workflow_dispatch:
+    inputs:
+      release-tag:
+        description: Existing draft tag whose candidate assets you have reviewed and authorise for publication
+        required: true
+        type: string
+
+concurrency:
+  group: publish-live-evidence-v2
+  cancel-in-progress: false
+
+permissions: {}
+
+jobs:
+  publish:
+    if: github.repository == 'ryanduguid/au-tax-legislation-corpus' && github.ref == 'refs/heads/main'
+    permissions:
+      contents: write
+    runs-on: windows-latest
+    timeout-minutes: 10
+    steps:
+      - name: Publish the explicitly authorised existing draft
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ inputs.release-tag }}
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $releaseTag = $env:RELEASE_TAG
+          if ($releaseTag -cnotmatch '^live-evidence-v2-[0-9a-f]{64}$') {
+            throw 'Select an existing live-evidence v2 draft tag.'
+          }
+          $raw = & gh release view $releaseTag --repo ryanduguid/au-tax-legislation-corpus --json tagName,isDraft,assets,body
+          if ($LASTEXITCODE -ne 0) { throw 'The selected draft could not be read.' }
+          $release = $raw | ConvertFrom-Json
+          if ($release.tagName -cne $releaseTag -or $release.isDraft -ne $true) {
+            throw 'The selected release must be an existing draft.'
+          }
+          if ($release.assets.Count -lt 1 -or $release.assets.Count -gt 1000) {
+            throw 'The selected draft has an invalid candidate count.'
+          }
+          if ($release.body -cnotmatch '(?m)^Candidates: ([1-9][0-9]{0,3})\r?$' -or
+              [int]$Matches[1] -ne $release.assets.Count) {
+            throw 'The draft does not contain its complete declared candidate set.'
+          }
+          foreach ($asset in $release.assets) {
+            if ($asset.name -cnotmatch '\.json$' -or $asset.size -le 0 -or $asset.state -ne 'uploaded') {
+              throw 'The selected draft contains an incomplete candidate asset.'
+            }
+          }
+          & gh release edit $releaseTag --repo ryanduguid/au-tax-legislation-corpus --draft=false --latest=false
+          if ($LASTEXITCODE -ne 0) { throw 'Publication failed.' }

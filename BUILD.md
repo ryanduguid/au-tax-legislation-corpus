@@ -417,3 +417,12 @@ tree with a title removed, and a tree whose `sources.json` is missing or
 malformed. CI cannot run the verifier itself, because building a distribution
 needs the downloaded corpus, so those fixtures are the whole mechanical
 perimeter for this gate.
+## Human review before live-evidence publication
+
+`publish-live-evidence.yml` requires a manual dispatch with `authorise-tag`
+selected. That selection authorises a public tag and a draft for that capture.
+It captures and attests candidate assets, then leaves the draft for review.
+It does not publish that release. After reviewing the
+complete draft, an authorised operator runs `approve-live-evidence.yml` on `main`
+with that existing draft's exact tag. That dispatch authorises only the selected
+draft. Capture, export and passing tests alone do not authorise publication.
