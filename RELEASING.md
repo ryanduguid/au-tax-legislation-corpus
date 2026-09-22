@@ -6,7 +6,16 @@ The repository releases the build code only. A GitHub release must never be desc
 
 Before tagging:
 
-1. Merge the release pull request and require every `main` check to pass.
+1. Merge the release pull request and require every `main` check to pass. The
+   workflow now enforces this rather than trusting it: before anything is
+   built, the pinned policy requires each check named in `required-checks` in
+   `.github/workflows/release.yml` to have succeeded in a push or dispatch run
+   of `main` for the exact release commit. A check that was skipped, cancelled,
+   failed, is missing or is still running blocks the release, as does a name
+   matching more than one job. The list names the `ci.yml` and
+   `no-ai-attribution.yml` jobs; `codeql.yml` and `publish-live-evidence.yml`
+   are excluded because neither runs on a push to `main`. Keep the list in step
+   with any change to those job names or the test matrix.
 2. Enable release immutability in the repository settings.
 3. From an operator session authenticated with repository Administration read access, run:
 

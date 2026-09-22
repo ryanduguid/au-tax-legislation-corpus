@@ -18,13 +18,30 @@ jobs:
     # reusable workflow with `uses` accepts only name, uses, with, secrets,
     # needs, if, permissions, strategy and concurrency; timeout-minutes on this
     # job fails workflow validation and would break every release. The bound
-    # lives where the work does: both jobs in the pinned release-policy
-    # workflow, consumer-tests and the publish-archives call it needs, set
-    # timeout-minutes: 15, the same cap verify.yml uses.
+    # lives where the work does: all three jobs in the pinned release-policy
+    # workflow, checks, consumer-tests and the publish-archives call it needs,
+    # set timeout-minutes: 15, the same cap verify.yml uses.
     permissions:
+      actions: read # Read this repository's own runs to require the mandatory checks.
       attestations: write # Record provenance and SBOM attestations for release assets.
       contents: write # Create the draft release, upload assets and publish it.
       id-token: write # Obtain the OIDC identity required to sign attestations.
-    uses: ryanduguid/release-policy/.github/workflows/release-archive.yml@171aa487dbc0a8f437ed84407f0d506f814548c1 # source-archive construction owner
+    uses: ryanduguid/release-policy/.github/workflows/release-archive.yml@2adf9e19b7c73970a1dd6703afb3f9c27b7972d7 # source-archive construction owner
     with:
+      # Every mandatory check this repository runs on a push to main, which the
+      # policy requires to have succeeded for the exact release commit before
+      # anything is built. The gate fails closed on an empty list, and refuses a
+      # name matching more than one job, so each line names one job exactly as
+      # GitHub reports it. codeql.yml and publish-live-evidence.yml are absent
+      # deliberately: neither runs on a push to main, so requiring either would
+      # block every release.
+      required-checks: |
+        .github/workflows/no-ai-attribution.yml: Attribution policy / Attribution policy runner
+        .github/workflows/ci.yml: lint
+        .github/workflows/ci.yml: package
+        .github/workflows/ci.yml: test (ubuntu-latest, 3.10, tests)
+        .github/workflows/ci.yml: test (ubuntu-latest, 3.11, tests)
+        .github/workflows/ci.yml: test (ubuntu-latest, 3.12, tests)
+        .github/workflows/ci.yml: test (ubuntu-latest, 3.13, tests)
+        .github/workflows/ci.yml: test (windows-latest, 3.12, tests/radar tests/corpus/test_live_evidence_bundle_export.py)
       artifact-stem: au-tax-legislation-corpus-builder
