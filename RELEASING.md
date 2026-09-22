@@ -12,10 +12,17 @@ Before tagging:
    `.github/workflows/release.yml` to have succeeded in a push or dispatch run
    of `main` for the exact release commit. A check that was skipped, cancelled,
    failed, is missing or is still running blocks the release, as does a name
-   matching more than one job. The list names the `ci.yml` and
-   `no-ai-attribution.yml` jobs; `codeql.yml` and `publish-live-evidence.yml`
-   are excluded because neither runs on a push to `main`. Keep the list in step
-   with any change to those job names or the test matrix.
+   matching more than one job. Keep the list in step with any change to those
+   job names or the test matrix.
+
+   The list names the `ci.yml` and `no-ai-attribution.yml` jobs. Code scanning
+   is not in it and cannot be: `codeql.yml` is disabled at the repository level
+   and has not run since August, and the scanning that does run is GitHub's
+   default setup, whose workflow path `dynamic/github-code-scanning/codeql` the
+   policy's parser rejects because it accepts only `.github/workflows` paths.
+   `publish-live-evidence.yml` is excluded because it is `workflow_dispatch`
+   only. So this gate covers tests, linting, packaging and attribution, and a
+   release still needs code-scanning results reviewed separately.
 2. Enable release immutability in the repository settings.
 3. From an operator session authenticated with repository Administration read access, run:
 
