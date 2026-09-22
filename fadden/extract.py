@@ -152,7 +152,7 @@ class Doc(HTMLParser):
             self._buf = []
         elif tag == "span" and "CharSectno" in a.get("class", ""):
             self._sectno = True
-        elif tag == "td":
+        elif tag in ("td", "th"):
             self._in_td = True
             self._cell = []
             self._buf = []
@@ -161,6 +161,7 @@ class Doc(HTMLParser):
             except ValueError:
                 self._colspan = 1
         elif tag == "table":
+            self._flush()
             self._tables.append((self._table, self._table_raw, self._row,
                                  self._row_raw, self._cell, self._in_td,
                                  self._buf, self._colspan))
@@ -211,7 +212,7 @@ class Doc(HTMLParser):
     def handle_endtag(self, tag):
         if (tag == "p" or tag == "li" or tag in HTAGS) and self._in_p:
             self._flush()
-        elif tag == "td" and self._in_td:
+        elif tag in ("td", "th") and self._in_td:
             self._flush()
             cell = " ".join(x for x in self._cell if x).strip()
             self._row_raw.append(cell)
@@ -229,19 +230,18 @@ class Doc(HTMLParser):
             self._row_raw = []
         elif tag == "table":
             exp = [r for r in self._table if any(c.strip() for c in r)]
-            raw = [r for r in self._table_raw if any(c.strip() for c in r)]
-            # Colspan expansion fixes alignment when the grid is regular, but on
-            # tables whose spans vary row to row it scatters values across
-            # columns. Keep whichever produces the more consistent grid.
-            def spread(rows):
-                return len({len(r) for r in rows}) if rows else 0
-            rows = exp if spread(exp) <= spread(raw) else raw
-            if rows:
+            # The source colspan defines the logical column, even when
+            # row widths differ. Never infer a different alignment from width.
+            rows = exp
+            nested = bool(self._tables and self._tables[-1][5])
+            if rows and not nested:
                 self.blocks.append({"k": "table", "rows": rows})
             if self._tables:
                 (self._table, self._table_raw, self._row, self._row_raw,
                  self._cell, self._in_td, self._buf,
                  self._colspan) = self._tables.pop()
+                if rows and nested:
+                    self._cell.append("<br>".join(md_table(rows)))
             else:
                 self._table = []
                 self._table_raw = []
@@ -509,11 +509,8 @@ def to_markdown(blocks, meta, force_bare=False):
         carries an attribution stating that cover pages are omitted, so
         opening the gate at a block that has not been shown to be past the
         cover page would publish it under a licence notice that says it was
-        removed. A volume showing neither boundary keeps the gate shut and is
-        dropped as it was before this gate existed - the older, documented
-        loss in preference to a new false statement. That costs nothing in the
-        current corpus: all 11 heading-less volumes across the 946 EPUBs open
-        at a contents page.
+        removed. A volume showing neither boundary fails extraction,
+        so its unknown content cannot silently disappear from a clean build.
 
         Header and Footer are skipped by SKIP_CLASS but are not boundaries:
         Word repeats the running header above the cover page, so opening there
@@ -534,6 +531,11 @@ def to_markdown(blocks, meta, force_bare=False):
         seg = blocks[start:end]
         vol_heads.append(any(b["k"] == "p" and _head_lvl(b) for b in seg))
         vol_gate.append(_vol_gate(seg, start))
+        if (has_acthead and not force_bare and seg and not vol_heads[-1]
+                and vol_gate[-1] is None
+                and any(b["k"] != "p" or not SKIP_CLASS.match(b["cls"]) for b in seg)):
+            raise ValueError("volume %d has no identifiable body boundary; "
+                             "refusing to drop %d blocks" % (len(vol_heads) - 1, len(seg)))
 
     _start = 0
     for _i, b in enumerate(blocks):
@@ -795,18 +797,10 @@ def to_markdown(blocks, meta, force_bare=False):
 
 
 def main(retrieved=None):
-    """`retrieved` overrides the per-EPUB retrieval date; None keeps the mtime.
+    """Use the recorded download date, or a caller-supplied retrieval date.
 
-    The date is not cosmetic: the Register's attribution wording embeds it, and
-    it is written into every markdown front matter, every endnotes header and
-    every JSONL row. EPUBs restored from a backup or copied between machines
-    carry the copy's mtime, so a build from restored files needs to be told the
-    real date. Validate it here rather than letting a mistyped argument reach
-    21,784 rows, and keep the parsed value: date.fromisoformat validates but
-    does not normalise, and from Python 3.11 it also accepts the basic and
-    week-date forms, so `20260803` and `2026-W32-1` passed the check and then
-    reached every front matter, every attribution sentence and every row
-    verbatim. The mtime path always emits .isoformat(); so does this one now.
+    Legacy EPUBs without a recorded timestamp retain their mtime fallback,
+    with an explicit provenance warning in the output manifest.
     """
     if retrieved is not None:
         retrieved = datetime.date.fromisoformat(retrieved).isoformat()
@@ -846,7 +840,24 @@ def main(retrieved=None):
         # Most EPUBs were fetched on an earlier day and served from cache, so
         # the build date would misstate when this Act was actually obtained.
         try:
-            fetched = retrieved or datetime.date.fromtimestamp(os.path.getmtime(src)).isoformat()
+            fetched_at = a.get("fetched_at")
+            side = src + ".meta.json"
+            if not retrieved and not fetched_at and os.path.isfile(side):
+                with open(side, encoding="utf-8") as f:
+                    provenance = json.load(f)
+                if provenance.get("versionStart") == a.get("versionStart"):
+                    fetched_at = provenance.get("fetched_at")
+            if retrieved:
+                fetched = retrieved
+            elif fetched_at:
+                stamp = datetime.datetime.fromisoformat(fetched_at.replace("Z", "+00:00"))
+                if stamp.tzinfo is None:
+                    raise ValueError("fetched_at must include a timezone")
+                fetched = stamp.astimezone(datetime.timezone.utc).date().isoformat()
+            else:
+                fetched = datetime.date.fromtimestamp(os.path.getmtime(src)).isoformat()
+                a = dict(a, provenance_warning="retrieval date inferred from EPUB mtime; unverified")
+                print("  WARN %s %s" % (rid, a["provenance_warning"]), flush=True)
             meta = dict(a, retrieved=fetched)
             blocks = epub_blocks(src)
             md, sections, endnotes, long_title = to_markdown(blocks, meta)

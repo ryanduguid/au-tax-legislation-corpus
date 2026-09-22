@@ -1,7 +1,13 @@
-name: Publish live evidence
+name: Prepare live evidence draft
 
 on:
   workflow_dispatch:
+    inputs:
+      authorise-tag:
+        description: Authorise a public tag and draft release for this capture; publication needs a separate review
+        required: true
+        type: boolean
+        default: false
 
 concurrency:
   group: publish-live-evidence-v2
@@ -9,7 +15,7 @@ concurrency:
 
 jobs:
   publish:
-    if: github.repository == 'ryanduguid/au-tax-legislation-corpus' && github.ref == 'refs/heads/main'
+    if: github.repository == 'ryanduguid/au-tax-legislation-corpus' && github.ref == 'refs/heads/main' && inputs.authorise-tag
     permissions:
       attestations: write
       contents: write
@@ -188,13 +194,3 @@ jobs:
             & gh release upload $releaseTag @batch --repo ryanduguid/au-tax-legislation-corpus
             if ($LASTEXITCODE -ne 0) { throw 'GitHub CLI release operation failed.' }
           }
-
-      - name: Publish immutable release
-        if: steps.export.outputs.has_candidates == 'true'
-        env:
-          GH_TOKEN: ${{ github.token }}
-          RELEASE_TAG: ${{ steps.export.outputs.release_tag }}
-        run: |
-          $releaseTag = $env:RELEASE_TAG
-          & gh release edit $releaseTag --repo ryanduguid/au-tax-legislation-corpus --draft=false --latest=false
-          if ($LASTEXITCODE -ne 0) { throw 'GitHub CLI release operation failed.' }

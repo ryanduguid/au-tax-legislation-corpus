@@ -1110,6 +1110,21 @@ def test_control_characters_in_source_metadata_are_rejected(tmp_path: Path) -> N
         )
 
 
+@pytest.mark.parametrize("surrogate", ["\ud800", "\udfff"])
+def test_surrogate_source_metadata_is_rejected(tmp_path: Path, surrogate: str) -> None:
+    payload = _payload("baseline", "sample-sources.json")
+    payload["titles"][0]["name"] = "Fabricated " + surrogate
+    bad = tmp_path / "baseline.json"
+    bad.write_text(json.dumps(payload), encoding="utf-8")
+    with pytest.raises(MonitorError, match="surrogate"):
+        compare(
+            baseline_path=bad,
+            observation_path=sample_path("observations", "sample-register-observation.json"),
+            mapping_path=sample_path("mappings", "sample-source-skill-map.json"),
+        )
+    assert not (tmp_path / "impact-queue.json").exists()
+
+
 def test_queue_writes_and_human_decision_is_structurally_valid(tmp_path: Path) -> None:
     queue = _queue()
     paths = write_queue(queue, tmp_path / "test-output")

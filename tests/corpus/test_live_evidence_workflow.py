@@ -9,6 +9,18 @@ WORKFLOW = ROOT / ".github" / "workflows" / "publish-live-evidence.yml"
 
 
 class LiveEvidenceWorkflowPolicyTests(unittest.TestCase):
+    def test_publication_requires_an_explicit_existing_draft(self) -> None:
+        approval = (WORKFLOW.parent / "approve-live-evidence.yml").read_text(encoding="utf-8")
+        self.assertIn("workflow_dispatch:", approval)
+        self.assertIn("${{ inputs.release-tag }}", approval)
+        self.assertIn("$release.isDraft -ne $true", approval)
+        self.assertIn("[int]$Matches[1] -ne $release.assets.Count", approval)
+        self.assertIn("--draft=false --latest=false", approval)
+        self.assertNotIn("gh release create", approval)
+        self.assertNotIn("gh release upload", approval)
+        self.assertNotIn("capture_register", approval)
+        self.assertIn("group: publish-live-evidence-v2", approval)
+
     def _workflow(self) -> str:
         self.assertTrue(WORKFLOW.is_file(), "live-evidence workflow is missing")
         return WORKFLOW.read_text(encoding="utf-8")
@@ -120,14 +132,18 @@ class LiveEvidenceWorkflowPolicyTests(unittest.TestCase):
         )
         self.assertTrue(self._is_gh_command("& GH.EXE release view"))
 
-    def test_manual_trigger_has_no_inputs_and_job_has_exact_guard(self) -> None:
+    def test_manual_trigger_requires_tag_authority_and_job_has_exact_guard(self) -> None:
         workflow = self._workflow()
-        self.assertEqual(self._top_level_block("on"), "on:\n  workflow_dispatch:")
+        trigger = self._top_level_block("on")
+        self.assertIn("workflow_dispatch:", trigger)
+        self.assertIn("authorise-tag:", trigger)
+        self.assertIn("default: false", trigger)
+        self.assertNotIn("schedule:", trigger)
         self.assertEqual(
             self._yaml_scalar_lines(workflow, "if", 4),
             [
                 "    if: github.repository == 'ryanduguid/au-tax-legislation-corpus' && "
-                "github.ref == 'refs/heads/main'"
+                "github.ref == 'refs/heads/main' && inputs.authorise-tag"
             ],
         )
 
@@ -291,10 +307,9 @@ class LiveEvidenceWorkflowPolicyTests(unittest.TestCase):
         self.assertIn("[string]::IsNullOrWhiteSpace($attestationId)", receipt_step)
         self.assertNotIn("always()", self._workflow())
 
-    def test_release_is_a_two_step_draft_upload_publish_transaction(self) -> None:
+    def test_capture_stops_at_a_draft_for_human_review(self) -> None:
         workflow = self._workflow()
         release_step = self._step_containing("Create draft and upload candidates")
-        publish_step = self._step_containing("Publish immutable release")
         run_steps = [step for step in self._steps() if "        run: |" in step.splitlines()]
         gh_commands = [
             line
@@ -312,18 +327,12 @@ class LiveEvidenceWorkflowPolicyTests(unittest.TestCase):
             "--title $releaseTag --notes $notes",
             "& gh release upload $releaseTag @batch "
             "--repo ryanduguid/au-tax-legislation-corpus",
-            "& gh release edit $releaseTag "
-            "--repo ryanduguid/au-tax-legislation-corpus "
-            "--draft=false --latest=false",
         ]
         release_gh_commands = [
             line for line in self._active_run_lines(release_step) if self._is_gh_command(line)
         ]
-        publish_gh_commands = [
-            line for line in self._active_run_lines(publish_step) if self._is_gh_command(line)
-        ]
         self.assertEqual(release_gh_commands, expected_gh_commands[:3])
-        self.assertEqual(publish_gh_commands, expected_gh_commands[3:])
+        self.assertNotIn("--draft=false", workflow)
         self.assertEqual(
             gh_commands,
             expected_gh_commands,
@@ -368,11 +377,10 @@ class LiveEvidenceWorkflowPolicyTests(unittest.TestCase):
         )
 
         token_steps = [step for step in self._steps() if "GH_TOKEN:" in step]
-        self.assertEqual(len(token_steps), 2)
+        self.assertEqual(len(token_steps), 1)
         self.assertIn("gh release create", token_steps[0])
         self.assertIn("gh release upload", token_steps[0])
-        self.assertIn("gh release edit", token_steps[1])
-        self.assertEqual(workflow.count("GH_TOKEN:"), 2)
+        self.assertEqual(workflow.count("GH_TOKEN:"), 1)
 
     def test_every_native_gh_call_has_an_immediate_failure_check(self) -> None:
         workflow = self._workflow()
@@ -380,7 +388,7 @@ class LiveEvidenceWorkflowPolicyTests(unittest.TestCase):
         gh_indexes = [
             index for index, line in enumerate(lines) if self._is_gh_command(line)
         ]
-        self.assertEqual(len(gh_indexes), 4)
+        self.assertEqual(len(gh_indexes), 3)
         expected = (
             "if ($LASTEXITCODE -ne 0) { throw 'GitHub CLI release operation failed.' }"
         )

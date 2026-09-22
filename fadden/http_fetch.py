@@ -67,7 +67,7 @@ def fetch_json(url, tries=TRIES, delay=RETRY_DELAY):
         try:
             with urllib.request.urlopen(request, timeout=TIMEOUT) as response:
                 document = json.load(response)
-            if "error" not in document:
+            if isinstance(document, dict) and "error" not in document:
                 return document
         except (urllib.error.URLError, http.client.HTTPException, OSError,
                 UnicodeDecodeError, json.JSONDecodeError):

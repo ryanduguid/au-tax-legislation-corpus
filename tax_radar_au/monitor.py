@@ -142,6 +142,8 @@ def _non_empty(value: Any, *, field: str) -> str:
     text = value.strip()
     if any(ord(char) < 32 or ord(char) == 127 for char in text):
         raise MonitorError(f"{field} must not contain control characters.")
+    if any(0xD800 <= ord(char) <= 0xDFFF for char in text):
+        raise MonitorError(f"{field} must not contain surrogate code points.")
     return text
 
 
