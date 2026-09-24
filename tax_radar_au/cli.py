@@ -10,7 +10,14 @@ from .monitor import compare, validate_review, write_queue
 
 
 def build_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(description="Create a synthetic provenance-first tax change-review queue.")
+    # From Python 3.14 argparse probes sys.stdout for colour support while the
+    # parser is built, and the probe raises ValueError on a closed stream. After
+    # _abandon_stdout closed it, a second main() in the same process died before
+    # parsing. Colour is moot with no stdout, so turn it off in that case only.
+    options: dict[str, bool] = {}
+    if sys.version_info >= (3, 14) and getattr(sys.stdout, "closed", False):
+        options["color"] = False
+    parser = argparse.ArgumentParser(description="Create a synthetic provenance-first tax change-review queue.", **options)
     commands = parser.add_subparsers(dest="command", required=True)
     compare_parser = commands.add_parser("compare", help="compare a baseline index, observation, and exact source map")
     compare_parser.add_argument("--baseline", required=True, type=Path)
