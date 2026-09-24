@@ -359,6 +359,10 @@ prints a progress line every 25 titles.
   always emit a placeholder when discarding.
 
 
+## Deriving ATO rulings
+
+`python -m fadden rulings TARGETS.json --out NEW_DIR` fetches up to 100 named ATO-authored Legal Database documents and writes paragraph JSONL with a reuse notice. It is separate from the legislation pipeline and does not touch `./corpus/`. Scope, reuse basis, fetch rules and the data dictionary are in [docs/rulings.md](docs/rulings.md).
+
 ## Running the pipeline
 
 The builder deliberately does **not** read `ATO_KB_ROOT` or `ATO_DIST`.
