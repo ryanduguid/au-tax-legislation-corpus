@@ -200,7 +200,7 @@ class LiveEvidenceWorkflowPolicyTests(unittest.TestCase):
         )
         self.assertEqual(
             self._yaml_scalar_lines(setup_step, "python-version", 10),
-            ['          python-version: "3.12"'],
+            ['          python-version: "3.14"'],
         )
         install_step = self._step_containing(action_references[2])
         self.assertEqual(

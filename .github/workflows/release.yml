@@ -52,5 +52,6 @@ jobs:
         .github/workflows/ci.yml: test (ubuntu-latest, 3.11, tests)
         .github/workflows/ci.yml: test (ubuntu-latest, 3.12, tests)
         .github/workflows/ci.yml: test (ubuntu-latest, 3.13, tests)
+        .github/workflows/ci.yml: test (ubuntu-latest, 3.14, tests)
         .github/workflows/ci.yml: test (windows-latest, 3.12, tests/radar tests/corpus/test_live_evidence_bundle_export.py)
       artifact-stem: au-tax-legislation-corpus-builder
