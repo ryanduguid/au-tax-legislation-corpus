@@ -277,5 +277,95 @@ class FetchTests(unittest.TestCase):
         self.assertEqual(final, rulings.BASE_URL + DOCID)
 
 
+class ReviewRegressionTests(unittest.TestCase):
+    """Defects raised in review of the first version of this stage."""
+
+    def test_personal_data_outside_paragraph_text_still_excludes_the_document(self) -> None:
+        contact = "Call 02 6216 1111."
+        pages = {
+            "heading": page().replace(b"<strong>What this Ruling is about</strong>",
+                                      f"<strong>{contact}</strong>".encode()),
+            "title": page().replace(b"TR 2099/1 - Fabricated ruling for tests", contact.encode()),
+            "footnote": page().replace(b"[1] A footnote that is not a paragraph.", contact.encode()),
+            "table of contents": page().replace(b"Table of Contents", contact.encode()),
+        }
+        for where, raw in pages.items():
+            with self.subTest(where=where):
+                parsed = rulings.parse_document(raw, DOCID)
+                self.assertEqual(rulings.pii_findings(rulings.scanned_texts(parsed)), ["phone"])
+
+    def test_site_chrome_outside_the_document_region_is_not_scanned(self) -> None:
+        raw = page().replace(b'<div id="main-content">',
+                             b'<header><p>Phone 13 28 61 or 02 6216 1111</p></header><div id="main-content">')
+        parsed = rulings.parse_document(raw, DOCID)
+        self.assertEqual(rulings.pii_findings(rulings.scanned_texts(parsed)), [])
+
+    def test_a_longer_reference_does_not_match_a_shorter_target(self) -> None:
+        with self.assertRaisesRegex(rulings.RulingsError, "does not match"):
+            rulings.parse_document(page(reference=DOCID + "0"), DOCID)
+        self.assertEqual(rulings.parse_document(page(reference=DOCID.lower() + "/"), DOCID)["reference"],
+                         DOCID.lower() + "/")
+
+    def test_dc_rights_must_be_the_ato_copyright_address(self) -> None:
+        accepted = [
+            "http://www.ato.gov.au/content/corporate/about_this_site.htm#copyright",
+            "https://ato.gov.au/content/corporate/about_this_site.htm#copyright",
+        ]
+        refused = [
+            "http://example.invalid/content/corporate/about_this_site.htm#copyright",
+            "http://www.ato.gov.au.example.invalid/content/corporate/about_this_site.htm#copyright",
+            "http://www.ato.gov.au/elsewhere/about_this_site.htm#copyright",
+            "http://www.ato.gov.au:8080/content/corporate/about_this_site.htm#copyright",
+            "about_this_site.htm#copyright",
+        ]
+        for value in accepted:
+            with self.subTest(value=value):
+                parsed = rulings.parse_document(page(notice=False, rights=value), DOCID)
+                self.assertEqual(parsed["licence_basis"], "site-notice-via-dc-rights")
+        for value in refused:
+            with self.subTest(value=value), self.assertRaisesRegex(rulings.RulingsError, "no ATO reuse"):
+                rulings.parse_document(page(notice=False, rights=value), DOCID)
+
+    def test_redirects_must_stay_on_https_and_the_default_port(self) -> None:
+        fetch = FetchTests()
+        for url in ("http://www.ato.gov.au/law/view/document?docid=" + DOCID,
+                    "https://www.ato.gov.au:8443/law/view/document?docid=" + DOCID):
+            handle = fetch.response(url, body=page())
+            with self.subTest(url=url), \
+                    mock.patch.object(rulings.urllib.request, "urlopen", return_value=handle), \
+                    self.assertRaisesRegex(rulings.RulingsError, "redirected off"):
+                rulings.fetch(DOCID)
+
+    def test_a_dropped_response_is_retried_then_excluded_without_aborting_the_run(self) -> None:
+        import http.client
+
+        def dropped(*args, **kwargs):
+            raise http.client.IncompleteRead(b"partial")
+
+        with mock.patch.object(rulings.urllib.request, "urlopen", dropped), \
+                mock.patch.object(rulings.http_fetch.time, "sleep", lambda _s: None), \
+                self.assertRaisesRegex(rulings.RulingsError, "IncompleteRead"):
+            rulings.fetch(DOCID)
+
+        tmp = Path(tempfile.mkdtemp())
+        self.addCleanup(lambda: __import__("shutil").rmtree(tmp))
+        other = "TXR/TR20992/NAT/ATO/00001"
+
+        def fetcher(docid):
+            if docid == DOCID:
+                raise rulings.RulingsError(f"{docid}: fetch failed (IncompleteRead)")
+            return page(docid=other), rulings.BASE_URL + other
+
+        with mock.patch("sys.stderr", io.StringIO()):
+            code = rulings.run([DOCID, other], tmp / "out", fetcher=fetcher, spacing=0)
+        manifest = json.loads((tmp / "out" / "manifest.json").read_text(encoding="utf-8"))
+        self.assertEqual(code, 1)
+        self.assertEqual([d["docid"] for d in manifest["documents"]], [other])
+
+    def test_raw_file_names_are_distinct_for_ids_that_differ_only_in_punctuation(self) -> None:
+        names = {rulings._safe_name(d) for d in ("TXR/A-B", "TXR/A.B", "TXR/A_B")}
+        self.assertEqual(len(names), 3)
+
+
 if __name__ == "__main__":
     unittest.main()

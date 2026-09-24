@@ -32,6 +32,7 @@ import datetime
 import hashlib
 import html
 import html.parser
+import http.client
 import json
 import re
 import sys
@@ -60,7 +61,9 @@ NOTICE = (
 COPYRIGHT_NOTICE_URL = "https://www.ato.gov.au/about-ato/using-our-website/copyright-notice"
 # dc.Rights on Legal Database pages points at the legacy address of the site
 # copyright notice; the path fragment is stable where the host and scheme vary.
-RIGHTS_FRAGMENT = "about_this_site.htm#copyright"
+RIGHTS_HOSTS = {"www.ato.gov.au", "ato.gov.au"}
+RIGHTS_PATH = "/content/corporate/about_this_site.htm"
+RIGHTS_FRAGMENT = "copyright"
 
 # docid prefix -> document family. ATO-authored families only. Legislation
 # (PAC/...), judgments (JUD/...) and other third-party material are refused.
@@ -121,7 +124,11 @@ class _LawParser(html.parser.HTMLParser):
         self.meta: dict[str, str] = {}
         self.blocks: list[tuple[list[str], str, bool]] = []
         self.page_text: list[str] = []
+        # All text in the document region (Law* divs, or the edited-version
+        # area from its disclaimer on), including the parts skipped as rows.
+        self.document_text: list[str] = []
         self.edited_version = False
+        self._law = 0
         self._div_stack: list[str] = []
         self._in_body = 0
         self._skip = 0
@@ -144,6 +151,10 @@ class _LawParser(html.parser.HTMLParser):
             if a.get("id") == "LawBody":
                 role = "body"
                 self._in_body += 1
+                self._law += 1
+            elif a.get("id", "").startswith("Law"):
+                role = "law"
+                self._law += 1
             elif a.get("id", "").lower().startswith("ev_disclaimer") and self._ev == 0:
                 role = "evdisc"
                 self._ev = 1
@@ -177,6 +188,9 @@ class _LawParser(html.parser.HTMLParser):
             role = self._div_stack.pop()
             if role == "body":
                 self._in_body -= 1
+                self._law -= 1
+            elif role == "law":
+                self._law -= 1
             elif role == "skip":
                 self._skip -= 1
             elif role == "evdisc" and self._ev == 1:
@@ -197,6 +211,8 @@ class _LawParser(html.parser.HTMLParser):
 
     def handle_data(self, data: str) -> None:
         self.page_text.append(data)
+        if self._law or self._ev in (1, 2):
+            self.document_text.append(data)
         if self._block is not None and not self._sup and self._collecting():
             self._block.append(data)
             if data.strip() and not self._bold:
@@ -206,6 +222,19 @@ class _LawParser(html.parser.HTMLParser):
         if self._ev == 2:
             return True
         return bool(self._in_body) and not self._skip and not self._stop
+
+
+def _canonical(docid: str) -> str:
+    """Case-insensitive and without a trailing slash; nothing else is treated as the same id."""
+    return docid.strip().rstrip("/").upper()
+
+
+def _is_ato_rights_link(value: str) -> bool:
+    """True only for the ATO copyright notice address the Legal Database cites in dc.Rights."""
+    parts = urllib.parse.urlsplit(value.strip())
+    return (parts.scheme in ("http", "https") and (parts.hostname or "") in RIGHTS_HOSTS
+            and parts.port is None and parts.path == RIGHTS_PATH
+            and parts.fragment == RIGHTS_FRAGMENT and not parts.query)
 
 
 def parse_document(raw: bytes, docid: str) -> dict[str, Any]:
@@ -220,14 +249,14 @@ def parse_document(raw: bytes, docid: str) -> dict[str, Any]:
     meta = {k.lower(): v for k, v in parser.meta.items()}
 
     reference = meta.get("ato.reference.id", "")
-    if not reference or not reference.upper().startswith(docid.upper().rstrip("/")):
+    if not reference or _canonical(reference) != _canonical(docid):
         raise RulingsError(f"{docid}: page reference id {reference!r} does not match the target")
 
     text = _norm(html.unescape("".join(parser.page_text)))
     rights = meta.get("dc.rights", "") or meta.get("dc_rights", "")
     if NOTICE in text:
         basis = "document-notice"
-    elif RIGHTS_FRAGMENT in rights:
+    elif _is_ato_rights_link(rights):
         basis = "site-notice-via-dc-rights"
     else:
         raise RulingsError(f"{docid}: no ATO reuse notice and no dc.Rights link to it")
@@ -273,18 +302,27 @@ def parse_document(raw: bytes, docid: str) -> dict[str, Any]:
         "issued": meta.get("dc.date.issued", "") or meta.get("dc_date_issued", ""),
         "licence_basis": basis,
         "paragraphs": paragraphs,
+        "document_text": _norm(" ".join(parser.document_text)),
     }
 
 
-def pii_findings(paragraphs: Sequence[dict[str, str]]) -> list[str]:
-    """Kinds of personal data the corpus patterns find, without the identifiers themselves."""
+def pii_findings(texts: Sequence[str]) -> list[str]:
+    """Kinds of personal data the corpus patterns find in ``texts``, never the identifiers."""
     kinds: set[str] = set()
-    for row in paragraphs:
-        if pii_patterns.has_private_person_registration_pair(row["text"]):
+    for text in texts:
+        if pii_patterns.has_private_person_registration_pair(text):
             kinds.add("name-with-registration-number")
-        for kind, _digest in pii_patterns.contact_fingerprints(row["text"]):
+        for kind, _digest in pii_patterns.contact_fingerprints(text):
             kinds.add(kind)
     return sorted(kinds)
+
+
+def scanned_texts(parsed: dict[str, Any]) -> list[str]:
+    """Every piece of text that reaches the output or sits in the retained document region."""
+    texts = [parsed["title"], parsed["document_type"], parsed["issued"], parsed["document_text"]]
+    for row in parsed["paragraphs"]:
+        texts.extend((row["heading"], row["text"]))
+    return texts
 
 
 def fetch(docid: str) -> tuple[bytes, str]:
@@ -304,13 +342,14 @@ def fetch(docid: str) -> tuple[bytes, str]:
             # Only a rate limit or a server fault is worth another attempt.
             if exc.code != 429 and exc.code < 500:
                 raise RulingsError(f"{docid}: fetch failed ({failure})") from exc
-        except (urllib.error.URLError, OSError) as exc:
+        except (urllib.error.URLError, http.client.HTTPException, OSError) as exc:
             failure = type(exc).__name__
     else:
         raise RulingsError(f"{docid}: fetch failed ({failure})")
-    host = urllib.parse.urlsplit(final).hostname or ""
-    if host != "www.ato.gov.au":
-        raise RulingsError(f"{docid}: redirected off www.ato.gov.au to {host!r}")
+    parts = urllib.parse.urlsplit(final)
+    host = parts.hostname or ""
+    if parts.scheme != "https" or host != "www.ato.gov.au" or parts.port not in (None, 443):
+        raise RulingsError(f"{docid}: redirected off https://www.ato.gov.au to {parts.scheme}://{parts.netloc}")
     if not kind.startswith("text/html"):
         raise RulingsError(f"{docid}: unexpected content type {kind!r}")
     if len(body) > MAX_BYTES:
@@ -324,7 +363,7 @@ def load_targets(path: Path) -> list[str]:
     if not isinstance(data, list) or not all(isinstance(item, str) for item in data):
         raise RulingsError("targets must be a JSON array of docid strings")
     targets = [item.strip() for item in data]
-    if len(set(t.upper() for t in targets)) != len(targets):
+    if len(set(_canonical(t) for t in targets)) != len(targets):
         raise RulingsError("targets contain a duplicate docid")
     if len(targets) > MAX_TARGETS:
         raise RulingsError(f"{len(targets)} targets exceed the cap of {MAX_TARGETS}")
@@ -337,7 +376,9 @@ def load_targets(path: Path) -> list[str]:
 
 
 def _safe_name(docid: str) -> str:
-    return re.sub(r"[^A-Za-z0-9]+", "_", docid).strip("_")
+    """A readable file stem plus a digest of the canonical docid, so distinct ids never collide."""
+    readable = re.sub(r"[^A-Za-z0-9]+", "_", docid).strip("_")
+    return f"{readable}-{hashlib.sha256(_canonical(docid).encode()).hexdigest()[:16]}"
 
 
 def run(targets: Sequence[str], out: Path, fetcher: Callable[[str], tuple[bytes, str]] = fetch,
@@ -359,12 +400,14 @@ def run(targets: Sequence[str], out: Path, fetcher: Callable[[str], tuple[bytes,
         except RulingsError as exc:
             excluded.append({"docid": docid, "reason": str(exc)})
             continue
-        kinds = pii_findings(parsed["paragraphs"])
+        kinds = pii_findings(scanned_texts(parsed))
         if kinds:
             excluded.append({"docid": docid, "reason": "personal data patterns: " + ", ".join(kinds)})
             continue
         digest = hashlib.sha256(raw).hexdigest()
         raw_name = f"raw/{_safe_name(docid)}.html"
+        if raw_name in raw_files:
+            raise RulingsError(f"{docid}: raw file name {raw_name} collides with an earlier target")
         raw_files[raw_name] = raw
         documents.append({
             "docid": docid,

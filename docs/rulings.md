@@ -18,7 +18,8 @@ The ATO copyright notice at
 
 Rulings, practical compliance guidelines and decision impact statements print the
 same sentence at their foot; edited versions of private advice carry a `dc.Rights`
-link to the notice instead. The stage accepts a page only when it shows the sentence
+link to the notice instead (`http` or `https`, `www.ato.gov.au` or `ato.gov.au`,
+path `/content/corporate/about_this_site.htm`, fragment `copyright`). The stage accepts a page only when it shows the sentence
 (`licence_basis: document-notice`) or that link (`site-notice-via-dc-rights`), and
 refuses it otherwise. Legislation and court judgments are in the same database under
 other terms, so only these docid families are accepted:
@@ -46,16 +47,21 @@ Keep it with any copy of the rows.
 - **New directory every run.** `--out` must not exist. The stage never overwrites,
   repairs or deletes an earlier run, and keeps each page's exact bytes under `raw/`
   beside their SHA-256 in `manifest.json`.
-- **Personal data fails closed.** Each document's paragraphs go through the corpus
-  patterns in `pii_patterns.py` (a name beside an 8-digit registration number,
+- **Personal data fails closed.** Every field that reaches the output (title, type,
+  date, headings, paragraph text) and all text in the document region (the `Law*`
+  divs, or the edited-version area from its disclaimer on, including the contents
+  table and footnotes) go through the corpus patterns in `pii_patterns.py` (a name beside an 8-digit registration number,
   email addresses, phone numbers, tax file numbers). A match excludes the whole
   document, records only the kind of match, and makes the run exit 1. The stage has
   no allowlist yet, so a document that prints an ATO contact email (such as
   PCG 2024/1) is excluded until a person reviews it.
 - **Fetch rules.** One request a second, the corpus user agent, at most 8 MiB a
-  page, HTML only, and no redirect off `www.ato.gov.au`. An HTTP 429 or 5xx is
-  retried with the shared `http_fetch` budget; any other HTTP error stops that
-  document.
+  page, HTML only, and the final URL must be `https://www.ato.gov.au` on the default
+  port. The page's `ato.reference.id` must equal the target, ignoring case and a
+  trailing slash. The ATO site header and footer sit outside the document region
+  and are not scanned: they carry the ATO's published phone numbers. An HTTP 429 or 5xx, a transport error or a dropped response
+  is retried with the shared `http_fetch` budget; any other HTTP error stops that
+  document, and a failed document never stops the run.
 - **Not committed, not published.** Like the rest of the corpus, run output stays
   out of git. Publishing it is a separate decision a person makes.
 
@@ -65,7 +71,7 @@ Keep it with any copy of the rows.
 | --- | --- |
 | `rulings.jsonl` | One row per paragraph (fields below) |
 | `manifest.json` | Run date, targets, per-document record, exclusions and reasons, row count, notice |
-| `raw/<docid>.html` | The exact bytes each accepted page returned |
+| `raw/<docid>-<digest>.html` | The exact bytes each accepted page returned; the digest of the canonical docid keeps distinct ids from colliding |
 | `LICENCE-NOTICE.md` | Reuse notice and non-endorsement statement |
 
 ### `rulings.jsonl` fields
