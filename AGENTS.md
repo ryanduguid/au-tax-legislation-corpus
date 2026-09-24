@@ -33,7 +33,7 @@ Register captures and publication candidates as different contracts.
 
 ## CI gates
 
-`ci.yml` runs the full locked pytest suite on Ubuntu for Python 3.10-3.13, then the
+`ci.yml` runs the full locked pytest suite on Ubuntu for Python 3.10-3.14, then the
 package build and the linters. Its Windows 3.12 matrix runs
 `tests/radar` and `tests/corpus/test_live_evidence_bundle_export.py` so the supported
 live-evidence export boundary is exercised. Other corpus modules remain excluded because
