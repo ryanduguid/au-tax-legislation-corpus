@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import contextlib
 import json
 import sys
 from pathlib import Path
@@ -10,14 +11,7 @@ from .monitor import compare, validate_review, write_queue
 
 
 def build_parser() -> argparse.ArgumentParser:
-    # From Python 3.14 argparse probes sys.stdout for colour support while the
-    # parser is built, and the probe raises ValueError on a closed stream. After
-    # _abandon_stdout closed it, a second main() in the same process died before
-    # parsing. Colour is moot with no stdout, so turn it off in that case only.
-    options: dict[str, bool] = {}
-    if sys.version_info >= (3, 14) and getattr(sys.stdout, "closed", False):
-        options["color"] = False
-    parser = argparse.ArgumentParser(description="Create a synthetic provenance-first tax change-review queue.", **options)
+    parser = argparse.ArgumentParser(description="Create a synthetic provenance-first tax change-review queue.")
     commands = parser.add_subparsers(dest="command", required=True)
     compare_parser = commands.add_parser("compare", help="compare a baseline index, observation, and exact source map")
     compare_parser.add_argument("--baseline", required=True, type=Path)
@@ -120,7 +114,13 @@ def _report(lines: list[str], code: int) -> int:
 
 
 def main(argv: list[str] | None = None) -> int:
-    args = build_parser().parse_args(argv)
+    # From Python 3.14 every argparse help formatter probes sys.stdout for colour
+    # support, and the probe raises ValueError on a closed stream, so a second
+    # main() after _abandon_stdout died before parsing. With no sys.stdout the
+    # probe answers "no colour"; the closed stream is back in place afterwards.
+    stdout_closed = getattr(sys.stdout, "closed", False)
+    with contextlib.redirect_stdout(None) if stdout_closed else contextlib.nullcontext():
+        args = build_parser().parse_args(argv)
     try:
         if args.command == "compare":
             queue = compare(baseline_path=args.baseline, observation_path=args.observation, mapping_path=args.map)
