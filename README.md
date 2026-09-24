@@ -38,6 +38,7 @@ The corpus builder (`python -m fadden`) produces retrieval material from Commonw
 - [Dated build evidence and known corrections](docs/build-evidence.md)
 - [Architecture](docs/architecture.md)
 - [Accuracy, scope and redistribution limits](docs/scope.md)
+- [Compared with the Open Australian Legal Corpus](docs/comparison.md)
 - [Release rules](RELEASING.md) and [contributor checks](AGENTS.md)
 
 Live Register capture, synthetic observations and publication candidates have distinct contracts. A successful capture or export does not authorise publication.
