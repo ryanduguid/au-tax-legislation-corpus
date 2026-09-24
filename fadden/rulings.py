@@ -231,9 +231,13 @@ def _canonical(docid: str) -> str:
 
 def _is_ato_rights_link(value: str) -> bool:
     """True only for the ATO copyright notice address the Legal Database cites in dc.Rights."""
-    parts = urllib.parse.urlsplit(value.strip())
+    try:
+        parts = urllib.parse.urlsplit(value.strip())
+        port = parts.port
+    except ValueError:  # malformed URL or port: not the ATO address
+        return False
     return (parts.scheme in ("http", "https") and (parts.hostname or "") in RIGHTS_HOSTS
-            and parts.port is None and parts.path == RIGHTS_PATH
+            and port is None and parts.path == RIGHTS_PATH
             and parts.fragment == RIGHTS_FRAGMENT and not parts.query)
 
 
@@ -346,9 +350,13 @@ def fetch(docid: str) -> tuple[bytes, str]:
             failure = type(exc).__name__
     else:
         raise RulingsError(f"{docid}: fetch failed ({failure})")
-    parts = urllib.parse.urlsplit(final)
+    try:
+        parts = urllib.parse.urlsplit(final)
+        port = parts.port
+    except ValueError as exc:
+        raise RulingsError(f"{docid}: malformed final URL") from exc
     host = parts.hostname or ""
-    if parts.scheme != "https" or host != "www.ato.gov.au" or parts.port not in (None, 443):
+    if parts.scheme != "https" or host != "www.ato.gov.au" or port not in (None, 443):
         raise RulingsError(f"{docid}: redirected off https://www.ato.gov.au to {parts.scheme}://{parts.netloc}")
     if not kind.startswith("text/html"):
         raise RulingsError(f"{docid}: unexpected content type {kind!r}")

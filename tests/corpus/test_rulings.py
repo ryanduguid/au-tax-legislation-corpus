@@ -362,6 +362,16 @@ class ReviewRegressionTests(unittest.TestCase):
         self.assertEqual(code, 1)
         self.assertEqual([d["docid"] for d in manifest["documents"]], [other])
 
+    def test_malformed_urls_refuse_the_document_without_raising_value_error(self) -> None:
+        for value in ("http://www.ato.gov.au:notaport/content/corporate/about_this_site.htm#copyright",
+                      "http://www.ato.gov.au:99999/content/corporate/about_this_site.htm#copyright"):
+            with self.subTest(value=value), self.assertRaisesRegex(rulings.RulingsError, "no ATO reuse"):
+                rulings.parse_document(page(notice=False, rights=value), DOCID)
+        handle = FetchTests().response("https://www.ato.gov.au:notaport/law", body=page())
+        with mock.patch.object(rulings.urllib.request, "urlopen", return_value=handle), \
+                self.assertRaisesRegex(rulings.RulingsError, "malformed final URL"):
+            rulings.fetch(DOCID)
+
     def test_raw_file_names_are_distinct_for_ids_that_differ_only_in_punctuation(self) -> None:
         names = {rulings._safe_name(d) for d in ("TXR/A-B", "TXR/A.B", "TXR/A_B")}
         self.assertEqual(len(names), 3)
