@@ -46,7 +46,7 @@ is explained and matched semantically below without duplicating its shell body.
 ```bash
 uv run --locked --extra dev pytest tests
 uv run --locked --extra dev pytest tests/radar tests/corpus/test_live_evidence_bundle_export.py
-uv run --locked --extra dev --python 3.12 python -m build
+uv run --locked --extra dev --python 3.14 python -m build
 uv run --locked --extra dev ruff check .
 uv run --locked --extra dev mypy
 uv audit --locked
@@ -58,7 +58,7 @@ Run the locked build, then install and exercise that wheel from a fresh temporar
 directory outside the checkout. This is a package preflight, not a publication step:
 
 ```powershell
-uv run --locked --extra dev --python 3.12 python -m build
+uv run --locked --extra dev --python 3.14 python -m build
 $wheelDir = (Resolve-Path dist).Path
 $smokeDir = Join-Path ([System.IO.Path]::GetTempPath()) ("tax-radar-wheel-smoke-" + [guid]::NewGuid().ToString("N"))
 python -m venv "$smokeDir\venv"
