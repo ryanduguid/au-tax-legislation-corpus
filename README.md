@@ -25,7 +25,7 @@ python -m fadden export_monitor_contract -- tests/corpus/fixtures/publication/sa
 
 ## Two related systems
 
-The corpus builder (`python -m fadden`) produces retrieval material from Commonwealth legislation. The change-review queue (`tax-radar-au`) consumes a reviewed observation contract and raises items for a person to assess.
+The corpus builder (`python -m fadden`) produces retrieval material from Commonwealth legislation. Its `rulings` stage derives paragraph JSONL from named ATO rulings and related documents under the ATO's reuse notice ([docs/rulings.md](docs/rulings.md)). The change-review queue (`tax-radar-au`) consumes a reviewed observation contract and raises items for a person to assess.
 
 **Package lifecycle:** source-only. The builder is not published to PyPI; releases carry source archives, not a ready-made corpus or a builder wheel. The queue has its own package identity; this source install does not download legislation.
 
@@ -38,6 +38,7 @@ The corpus builder (`python -m fadden`) produces retrieval material from Commonw
 - [Dated build evidence and known corrections](docs/build-evidence.md)
 - [Architecture](docs/architecture.md)
 - [Accuracy, scope and redistribution limits](docs/scope.md)
+- [Compared with the Open Australian Legal Corpus](docs/comparison.md)
 - [Release rules](RELEASING.md) and [contributor checks](AGENTS.md)
 
 Live Register capture, synthetic observations and publication candidates have distinct contracts. A successful capture or export does not authorise publication.
