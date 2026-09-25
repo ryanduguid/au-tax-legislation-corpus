@@ -18,6 +18,19 @@ python -m fadden export_monitor_contract -- tests/corpus/fixtures/publication/sa
 
 **Output:** `monitor-baseline.json` and `register-observation.json` in the named output directory. The synthetic title `C2099A00001` is recorded as `SUPERSEDED`; the pair carries the evidence and source identity for review.
 
+The example can be read without running the command:
+
+| Review field | Fabricated evidence |
+| --- | --- |
+| Source identity | Sample Consumption Tax Act 2099, `C2099A00001`, collection `Act` |
+| Indexed version | Compilation 1, dated 1 July 2026, retrieved 1 August 2026 |
+| Detected change | The supplied observation records `SUPERSEDED` and compilation 2, dated 5 August 2026 |
+| Observation evidence | Checked 8 August 2026; evidence identifier `ev-c2099a00001-01`, a content digest and an `example.invalid` URL |
+| Required review | Read the source, confirm the applicable version and dates, then decide whether any workpaper or workflow needs attention |
+
+The names, dates and change above come from the linked fixtures. They describe
+no real legislation and establish no legal effect.
+
 **Human decision:** Inspect the cited source and decide whether the apparent change affects a workpaper or workflow. This offline example makes no Register request and establishes no real legislative change.
 
 <details>
