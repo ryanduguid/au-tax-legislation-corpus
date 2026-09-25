@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import contextlib
 import json
 import sys
 from pathlib import Path
@@ -113,7 +114,13 @@ def _report(lines: list[str], code: int) -> int:
 
 
 def main(argv: list[str] | None = None) -> int:
-    args = build_parser().parse_args(argv)
+    # From Python 3.14 every argparse help formatter probes sys.stdout for colour
+    # support, and the probe raises ValueError on a closed stream, so a second
+    # main() after _abandon_stdout died before parsing. With no sys.stdout the
+    # probe answers "no colour"; the closed stream is back in place afterwards.
+    stdout_closed = getattr(sys.stdout, "closed", False)
+    with contextlib.redirect_stdout(None) if stdout_closed else contextlib.nullcontext():
+        args = build_parser().parse_args(argv)
     try:
         if args.command == "compare":
             queue = compare(baseline_path=args.baseline, observation_path=args.observation, mapping_path=args.map)
