@@ -17,6 +17,8 @@ permissions: {}
 jobs:
   publish:
     if: github.repository == 'ryanduguid/au-tax-legislation-corpus' && github.ref == 'refs/heads/main'
+    # Protected environment: a required reviewer approves each run before it can publish.
+    environment: publication
     permissions:
       contents: write
     runs-on: windows-latest
