@@ -20,6 +20,10 @@ class LiveEvidenceWorkflowPolicyTests(unittest.TestCase):
         self.assertNotIn("gh release upload", approval)
         self.assertNotIn("capture_register", approval)
         self.assertIn("group: publish-live-evidence-v2", approval)
+        self.assertEqual(
+            self._yaml_scalar_lines(approval, "environment", 4),
+            ["    environment: publication"],
+        )
 
     def _workflow(self) -> str:
         self.assertTrue(WORKFLOW.is_file(), "live-evidence workflow is missing")
@@ -145,6 +149,12 @@ class LiveEvidenceWorkflowPolicyTests(unittest.TestCase):
                 "    if: github.repository == 'ryanduguid/au-tax-legislation-corpus' && "
                 "github.ref == 'refs/heads/main' && inputs.authorise-tag"
             ],
+        )
+        # The environment's required reviewer is the publication authority; the
+        # dispatch input alone is not.
+        self.assertEqual(
+            self._yaml_scalar_lines(workflow, "environment", 4),
+            ["    environment: publication"],
         )
 
     def test_runner_concurrency_shell_timeout_and_permissions_are_fixed(self) -> None:

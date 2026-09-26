@@ -16,6 +16,8 @@ concurrency:
 jobs:
   publish:
     if: github.repository == 'ryanduguid/au-tax-legislation-corpus' && github.ref == 'refs/heads/main' && inputs.authorise-tag
+    # Protected environment: a required reviewer approves each run before it can tag.
+    environment: publication
     permissions:
       attestations: write
       contents: write
