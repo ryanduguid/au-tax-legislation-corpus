@@ -1,3 +1,15 @@
+# v0.1.7
+
+This candidate contains the corpus builder source. It excludes generated legislation and live evidence.
+
+- A rulings stage collects ATO Legal Database documents into a collection of their own (#139).
+- Rate rows carry their provenance, discovery reads the Register's status before anything else, and the guides and labels are corrected (#114).
+- A rebuild refuses titles the list no longer names instead of carrying them forward, the PII scan no longer takes decimal rate factors for phone numbers, five licence-restricted standards stay out of distributions, and a failed first build rolls back without discarding complete new downloads (#144).
+- Corpus content is preserved and evidence publication requires review (#132); draft publication is retry-safe and title lists are written atomically (#118); a failed check is reported apart from a verifier that could not run (#119).
+- Live-evidence tagging and publication run in a protected environment (#143), and a builder release now requires the mandatory `main` checks to have passed for its commit (#131).
+- The radar gains an exposure command for pseudonymous client profiles (#145).
+- This release contains builder source only, without a corpus or live evidence.
+
 # v0.1.6
 
 This candidate contains the corpus builder source. It excludes generated legislation and live evidence.

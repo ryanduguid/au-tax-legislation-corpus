@@ -6,7 +6,7 @@
   "generated_at": "2026-08-08T00:00:00Z",
   "producer": {
     "name": "tax-radar-au",
-    "version": "0.1.6",
+    "version": "0.1.7",
     "baseline_sha256": "sha256:602e0c16dda95074e7b268d62862ce76ccaac56a3b8c88f2d2f489cdf79ac2dd",
     "observation_facts_sha256": "sha256:f8ee36beb3bf41b2164db5a69b4327e491afcc86908497a216dcba8acfa6d70b"
   },
