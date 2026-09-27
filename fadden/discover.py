@@ -1,10 +1,9 @@
 """Stage 1: discover in-force principal tax Acts by keyword and collection."""
-import json
 import os
-import tempfile
 import time
 import urllib.parse
 
+from download import write_json_atomic
 from http_fetch import fetch_json
 
 API = "https://api.prod.legislation.gov.au/v1"
@@ -45,17 +44,6 @@ def page_titles(keyword, collection="Act"):
     return rows
 
 
-def _write_json(path, rows):
-    """Write rows as JSON, replacing path only once the file is complete."""
-    directory = os.path.dirname(path) or "."
-    handle, staged = tempfile.mkstemp(dir=directory, suffix=".tmp")
-    try:
-        with os.fdopen(handle, "w", encoding="utf-8") as f:
-            json.dump(rows, f, indent=1)
-        os.replace(staged, path)
-    except BaseException:
-        os.unlink(staged)
-        raise
 
 
 def main():
@@ -82,8 +70,8 @@ def main():
     # Stage then replace. open(..., "w") truncates first, so a crash part way
     # through json.dump left titles_all.json truncated, and versions.py reads it
     # as its authoritative input: the whole discovery crawl would have to run again.
-    _write_json(os.path.join(SCRATCH, "titles_all.json"), all_rows)
-    _write_json(os.path.join(SCRATCH, "titles_principal.json"), principal)
+    write_json_atomic(os.path.join(SCRATCH, "titles_all.json"), all_rows, indent=1)
+    write_json_atomic(os.path.join(SCRATCH, "titles_principal.json"), principal, indent=1)
 
     print("\nsample principal titles:")
     for x in sorted(principal, key=lambda r: r["name"])[:15]:

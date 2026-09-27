@@ -27,6 +27,7 @@ import zipfile
 from html.parser import HTMLParser
 
 from corpus_paths import child, corpus_root, register_id
+from download import write_json_atomic
 
 SKIP_CLASS = re.compile(r'^(TOC\d|TofSects|Contents|Header|Footer)', re.I)
 # The contents page on its own. A running header or footer is skipped by
@@ -317,23 +318,11 @@ def check_chunks_complete(lines, chunks):
 def write_md_manifest(scratch, out_manifest):
     """Stage and rename, so a failed dump cannot destroy the previous manifest.
 
-    Both writers of manifest_raw.json already do this and each has a regression
-    test. This one opened the target directly, so a full disk or a Ctrl-C part
-    way through the dump truncated manifest_md.json after the whole markdown
-    tree had already been written, leaving the build with no manifest at all.
+    A direct write here once truncated manifest_md.json on a full disk or a
+    Ctrl-C part way through the dump, after the whole markdown tree had already
+    been written, leaving the build with no manifest at all.
     """
-    target = os.path.join(scratch, "manifest_md.json")
-    tmp = target + ".tmp"
-    try:
-        with open(tmp, "w", encoding="utf-8") as f:
-            json.dump(out_manifest, f, indent=1)
-            f.flush()
-            os.fsync(f.fileno())
-        os.replace(tmp, target)
-    except BaseException:
-        if os.path.exists(tmp):
-            os.remove(tmp)
-        raise
+    write_json_atomic(os.path.join(scratch, "manifest_md.json"), out_manifest, indent=1)
 
 
 def table_split(body, name):

@@ -72,11 +72,6 @@ def snapshot_paths(*paths):
     return snapshot
 
 
-def snapshot_pair(dst, side):
-    """Back up one EPUB/sidecar pair for whole-run rollback."""
-    return snapshot_paths(dst, side)
-
-
 def rollback_snapshots(snapshots):
     """Restore every path changed since the prior manifest was read.
 
@@ -260,7 +255,7 @@ def main():
                                reason="current_version_has_no_document")
                     label = "NO_EPUB"
                 else:
-                    snapshots.append(snapshot_pair(dst, side))
+                    snapshots.append(snapshot_paths(dst, side))
                     try:
                         _ok, _code, _ctype, sz, meta = fetch(url, dst)
                     except DownloadError as error:
