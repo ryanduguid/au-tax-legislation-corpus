@@ -1672,6 +1672,14 @@ class GeneratedReadmeTests(unittest.TestCase):
         staleness = source.split("## Checking staleness", 1)[1].split("## Licence", 1)[0]
         self.assertIn("no published compilation", " ".join(staleness.split()))
 
+    def test_scope_states_the_measured_corpus_size(self):
+        """scope.md called the corpus about a gigabyte; the EPUBs, markdown and
+        rates measure about 150 MB (27 September 2026). Hold the figure so the
+        old claim cannot return beside the reasons the corpus is not shipped."""
+        scope = " ".join((REPO / "docs" / "scope.md").read_text(encoding="utf-8").split())
+        self.assertIn("It is about 150 MB", scope)
+        self.assertNotIn("gigabyte", scope)
+
     def test_this_repositorys_readme_does_not_file_those_titles_as_superseded(self):
         """The same claim, in the README a reader meets first.  The generated
         text was corrected and this one was not, and the test above reads only

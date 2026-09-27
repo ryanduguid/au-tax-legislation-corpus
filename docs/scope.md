@@ -25,8 +25,8 @@ re-download: the URL built from the in-force date answers 404.
 
 ## What this deliberately does not ship
 
-The corpus itself. It is about a gigabyte and this code rebuilds it in an
-afternoon, so shipping it would trade a lot of storage for very little. Three
+The corpus itself. It is about 150 MB (the EPUBs, derived markdown and rates,
+measured on 27 September 2026), and this code rebuilds it in an afternoon. Three
 parts of it should not be redistributed at all, and `dist.py` exists to separate
 them out:
 
