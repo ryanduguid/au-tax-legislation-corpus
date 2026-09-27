@@ -2,12 +2,19 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
+import stat
 from dataclasses import dataclass
 from importlib.resources import files
 from pathlib import Path
 from typing import Any
 
 from .errors import MonitorError
+
+
+def _open_nonblocking(file: str, flags: int) -> int:
+    # Windows has no O_NONBLOCK and no FIFOs for it to guard against.
+    return os.open(file, flags | getattr(os, "O_NONBLOCK", 0))
 
 
 class _DuplicateJsonMemberError(ValueError):
@@ -32,9 +39,28 @@ class SourceSnapshot:
     sha256: str
 
     @classmethod
-    def capture(cls, path: Path, *, label: str) -> SourceSnapshot:
+    def capture(cls, path: Path, *, label: str, limit: int | None = None) -> SourceSnapshot:
+        """Read path once; with a limit, read only a regular file and at most limit bytes."""
         try:
-            content = path.read_bytes()
+            if limit is None:
+                content = path.read_bytes()
+            else:
+                # A non-blocking open returns at once even for a FIFO, and fstat then
+                # checks the object actually opened, not whatever the path named earlier.
+                with open(path, "rb", opener=_open_nonblocking) as stream:
+                    info = os.fstat(stream.fileno())
+                    if not stat.S_ISREG(info.st_mode):
+                        raise MonitorError(f"{label} must be a regular file: {path}.")
+                    if info.st_size > limit:
+                        raise MonitorError(f"{label} exceeds {limit} bytes.")
+                    # The first read is sized from metadata, since read(n) allocates n
+                    # bytes. A growing or size-zero virtual file that holds more than
+                    # it reported is then read only to one byte past the limit.
+                    content = stream.read(info.st_size + 1)
+                    if len(content) > info.st_size:
+                        content += stream.read(limit + 1 - len(content))
+                if len(content) > limit:
+                    raise MonitorError(f"{label} exceeds {limit} bytes.")
         except FileNotFoundError as exc:
             raise MonitorError(f"{label} does not exist: {path}.") from exc
         except OSError as exc:
