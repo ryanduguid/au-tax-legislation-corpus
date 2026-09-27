@@ -113,21 +113,23 @@ def reject_symlinks(directory: PathPart) -> None:
 
 
 def refuse_unlisted_titles(root: PathPart, listed: set[str]) -> None:
-    """Stop when markdown/ holds a title directory the build does not list.
+    """Stop when markdown/ holds a title entry the build does not list.
 
     A title a rebuild dropped kept its directory, so the rates index and MCP
-    search went on serving it as in force. Dot-directories are tooling, not
-    titles. Nothing is deleted: the operator moves the directories aside.
+    search went on serving it as in force. Every entry counts whatever its
+    type, so a link whose target is missing cannot slip past as "not a
+    directory". Dot-entries are tooling, not titles. Nothing is deleted: the
+    operator moves the entries aside.
     """
     base = child(root, "markdown")
     if not os.path.isdir(base):
         return
     stale = sorted(
         entry.name for entry in os.scandir(base)
-        if entry.is_dir() and not entry.name.startswith(".") and entry.name not in listed
+        if not entry.name.startswith(".") and entry.name not in listed
     )
     if stale:
         raise RuntimeError(
-            "markdown/ holds title directories this build does not list, which "
+            "markdown/ holds entries this build does not list, which "
             "would stay searchable as in force: %s. Move them out of the corpus "
             "and re-run; nothing was written or deleted." % ", ".join(stale))

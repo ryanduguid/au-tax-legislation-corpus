@@ -398,7 +398,7 @@ reports the scan's totals; `finalize.py` refuses to run without
 
 A rebuild that drops a title leaves its `markdown/<id>/` directory behind, and
 the rates index and MCP search would go on reading it as in force. `finalize.py`
-therefore stops before writing anything when `markdown/` holds a title directory
+therefore stops before writing anything when `markdown/` holds a title entry
 that `manifest_md.json` does not list, and `rates.py` does the same against the
 titles in `sources.json`. Dot-directories are ignored. Neither stage deletes
 anything: move the listed directories out of the corpus, then re-run.
