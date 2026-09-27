@@ -221,13 +221,13 @@ def test_a_file_larger_than_its_reported_size_is_read_only_to_the_limit(
     queue_path = _queue(tmp_path)
     large = tmp_path / "large.json"
     large.write_bytes(b" " * 16_000_000)
-    real_stat = Path.stat
+    real_fstat = os.fstat
 
-    def understated(self: Path, *args: Any, **kwargs: Any) -> os.stat_result:
-        result = real_stat(self, *args, **kwargs)
-        return os.stat_result((*result[:6], 0, *result[7:10])) if self == large else result
+    def understated(fd: int) -> os.stat_result:
+        result = real_fstat(fd)
+        return os.stat_result((*result[:6], 0, *result[7:10])) if result.st_size == 16_000_000 else result
 
-    monkeypatch.setattr(Path, "stat", understated)
+    monkeypatch.setattr(os, "fstat", understated)
     monkeypatch.setattr(exposure_module, "MAX_PROFILE_BYTES", 10)
     tracemalloc.start()
     try:
@@ -240,10 +240,18 @@ def test_a_file_larger_than_its_reported_size_is_read_only_to_the_limit(
 
 
 @pytest.mark.skipif(not hasattr(os, "mkfifo"), reason="POSIX FIFOs only")
-def test_a_fifo_is_refused_without_opening_it(tmp_path: Path) -> None:
+def test_a_fifo_swapped_in_after_a_path_check_is_refused_without_blocking(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     fifo = tmp_path / "profiles.json"
     os.mkfifo(fifo)
     queue_path = _queue(tmp_path)
+    # Any check made on the path before opening sees a regular file, as it
+    # would if the FIFO replaced the file between that check and the open.
+    real_stat = Path.stat
+    monkeypatch.setattr(
+        Path, "stat", lambda self, *a, **k: real_stat(queue_path if self == fifo else self, *a, **k)
+    )
     outcome: list[Exception] = []
 
     def attempt() -> None:
@@ -252,11 +260,12 @@ def test_a_fifo_is_refused_without_opening_it(tmp_path: Path) -> None:
         except Exception as exc:  # recorded for the assertions below
             outcome.append(exc)
 
-    # Opening a FIFO with no writer blocks, so a regression hangs this thread, not the suite.
+    # A blocking open of a FIFO with no writer never returns, so a regression
+    # hangs this thread, not the suite.
     worker = threading.Thread(target=attempt, daemon=True)
     worker.start()
     worker.join(timeout=10)
-    assert not worker.is_alive(), "the FIFO was opened"
+    assert not worker.is_alive(), "opening the FIFO blocked"
     assert isinstance(outcome[0], MonitorError)
     assert "must be a regular file" in str(outcome[0])
 
