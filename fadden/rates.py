@@ -14,7 +14,7 @@ import json
 import os
 import re
 
-from corpus_paths import child, corpus_root, register_id
+from corpus_paths import child, corpus_root, refuse_unlisted_titles, register_id
 
 ROOT = corpus_root(__file__)
 OUT = child(ROOT, "rates")
@@ -269,6 +269,11 @@ def sentences(text):
 
 
 def main():
+    # The title list finalize wrote, so a directory a rebuild dropped is not
+    # indexed as a current rate.
+    with open(child(ROOT, "sources.json"), encoding="utf-8") as f:
+        titles = json.load(f)["titles"]
+    refuse_unlisted_titles(ROOT, {register_id(t["register_id"]) for t in titles})
     os.makedirs(OUT, exist_ok=True)
     records = []
 

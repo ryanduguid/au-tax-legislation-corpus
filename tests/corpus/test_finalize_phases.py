@@ -7,6 +7,7 @@ import hashlib
 import importlib.util
 import io
 import json
+import os
 import sys
 import tempfile
 import unittest
@@ -162,6 +163,37 @@ class FinalizePhaseTests(unittest.TestCase):
             self.finalize.main("2026-08-04")
         for name in OUTPUT_HASHES:
             self.assertEqual((self.root / name).read_text(encoding="utf-8"), "previous\n")
+
+    def test_an_unlisted_title_directory_stops_finalize_before_any_write(self):
+        # A title a rebuild dropped kept its directory, and search went on
+        # reading it as in force. Nothing is deleted; a dot-directory is ignored.
+        self.finalize.SCRATCH = str(self.scratch)
+        self.finalize.ROOT = str(self.root)
+        (self.root / "markdown" / "C2020A00099").mkdir()
+        (self.root / "markdown" / ".cache").mkdir()
+        for name in OUTPUT_HASHES:
+            (self.root / name).write_text("previous\n", encoding="utf-8")
+        with self.assertRaisesRegex(RuntimeError, r"does not list, .*: C2020A00099\. "):
+            self.finalize.main("2026-08-04")
+        for name in OUTPUT_HASHES:
+            self.assertEqual((self.root / name).read_text(encoding="utf-8"), "previous\n")
+        self.assertTrue((self.root / "markdown" / "C2020A00099").is_dir())
+
+    def test_an_unlisted_entry_of_any_type_stops_finalize(self):
+        # A link whose target is gone is not a directory to is_dir(), and a
+        # stray file is not either; both are still entries under markdown/.
+        self.finalize.SCRATCH = str(self.scratch)
+        self.finalize.ROOT = str(self.root)
+        (self.root / "markdown" / "C2020A00098").write_text("stale\n", encoding="utf-8")
+        expected = "C2020A00098"
+        try:
+            os.symlink(self.base / "missing", self.root / "markdown" / "C2020A00097",
+                       target_is_directory=True)
+            expected = "C2020A00097, C2020A00098"
+        except OSError:
+            pass  # Windows without the symlink privilege; the file case still runs.
+        with self.assertRaisesRegex(RuntimeError, ": %s\\. " % expected):
+            self.finalize.main("2026-08-04")
 
     def test_retrieval_inventory_and_assembly_are_direct_exact_phases(self) -> None:
         raw, markdown = self.finalize.load_retrieval_inventory(self.scratch)
