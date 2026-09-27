@@ -4,6 +4,8 @@ import copy
 import hashlib
 import json
 import os
+import threading
+import tracemalloc
 from pathlib import Path
 from typing import Any
 
@@ -180,6 +182,7 @@ def test_unmapped_and_unmatched_items_are_distinguished(tmp_path: Path) -> None:
         ([{"profile_id": "Jane Citizen", "skill_refs": ["bas-preparation"]}], "no spaces"),
         ([{"profile_id": "FAB-1", "skill_refs": ["bas-preparation"]}] * 2, "repeats an earlier profile_id"),
         ([{"profile_id": "FAB-1", "skill_refs": [" bas-preparation"]}], "without surrounding spaces"),
+        ([{"profile_id": "FAB-1", "skill_refs": ["bas-\ud800"]}], "lone surrogates"),
         ([{"profile_id": "FAB-1", "skill_refs": ["bas-preparation", "bas-preparation"]}], "repeats a skill reference"),
         ([{"profile_id": "FAB-1", "skill_refs": []}], "must list 1 to"),
         ([], "non-empty profiles list"),
@@ -199,10 +202,63 @@ def test_an_unsupported_profile_schema_is_refused(tmp_path: Path) -> None:
         exposure(queue_path=_queue(tmp_path), profiles_path=path)
 
 
+def test_a_lone_surrogate_version_is_refused(tmp_path: Path) -> None:
+    path = _write(tmp_path / "p.json", {**_load(PROFILES), "profiles_version": "v\ud800"})
+    with pytest.raises(MonitorError, match="profiles_version must be"):
+        exposure(queue_path=_queue(tmp_path), profiles_path=path)
+
+
 def test_an_oversized_profiles_file_is_refused(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(exposure_module, "MAX_PROFILE_BYTES", 10)
     with pytest.raises(MonitorError, match="exceeds 10 bytes"):
         exposure(queue_path=_queue(tmp_path), profiles_path=PROFILES)
+
+
+def test_a_file_larger_than_its_reported_size_is_read_only_to_the_limit(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # A growing file or a size-zero virtual file reports less than it holds.
+    queue_path = _queue(tmp_path)
+    large = tmp_path / "large.json"
+    large.write_bytes(b" " * 16_000_000)
+    real_stat = Path.stat
+
+    def understated(self: Path, *args: Any, **kwargs: Any) -> os.stat_result:
+        result = real_stat(self, *args, **kwargs)
+        return os.stat_result((*result[:6], 0, *result[7:10])) if self == large else result
+
+    monkeypatch.setattr(Path, "stat", understated)
+    monkeypatch.setattr(exposure_module, "MAX_PROFILE_BYTES", 10)
+    tracemalloc.start()
+    try:
+        with pytest.raises(MonitorError, match="exceeds 10 bytes"):
+            exposure(queue_path=queue_path, profiles_path=large)
+        peak = tracemalloc.get_traced_memory()[1]
+    finally:
+        tracemalloc.stop()
+    assert peak < 4_000_000
+
+
+@pytest.mark.skipif(not hasattr(os, "mkfifo"), reason="POSIX FIFOs only")
+def test_a_fifo_is_refused_without_opening_it(tmp_path: Path) -> None:
+    fifo = tmp_path / "profiles.json"
+    os.mkfifo(fifo)
+    queue_path = _queue(tmp_path)
+    outcome: list[Exception] = []
+
+    def attempt() -> None:
+        try:
+            exposure(queue_path=queue_path, profiles_path=fifo)
+        except Exception as exc:  # recorded for the assertions below
+            outcome.append(exc)
+
+    # Opening a FIFO with no writer blocks, so a regression hangs this thread, not the suite.
+    worker = threading.Thread(target=attempt, daemon=True)
+    worker.start()
+    worker.join(timeout=10)
+    assert not worker.is_alive(), "the FIFO was opened"
+    assert isinstance(outcome[0], MonitorError)
+    assert "must be a regular file" in str(outcome[0])
 
 
 def test_the_report_never_replaces_an_input(tmp_path: Path) -> None:
@@ -248,3 +304,22 @@ def test_cli_exposure_reports_a_bad_queue_as_blocked(tmp_path: Path, capsys: pyt
     missing = tmp_path / "missing.json"
     assert main(["exposure", "--queue", str(missing), "--profiles", str(PROFILES), "--out", str(tmp_path / "x")]) == 2
     assert "tax-radar-au: blocked:" in capsys.readouterr().err
+
+
+@pytest.mark.parametrize(
+    "change",
+    [
+        lambda p: p.update(profiles_version="v\ud800"),
+        lambda p: p["profiles"][0].update(skill_refs=["bas-\ud800"]),
+    ],
+)
+def test_cli_exposure_blocks_lone_surrogates_without_a_traceback(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str], change: Any
+) -> None:
+    payload = _load(PROFILES)
+    change(payload)
+    profiles = _write(tmp_path / "profiles.json", payload)
+    out = tmp_path / "report"
+    assert main(["exposure", "--queue", str(_queue(tmp_path)), "--profiles", str(profiles), "--out", str(out)]) == 2
+    assert "tax-radar-au: blocked:" in capsys.readouterr().err
+    assert not out.exists()

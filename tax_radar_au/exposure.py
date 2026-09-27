@@ -41,17 +41,13 @@ LIMITATIONS = (
 )
 
 
-def _capture(path: Path, *, label: str, limit: int) -> SourceSnapshot:
+def _encodable(value: str) -> bool:
+    """False for a lone surrogate, which JSON admits but the UTF-8 report cannot hold."""
     try:
-        size = path.stat().st_size
-    except OSError:
-        size = 0  # SourceSnapshot.capture reports the missing or unreadable file.
-    if size > limit:
-        raise MonitorError(f"{label} exceeds {limit} bytes.")
-    snapshot = SourceSnapshot.capture(path, label=label)
-    if len(snapshot.content) > limit:
-        raise MonitorError(f"{label} exceeds {limit} bytes.")
-    return snapshot
+        value.encode("utf-8")
+    except UnicodeEncodeError:
+        return False
+    return True
 
 
 def _skill_ref(value: Any, *, field: str) -> str:
@@ -63,10 +59,11 @@ def _skill_ref(value: Any, *, field: str) -> str:
         or value != value.strip()
         or len(value) > MAX_SKILL_REF_CHARS
         or any(ord(character) < 32 for character in value)
+        or not _encodable(value)
     ):
         raise MonitorError(
             f"{field} must be a skill reference of at most {MAX_SKILL_REF_CHARS} characters "
-            "without surrounding spaces or control characters."
+            "without surrounding spaces, control characters or lone surrogates."
         )
     return value
 
@@ -76,8 +73,10 @@ def _load_profiles(snapshot: SourceSnapshot) -> tuple[str, list[tuple[str, tuple
     if raw["schema_version"] != PROFILES_SCHEMA:
         raise MonitorError("Client profiles have an unsupported schema.")
     version = raw["profiles_version"]
-    if not isinstance(version, str) or not version.strip():
-        raise MonitorError("Client profiles profiles_version must be a non-empty string.")
+    if not isinstance(version, str) or not version.strip() or not _encodable(version):
+        raise MonitorError(
+            "Client profiles profiles_version must be a non-empty string without lone surrogates."
+        )
     entries = raw["profiles"]
     if not isinstance(entries, list) or not entries:
         raise MonitorError("Client profiles must contain a non-empty profiles list.")
@@ -131,11 +130,11 @@ def exposure(*, queue_path: Path, profiles_path: Path) -> dict[str, Any]:
     are parsed. The queue must pass the same complete checks validate-review
     applies, including the recomputed digests and the Markdown companion.
     """
-    queue_source = _capture(queue_path, label="impact queue", limit=MAX_QUEUE_BYTES)
+    queue_source = SourceSnapshot.capture(queue_path, label="impact queue", limit=MAX_QUEUE_BYTES)
     queue = load_json_exact(queue_source, QUEUE_FIELDS, label="impact queue")
     verify_queue_integrity(queue)
     verify_queue_markdown(queue_path, queue)
-    profiles_source = _capture(
+    profiles_source = SourceSnapshot.capture(
         profiles_path, label="client profiles", limit=MAX_PROFILE_BYTES
     )
     version, profiles = _load_profiles(profiles_source)
