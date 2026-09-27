@@ -7,7 +7,7 @@ import re
 import shutil
 from typing import NamedTuple
 
-from corpus_paths import child, corpus_root, register_id
+from corpus_paths import child, corpus_root, refuse_unlisted_titles, register_id
 
 SCRATCH = os.path.dirname(os.path.abspath(__file__))
 ROOT = corpus_root(__file__)
@@ -565,8 +565,9 @@ def finish_corpus_publication(inventory, retrieved, pii_counts=None):
 
 
 def main(retrieved):
-    pii_counts = pii_summary()
     raw, markdown = load_retrieval_inventory(SCRATCH)
+    refuse_unlisted_titles(ROOT, {register_id(a["id"]) for a in markdown if a.get("markdown")})
+    pii_counts = pii_summary()
     inventory = assemble_corpus_inventory(raw, markdown, ROOT)
 
     sources = build_sources_document(inventory, retrieved)
