@@ -110,3 +110,24 @@ def reject_symlinks(directory: PathPart) -> None:
                     or is_reparse_point(candidate)):
                 raise ValueError(
                     "corpus tree contains a symbolic link, junction or reparse point")
+
+
+def refuse_unlisted_titles(root: PathPart, listed: set[str]) -> None:
+    """Stop when markdown/ holds a title directory the build does not list.
+
+    A title a rebuild dropped kept its directory, so the rates index and MCP
+    search went on serving it as in force. Dot-directories are tooling, not
+    titles. Nothing is deleted: the operator moves the directories aside.
+    """
+    base = child(root, "markdown")
+    if not os.path.isdir(base):
+        return
+    stale = sorted(
+        entry.name for entry in os.scandir(base)
+        if entry.is_dir() and not entry.name.startswith(".") and entry.name not in listed
+    )
+    if stale:
+        raise RuntimeError(
+            "markdown/ holds title directories this build does not list, which "
+            "would stay searchable as in force: %s. Move them out of the corpus "
+            "and re-run; nothing was written or deleted." % ", ".join(stale))

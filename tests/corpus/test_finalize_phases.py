@@ -163,6 +163,21 @@ class FinalizePhaseTests(unittest.TestCase):
         for name in OUTPUT_HASHES:
             self.assertEqual((self.root / name).read_text(encoding="utf-8"), "previous\n")
 
+    def test_an_unlisted_title_directory_stops_finalize_before_any_write(self):
+        # A title a rebuild dropped kept its directory, and search went on
+        # reading it as in force. Nothing is deleted; a dot-directory is ignored.
+        self.finalize.SCRATCH = str(self.scratch)
+        self.finalize.ROOT = str(self.root)
+        (self.root / "markdown" / "C2020A00099").mkdir()
+        (self.root / "markdown" / ".cache").mkdir()
+        for name in OUTPUT_HASHES:
+            (self.root / name).write_text("previous\n", encoding="utf-8")
+        with self.assertRaisesRegex(RuntimeError, r"does not list, .*: C2020A00099\. "):
+            self.finalize.main("2026-08-04")
+        for name in OUTPUT_HASHES:
+            self.assertEqual((self.root / name).read_text(encoding="utf-8"), "previous\n")
+        self.assertTrue((self.root / "markdown" / "C2020A00099").is_dir())
+
     def test_retrieval_inventory_and_assembly_are_direct_exact_phases(self) -> None:
         raw, markdown = self.finalize.load_retrieval_inventory(self.scratch)
         self.assertEqual([entry["id"] for entry in raw], [

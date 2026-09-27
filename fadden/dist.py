@@ -1,6 +1,6 @@
 """Build the redistributable subset of the corpus.
 
-Two things in the full corpus should not travel in a published dataset:
+Three things in the full corpus should not travel in a published dataset:
 
   the EPUBs      they embed the Commonwealth Coat of Arms, which sits outside
                  the Register's CC BY 4.0 grant, and any third-party material
@@ -9,10 +9,12 @@ Two things in the full corpus should not travel in a published dataset:
                  notifiable instruments, so those carry roughly 5,400 name
                  mentions with agent registration numbers and the provision
                  breached
+  5 titles       accounting standards carry their own copyright notices,
+                 outside the CC BY 4.0 grant (dist_verify.LICENCE_EXCLUDED)
 
 The markdown and JSONL carry no image bytes at all (extract.py never emitted
 them), so nothing needs stripping there. The 12 titles are dropped whole rather
-than redacted: once the name tables go, the only rows left are the Board
+than redacted, as are the 5 standards: once the name tables go, the only rows left are the Board
 secretary's signature block and a figure placeholder, so a partial redaction
 would preserve nothing and risk missing a name.
 
@@ -27,7 +29,7 @@ import shutil
 import uuid
 
 from corpus_paths import child, corpus_root, is_reparse_point, register_id, reject_symlinks
-from dist_verify import _expected_title_files, verify_distribution
+from dist_verify import LICENCE_EXCLUDED, _expected_title_files, verify_distribution
 from dist_verify import _title_tree as _verifier_title_tree
 from pii_patterns import load_contact_allowlist, privacy_findings_in_file
 from rates import stale_source_lines
@@ -380,6 +382,9 @@ def _build_distribution(staging):
     drop = {register_id(f["register_id"]): f for f in flagged}
     with open(child(ROOT, "sources.json"), encoding="utf-8") as f:
         src = json.load(f)
+    licensed = {register_id(t["register_id"]): t["name"] for t in src["titles"]
+                if t["register_id"] in LICENCE_EXCLUDED}
+    removed = set(drop) | set(licensed)
 
     # Build only the titles declared by sources.json.  The prior glob copied any
     # stray directory under markdown/, then relied on verification to notice it.
@@ -387,7 +392,7 @@ def _build_distribution(staging):
     titles = []
     for title in src["titles"]:
         rid = register_id(title["register_id"])
-        if rid in drop:
+        if rid in removed:
             continue
         title = dict(title)
         title["register_id"] = rid
@@ -460,7 +465,7 @@ def _build_distribution(staging):
             if not line.strip():
                 continue
             record = json.loads(line)
-            if record["register_id"] in drop:
+            if record["register_id"] in removed:
                 rdropped += 1
                 continue
             record["rate_id"] = "R%05d" % (len(rate_records) + 1)
@@ -475,7 +480,7 @@ def _build_distribution(staging):
     # from the files actually shipped.  The old code popped nonexistent
     # top-level keys and left sources["counts"] describing the full corpus.
     unavailable = [a for a in src.get("titles_without_epub", [])
-                   if a.get("register_id") not in drop]
+                   if a.get("register_id") not in removed]
     counts = {
         "titles": len(titles),
         "acts": stats["Act"],
@@ -510,11 +515,15 @@ def _build_distribution(staging):
     out["titles_without_epub"] = unavailable
     out["titles_not_current_version"] = [
         t for t in src.get("titles_not_current_version", [])
-        if t.get("register_id") not in drop
+        if t.get("register_id") not in removed
     ]
-    out["excluded_titles"] = [
-        {"register_id": r, "name": drop[r]["name"],
-         "reason": "names private individuals; see REMOVED.md"} for r in sorted(drop)]
+    out["excluded_titles"] = sorted([
+        *({"register_id": r, "name": drop[r]["name"],
+           "reason": "names private individuals; see REMOVED.md"} for r in drop),
+        *({"register_id": r, "name": name,
+           "reason": "restrictive copyright notice; see REMOVED.md"}
+          for r, name in licensed.items()),
+    ], key=lambda e: e["register_id"])
     with open(child(staging, "sources.json"), "w", encoding="utf-8") as f:
         json.dump(out, f, indent=1, ensure_ascii=False)
 
@@ -532,7 +541,7 @@ def _build_distribution(staging):
     idx = index_text.split("\n")
     keep_lines, dropped_lines = [], 0
     for ln in idx:
-        if any(r in ln for r in drop):
+        if any(r in ln for r in removed):
             dropped_lines += 1
             continue
         keep_lines.append(ln)
@@ -547,7 +556,7 @@ def _build_distribution(staging):
         "%s titles (%d Acts, %d instruments), %s retrieval rows, %s words.\n\n"
         "%d further titles were removed before publication; see REMOVED.md."
         % (f"{len(titles):,}", stats["Act"], len(titles) - stats["Act"],
-           f"{kept_rows:,}", f"{kept_words:,}", len(drop)),
+           f"{kept_rows:,}", f"{kept_words:,}", len(removed)),
         txt, count=1, flags=re.M)
 
     for key, lab in label:
@@ -591,15 +600,16 @@ def _build_distribution(staging):
         "removed before publication. See REMOVED.md for the list and their "
         "Register links.\n\n" % len(drop),
         rd, count=1, flags=re.S)
-    # Every title removed from dist is a table_block title, so the full
-    # corpus's count is wrong here and so is its worked example. The right
-    # figure is already computed for sources.json.
+    # The full corpus's table_block count includes removed titles, so it is
+    # wrong here and so is its worked example. The right figure is already
+    # computed for sources.json.
     rd = replace_readme_table_block_paragraph(
         rd, counts["titles_table_block_chunk"])
-    rd = ("> **This is the redistributable subset.** The EPUBs and %d titles that "
-          "name private individuals are not included. See REMOVED.md for what was "
+    rd = ("> **This is the redistributable subset.** The EPUBs, %d titles that "
+          "name private individuals and %d accounting standards under restrictive "
+          "copyright notices are not included. See REMOVED.md for what was "
           "dropped and why, and run the pipeline yourself for the full corpus.\n\n"
-          % len(drop) + rd)
+          % (len(drop), len(licensed)) + rd)
     with open(child(staging, "README.md"), "w", encoding="utf-8") as f:
         f.write(rd)
     print("INDEX.md: dropped %d lines referencing removed titles" % dropped_lines)
@@ -654,13 +664,30 @@ def _build_distribution(staging):
             f"{len(src['titles']):,}", len(drop),
             len({(kind, digest) for kind, digest, _rid in approved_contacts})),
     ]
+    if licensed:
+        lines += [
+            "",
+            "## %d accounting standards under restrictive copyright notices" % len(licensed),
+            "",
+            "Each carries its own notice, which the Register's CC BY 4.0 grant does "
+            "not cover. AASB 112, 2021-5 and 2023-2 reproduce IFRS Foundation "
+            "material for personal, non-commercial use only; AASB 1056 and 2023-4 "
+            "need the AASB's written permission for any reproduction. Each remains "
+            "available from the Register.",
+            "",
+            "| Register ID | Title |",
+            "|---|---|",
+        ]
+        for r in sorted(licensed):
+            lines.append("| [%s](https://www.legislation.gov.au/%s/latest/text) | %s |"
+                         % (r, r, licensed[r].replace("|", "\\|")))
     with open(child(staging, "REMOVED.md"), "w", encoding="utf-8") as f:
         f.write("\n".join(lines) + "\n")
 
     size = sum(os.path.getsize(os.path.join(r, f))
                for r, _, fs in os.walk(staging) for f in fs)
     print("titles %d (dropped %d) | rows %s | words %s | rates %d (dropped %d) | %.1f MB"
-          % (len(titles), len(drop), f"{kept_rows:,}", f"{kept_words:,}",
+          % (len(titles), len(removed), f"{kept_rows:,}", f"{kept_words:,}",
              len(rate_records), rdropped, size / 1e6))
 
 

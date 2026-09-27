@@ -40,6 +40,18 @@ EXIT_COULD_NOT_RUN = 2
 DIST = child(corpus_root(__file__), "dist")
 HERE = os.path.dirname(os.path.abspath(__file__))
 CONTACT_ALLOWLIST = os.path.join(HERE, "pii_contact_allowlist.json")
+# Accounting standards made as legislative instruments carry their own
+# copyright notices, which the Register's CC BY 4.0 grant does not cover (each
+# read at source on 27 September 2026). AASB 112, 2021-5 and 2023-2 reproduce
+# IFRS Foundation material for personal, non-commercial use only; AASB 1056 and
+# 2023-4 need the AASB's written permission for any reproduction.
+LICENCE_EXCLUDED = frozenset({
+    "F2015L01601",  # AASB 112 Income Taxes
+    "F2021L00963",  # AASB 2021-5
+    "F2023L00949",  # AASB 2023-2
+    "F2023L01301",  # AASB 2023-4
+    "F2024L00075",  # AASB 1056 Superannuation Entities
+})
 
 
 def _entry_kind(entry, is_junction):
@@ -159,6 +171,10 @@ def verify_distribution(distribution=None, contact_allowlist=None):
               len(unexpected),
               (": " + ", ".join(unexpected[:5])) if unexpected else ""))
     check("no removed title present", not (removed & present))
+    # Keyed on the constant rather than sources.json, so a tree whose manifest
+    # forgot the exclusion still fails.
+    check("no title under a restrictive copyright notice", not (LICENCE_EXCLUDED & present),
+          ", ".join(sorted(LICENCE_EXCLUDED & present)))
 
     rows = bad = section_rows = rid_mismatch = 0
     hot = collections.Counter()

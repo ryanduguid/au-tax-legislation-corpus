@@ -1252,6 +1252,54 @@ class DownloadManifestWriteTests(unittest.TestCase):
             self.assertFalse((epub_dir / (ids[1] + ".epub.meta.json")).exists())
             self.assertEqual(list(epub_dir.glob("*.rollback")), [])
 
+    def test_a_first_build_failure_keeps_the_new_titles_it_fetched(self):
+        # A first build fetches for hours. One persistent failure used to delete
+        # every new EPUB before it; the complete pairs now survive for the cache.
+        download = load_module("download_first_build_failure", STAGE / "download.py")
+        with tempfile.TemporaryDirectory() as tmp:
+            scratch = Path(tmp)
+            epub_dir = scratch / "corpus" / "epub"
+            epub_dir.mkdir(parents=True)
+            ids = ("F2020L01498", "F2021L00002", "F2022L00003")
+            (scratch / "acts_resolved.json").write_text(json.dumps([
+                {"id": rid, "name": "Instrument %d" % index,
+                 "versionStart": "2026-03-0%d" % index,
+                 "compilationNumber": str(index),
+                 "compilationRegisterId": "F2026C0000%d" % index}
+                for index, rid in enumerate(ids, 1)
+            ]), encoding="utf-8")
+            payload = io.BytesIO()
+            with zipfile.ZipFile(payload, "w") as archive:
+                archive.writestr("document_1.xhtml", "<html>current version</html>")
+            fetched = []
+
+            def fetch(_url, dst, tries=3):
+                if ids[2] in dst and not fetched.count("retry"):
+                    raise download.DownloadError("HTTP 403 after 1 attempt")
+                fetched.append(os.path.basename(dst))
+                Path(dst).write_bytes(payload.getvalue())
+                return True, "200", "application/epub+zip", len(payload.getvalue()), None
+
+            download.SCRATCH = str(scratch)
+            download.EPUB_DIR = str(epub_dir)
+            download.CRAWL_DELAY = 0
+            download.fetch = fetch
+            with contextlib.redirect_stdout(io.StringIO()):
+                with self.assertRaisesRegex(download.DownloadError, "HTTP 403"):
+                    download.main()
+            self.assertFalse((scratch / "manifest_raw.json").exists())
+            for rid in ids[:2]:
+                self.assertTrue((epub_dir / (rid + ".epub")).exists(), rid)
+                self.assertTrue((epub_dir / (rid + ".epub.meta.json")).exists(), rid)
+            self.assertFalse((epub_dir / (ids[2] + ".epub")).exists())
+            self.assertEqual(list(epub_dir.glob("*.rollback")), [])
+
+            fetched.append("retry")
+            with contextlib.redirect_stdout(io.StringIO()):
+                download.main()
+            manifest = json.loads((scratch / "manifest_raw.json").read_text(encoding="utf-8"))
+            self.assertEqual([entry["status"] for entry in manifest], ["cached", "cached", "ok"])
+
     def test_a_sidecar_failure_rolls_back_the_epub_publication(self):
         download = load_module("download_sidecar_rollback", STAGE / "download.py")
         for had_prior in (True, False):
@@ -1692,7 +1740,7 @@ class ShippedIntermediateTests(unittest.TestCase):
         169 that way - 188 is the total row count of the 12 flagged titles, and
         the other 19 rows are signature blocks and figure placeholders that no
         scan matched.  They still go, because dist.py drops a flagged title by
-        register id (`if rid in drop: continue`) and never reads row_ids, so
+        register id (`if rid in removed: continue`) and never reads row_ids, so
         the removal is whole-title.  Both figures and the relationship between
         them are asserted here, so restating either as the other fails.
         """
@@ -1707,7 +1755,7 @@ class ShippedIntermediateTests(unittest.TestCase):
         self.assertLess(rows_flagged, rows_total)
         # The prose claim is only true because of what dist.py actually does.
         dist = (STAGE / "dist.py").read_text(encoding="utf-8")
-        self.assertIn("if rid in drop:", dist)
+        self.assertIn("if rid in removed:", dist)
         self.assertNotIn("row_ids", dist)
         # "12 titles hold 188 rows between them, of which ... 169 ... naming
         # private individuals", however each document phrases it.
@@ -1864,11 +1912,12 @@ class PiiNameGateTests(unittest.TestCase):
         for text in ("0412345678", "0212345678", "0412 345 678",
                      "+61 2 1234 5678", "+61412345678", "+61 (0)2 1234 5678",
                      "+61 (02) 1234 5678", "13 24 68", "132468",
-                     "1300 123 456", "1800123456"):
+                     "1300 123 456", "1800123456", "Ph.13 28 61"):
             self.assertTrue(patterns.PHONE.search(text), text)
         for text in ("s 12345678", "section 123 456", "the year 2026",
                      "$1,234,567", "a $1 300 000 000 appropriation",
-                     "$100 000 000", "ABN 12 345 678 901"):
+                     "$100 000 000", "ABN 12 345 678 901",
+                     "factor 0.134567", "a rate of 1.130000"):
             self.assertFalse(patterns.PHONE.search(text), text)
         # National and international notation of one number fingerprint
         # identically, so a single allowlist decision covers both spellings.
@@ -2624,6 +2673,59 @@ class DistributionTests(unittest.TestCase):
                 out, "title files stay inside real link-free directories"), "FAIL")
             self.assertIn(self.PUBLIC_ID, out)
 
+    def test_accounting_standards_under_restrictive_notices_are_dropped_and_listed(self):
+        # AASB 112 reproduces IFRS Foundation material for non-commercial use
+        # only; shipping it relabelled that material CC BY 4.0.
+        dist = load_module("dist_licence_regression", STAGE / "dist.py")
+        verify = load_module("dist_verify_licence_regression", STAGE / "dist_verify.py")
+        standard, name = "F2015L01601", "AASB 112 - Income Taxes - August 2015"
+        with tempfile.TemporaryDirectory() as tmp:
+            root, build = self._write_fixture(Path(tmp))
+            folder = root / "markdown" / standard
+            folder.mkdir(parents=True)
+            (folder / "sections.jsonl").write_text(json.dumps({
+                "register_id": standard, "act": name, "collection": "LegislativeInstrument",
+                "section": "1", "heading": "Tax rate", "kind": "section",
+                "text": "The tax rate is 30%."}) + "\n", encoding="utf-8")
+            (folder / (standard + ".md")).write_text("# AASB 112\n", encoding="utf-8")
+            sources = json.loads((root / "sources.json").read_text(encoding="utf-8"))
+            sources["titles"].append(dict(
+                sources["titles"][0], register_id=standard, name=name,
+                collection="LegislativeInstrument",
+                markdown="markdown/%s/%s.md" % (standard, standard),
+                sections_jsonl="markdown/%s/sections.jsonl" % standard))
+            (root / "sources.json").write_text(json.dumps(sources), encoding="utf-8")
+            readme = root / "README.md"
+            readme.write_text(readme.read_text(encoding="utf-8").replace(
+                "2 in-force principal titles", "3 in-force principal titles"), encoding="utf-8")
+            dist.ROOT, dist.HERE, dist.DIST = str(root), str(build), str(root / "dist")
+            with contextlib.redirect_stdout(io.StringIO()):
+                dist.main()
+
+            output = Path(dist.DIST)
+            self.assertFalse((output / "markdown" / standard).exists())
+            shipped = json.loads((output / "sources.json").read_text(encoding="utf-8"))
+            self.assertIn({"register_id": standard, "name": name,
+                           "reason": "restrictive copyright notice; see REMOVED.md"},
+                          shipped["excluded_titles"])
+            removed_md = (output / "REMOVED.md").read_text(encoding="utf-8")
+            self.assertIn("## 1 accounting standards under restrictive copyright notices",
+                          removed_md)
+            self.assertIn("[%s](https://www.legislation.gov.au/%s/latest/text)"
+                          % (standard, standard), removed_md)
+
+            # The verifier keys on the standard, not the manifest, so a tree
+            # carrying it fails that check whatever sources.json says.
+            shutil.copytree(folder, output / "markdown" / standard)
+            verify.DIST = str(output)
+            report = io.StringIO()
+            with contextlib.redirect_stdout(report):
+                with self.assertRaises(SystemExit) as result:
+                    verify.main()
+            self.assertEqual(result.exception.code, 1)
+            self.assertRegex(report.getvalue(),
+                             r"no title under a restrictive copyright notice\s+FAIL")
+
     def test_distribution_rejects_nested_symlinks_before_copying(self):
         dist = load_module("dist_symlink_regression", STAGE / "dist.py")
         with tempfile.TemporaryDirectory() as tmp:
@@ -3077,7 +3179,7 @@ class RateExportContractTests(unittest.TestCase):
         "text": "The example tax rate is 10% of the base amount.",
     }
 
-    def export(self, rows):
+    def export(self, rows, unlisted=()):
         """Run the exporter over fabricated sections and return its outputs."""
         rates = load_module("rates_export_regression", STAGE / "rates.py")
         with tempfile.TemporaryDirectory() as temporary:
@@ -3090,6 +3192,10 @@ class RateExportContractTests(unittest.TestCase):
                 folder.mkdir(parents=True)
                 (folder / "sections.jsonl").write_text(
                     "".join(json.dumps(row) + "\n" for row in group), encoding="utf-8")
+            (root / "sources.json").write_text(json.dumps(
+                {"titles": [{"register_id": rid} for rid in grouped]}), encoding="utf-8")
+            for register_id in unlisted:
+                (root / "markdown" / register_id).mkdir(parents=True)
             with mock.patch.object(rates, "ROOT", str(root)), \
                     mock.patch.object(rates, "OUT", str(root / "rates")), \
                     contextlib.redirect_stdout(io.StringIO()):
@@ -3098,6 +3204,13 @@ class RateExportContractTests(unittest.TestCase):
                        .read_text(encoding="utf-8").splitlines()]
             markdown = (root / "rates" / "RATES.md").read_text(encoding="utf-8")
         return records, markdown
+
+    def test_a_title_directory_sources_json_does_not_list_stops_the_export(self):
+        # A title a rebuild dropped kept its directory and was indexed as a
+        # current rate. A dot-directory is tooling, not a title.
+        self.export([dict(self.ROW)], unlisted=[".cache"])
+        with self.assertRaisesRegex(RuntimeError, "C2020A00099"):
+            self.export([dict(self.ROW)], unlisted=["C2020A00099"])
 
     def test_rate_rows_carry_the_source_status_and_attribution(self):
         stale_records, stale_markdown = self.export([dict(self.ROW, version_is_current=False)])

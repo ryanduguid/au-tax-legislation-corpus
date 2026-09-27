@@ -78,14 +78,22 @@ def snapshot_pair(dst, side):
 
 
 def rollback_snapshots(snapshots):
-    """Restore every path changed since the prior manifest was read."""
+    """Restore every path changed since the prior manifest was read.
+
+    A title new to this run keeps its EPUB and sidecar when both were written:
+    the EPUB passed validation before it replaced its .part file, and the
+    sidecar stamps its version, so the next run's cache check reuses the pair.
+    Discarding them cost a first build every fetch before the failing title.
+    """
     for snapshot in reversed(snapshots):
+        new_pair_written = all(
+            not existed and os.path.exists(path) for path, _backup, existed in snapshot)
         for path, backup, existed in reversed(snapshot):
             if existed:
                 if not os.path.exists(backup):
                     raise RuntimeError("missing rollback file: %s" % backup)
                 os.replace(backup, path)
-            elif os.path.exists(path):
+            elif os.path.exists(path) and not new_pair_written:
                 os.remove(path)
         for path, backup, _existed in snapshot:
             for transient in (backup, path + ".part", path + ".tmp"):

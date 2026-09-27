@@ -26,7 +26,7 @@ re-download: the URL built from the in-force date answers 404.
 ## What this deliberately does not ship
 
 The corpus itself. It is about a gigabyte and this code rebuilds it in an
-afternoon, so shipping it would trade a lot of storage for very little. Two
+afternoon, so shipping it would trade a lot of storage for very little. Three
 parts of it should not be redistributed at all, and `dist.py` exists to separate
 them out:
 
@@ -42,6 +42,12 @@ them out:
    provision breached, about 5,400 name mentions across 169 rows. Public on the
    Register as PDFs you read one at a time; shipping them as dataset rows makes
    them name-searchable at scale, which is a different act.
+3. **Five accounting standards carry their own copyright notices.** AASB 112,
+   2021-5 and 2023-2 reproduce IFRS Foundation material for personal,
+   non-commercial use only, and AASB 1056 and 2023-4 need the AASB's written
+   permission for any reproduction (each read at source on 27 September 2026).
+   The CC BY 4.0 grant does not reach them, so `dist.py` drops them whole and
+   `dist_verify.py` fails any tree that carries one.
 
 `pii_scan.py` finds the second category without being told where to look. It
 tests every row in all 946 titles for personal names appearing alongside agent

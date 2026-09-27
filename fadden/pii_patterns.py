@@ -33,9 +33,12 @@ REGNO = re.compile(r"\b\d{8}\b")
 # between (?<!\d)/(?!\d), so 8-digit statute references, years and
 # comma-grouped dollar amounts stay outside the gate.  The separator class
 # keeps \s because Register EPUB text uses no-break spaces inside numbers.
+# A digit and a full stop before the match are a decimal point: without that
+# second lookbehind a six-decimal factor ("0.134567") read as the 13 short
+# code and blocked every full distribution, while "Ph.13 28 61" still matches.
 EMAIL = re.compile(r"\b[\w.+-]+@[\w-]+(?:\.[\w-]+)+\b")
 PHONE = re.compile(
-    r"(?<!\d)(?:"
+    r"(?<!\d)(?<!\d\.)(?:"
     r"\(0\d\)[\s-]?\d{4}[\s-]?\d{4}"                # (02) 1234 5678
     r"|0[2-8][\s-]?\d{4}[\s-]?\d{4}"                # 02 1234 5678, 0212345678
     r"|04\d{2}[\s-]?\d{3}[\s-]?\d{3}"               # 0412 345 678, 0412345678
