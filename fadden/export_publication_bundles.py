@@ -18,7 +18,7 @@ from tax_radar_au.errors import MonitorError
 from tax_radar_au.util import SourceSnapshot, load_json
 
 from fadden import export_monitor_contract as monitor_contract
-from fadden.corpus_paths import _absolute, _same_location
+from fadden.corpus_paths import _absolute, _path_is_junction, _same_location
 
 
 class PublicationBundleError(ValueError):
@@ -369,10 +369,6 @@ def _is_reparse_point(details: os.stat_result) -> bool:
     )
 
 
-def _is_junction(path: Path) -> bool:
-    return getattr(os.path, "isjunction", lambda _path: False)(path)
-
-
 def _require_regular_input(path: Path, label: str) -> None:
     try:
         details = os.lstat(path)
@@ -383,7 +379,7 @@ def _require_regular_input(path: Path, label: str) -> None:
     if (
         not stat.S_ISREG(details.st_mode)
         or os.path.islink(path)
-        or _is_junction(path)
+        or _path_is_junction(path)
         or _is_reparse_point(details)
     ):
         raise PublicationBundleError(f"{label} must be an ordinary file: {path}.")
@@ -403,7 +399,7 @@ def _require_ordinary_parent(path: Path) -> None:
     if (
         not stat.S_ISDIR(details.st_mode)
         or os.path.islink(path)
-        or _is_junction(path)
+        or _path_is_junction(path)
         or _is_reparse_point(details)
     ):
         raise PublicationBundleError(
@@ -426,7 +422,7 @@ def _output_parent_needs_creation(path: Path) -> bool:
     if (
         not stat.S_ISDIR(details.st_mode)
         or os.path.islink(path)
-        or _is_junction(path)
+        or _path_is_junction(path)
         or _is_reparse_point(details)
     ):
         raise PublicationBundleError(
@@ -459,7 +455,7 @@ def _remove_owned_staging(staging: Path, *, parent: Path, prefix: str) -> None:
         details = os.lstat(staging)
     except FileNotFoundError:
         return
-    if not stat.S_ISDIR(details.st_mode) or os.path.islink(staging) or _is_junction(staging):
+    if not stat.S_ISDIR(details.st_mode) or os.path.islink(staging) or _path_is_junction(staging):
         raise PublicationBundleError(
             f"publication bundle staging path is no longer an ordinary directory: {staging}."
         )

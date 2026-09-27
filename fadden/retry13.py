@@ -41,7 +41,7 @@ def main():
             side = child(EPUB_DIR, "%s.epub.meta.json" % rid)
             url = "https://www.legislation.gov.au/%s/%s/%s/text/original/epub" % (rid, d, d)
 
-            snapshots.append(dl.snapshot_pair(dst, side))
+            snapshots.append(dl.snapshot_paths(dst, side))
             _ok, _code, _ctype, sz, meta = dl.fetch(url, dst)
             rec = {"id": rid, "sourceUrl": url, "versionStart": d,
                    "compilationNumber": v.get("compilationNumber"),
