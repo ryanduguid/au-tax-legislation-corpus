@@ -906,17 +906,14 @@ def _validate_queue_evidence(queue: dict[str, Any]) -> tuple[set[str], str]:
     return open_items, observed_at
 
 
-def validate_review(*, queue_path: Path, decision_path: Path) -> dict[str, Any]:
-    queue = load_json_exact(queue_path, QUEUE_FIELDS, label="impact queue")
-    decision = load_json_exact(
-        decision_path, DECISION_FIELDS, label="technical review decision"
-    )
-    if decision["schema_version"] != "au-tax-technical-review.v2":
-        raise MonitorError("Queue or decision schema version is unsupported.")
+def verify_queue_integrity(queue: dict[str, Any]) -> tuple[set[str], str]:
+    """Validate a loaded queue completely and return its open items and observation time.
 
-    # Fully validate every queue field before hashing it. Exact schemas keep
-    # arbitrary nested data out of the canonicalisation step and ensure the
-    # digest has one supported interpretation.
+    Every field is validated before it is hashed: exact schemas keep arbitrary
+    nested data out of the canonicalisation step and give the digest one
+    supported interpretation. The run ID and queue digest are then recomputed,
+    so an edited item cannot keep the digest of the queue it came from.
+    """
     open_items, observed_at = _validate_queue_evidence(queue)
 
     raw_source_digests = {
@@ -936,6 +933,30 @@ def validate_review(*, queue_path: Path, decision_path: Path) -> dict[str, Any]:
         raise MonitorError(
             "Impact queue queue_digest does not match its complete review evidence."
         )
+    return open_items, observed_at
+
+
+def verify_queue_markdown(queue_path: Path, queue: dict[str, Any]) -> None:
+    """Refuse a Markdown companion that does not render exactly from the JSON queue."""
+    markdown_path = queue_path.with_suffix(".md")
+    if markdown_path.exists():
+        try:
+            markdown = markdown_path.read_text(encoding="utf-8")
+        except (OSError, UnicodeError) as exc:
+            raise MonitorError("Queue Markdown could not be read; regenerate the pair.") from exc
+        if markdown != render_markdown(queue):
+            raise MonitorError("Queue Markdown does not match the JSON evidence; regenerate the pair.")
+
+
+def validate_review(*, queue_path: Path, decision_path: Path) -> dict[str, Any]:
+    queue = load_json_exact(queue_path, QUEUE_FIELDS, label="impact queue")
+    decision = load_json_exact(
+        decision_path, DECISION_FIELDS, label="technical review decision"
+    )
+    if decision["schema_version"] != "au-tax-technical-review.v2":
+        raise MonitorError("Queue or decision schema version is unsupported.")
+
+    open_items, observed_at = verify_queue_integrity(queue)
 
     _sha256_id(decision["run_id"], field="Technical review run_id")
     _sha256_id(
@@ -996,14 +1017,7 @@ def validate_review(*, queue_path: Path, decision_path: Path) -> dict[str, Any]:
         )
         seen.add(item_id)
     undecided_count = len(open_items - seen)
-    markdown_path = queue_path.with_suffix(".md")
-    if markdown_path.exists():
-        try:
-            markdown = markdown_path.read_text(encoding="utf-8")
-        except (OSError, UnicodeError) as exc:
-            raise MonitorError("Queue Markdown could not be read; regenerate the pair.") from exc
-        if markdown != render_markdown(queue):
-            raise MonitorError("Queue Markdown does not match the JSON evidence; regenerate the pair.")
+    verify_queue_markdown(queue_path, queue)
     status = (
         "DECISION_RECORDED"
         if undecided_count == 0

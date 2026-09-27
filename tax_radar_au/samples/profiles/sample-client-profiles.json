@@ -1,0 +1,18 @@
+{
+  "schema_version": "au-tax-client-profiles.v1",
+  "profiles_version": "2099-09-demo.1",
+  "profiles": [
+    {
+      "profile_id": "FAB-CLIENT-001",
+      "skill_refs": ["bas-preparation", "cashflow-forecast"]
+    },
+    {
+      "profile_id": "FAB-CLIENT-002",
+      "skill_refs": ["bas-preparation"]
+    },
+    {
+      "profile_id": "FAB-CLIENT-003",
+      "skill_refs": ["payroll-tax-contractors"]
+    }
+  ]
+}

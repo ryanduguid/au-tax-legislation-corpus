@@ -7,6 +7,7 @@ import sys
 from pathlib import Path
 
 from .errors import MonitorError
+from .exposure import exposure, write_exposure
 from .monitor import compare, validate_review, write_queue
 
 
@@ -22,6 +23,13 @@ def build_parser() -> argparse.ArgumentParser:
     review_parser.add_argument("--queue", required=True, type=Path)
     review_parser.add_argument("--decision", required=True, type=Path)
     review_parser.add_argument("--out", type=Path, help="optional path for the validation JSON")
+    exposure_parser = commands.add_parser(
+        "exposure",
+        help="list pseudonymous client profiles whose workflows an intact queue names",
+    )
+    exposure_parser.add_argument("--queue", required=True, type=Path)
+    exposure_parser.add_argument("--profiles", required=True, type=Path)
+    exposure_parser.add_argument("--out", required=True, type=Path)
     return parser
 
 
@@ -135,6 +143,20 @@ def main(argv: list[str] | None = None) -> int:
             summary = [f"tax-radar-au: {queue['run_status']}; {len(queue['items'])} item(s)"]
             summary += [f"  {name}: {path}" for name, path in paths.items()]
             return _report(summary, 0 if queue["run_status"] != "BLOCKED" else 2)
+        if args.command == "exposure":
+            report = exposure(queue_path=args.queue, profiles_path=args.profiles)
+            try:
+                paths = write_exposure(report, args.out, inputs=(args.queue, args.profiles))
+            except OSError as exc:
+                return _blocked(f"the output directory could not be written: {exc}")
+            matched = sum(1 for item in report["items"] if item["matches"])
+            summary = [
+                f"tax-radar-au: exposure for a {report['queue']['run_status']} queue; "
+                f"{matched} item(s) with a profile match, "
+                f"{len(report['profiles_without_candidate_match'])} profile(s) without one"
+            ]
+            summary += [f"  {name}: {path}" for name, path in paths.items()]
+            return _report(summary, 0 if report["queue"]["run_status"] != "BLOCKED" else 2)
         validation = validate_review(queue_path=args.queue, decision_path=args.decision)
         if args.out:
             try:
