@@ -1820,6 +1820,13 @@ class PostMergeNamingTests(unittest.TestCase):
         llms = (REPO / "llms.txt").read_text(encoding="utf-8")
         self.assertIn("- **Repository**: %s" % homepage.group(1), llms)
 
+    def test_llms_txt_names_the_release_version_declares(self):
+        """llms.txt told agents the current release was 0.1.6 after VERSION had
+        moved on, so it has to follow the version file."""
+        version = (REPO / "VERSION").read_text(encoding="utf-8").strip()
+        llms = (REPO / "llms.txt").read_text(encoding="utf-8")
+        self.assertIn("- **Version**: %s, released as the tag `v%s`." % (version, version), llms)
+
     def test_no_document_sends_a_reader_to_the_archived_repository(self):
         """README.md linked the consumer half to the repository it merged out
         of rather than to RADAR.md beside it."""
