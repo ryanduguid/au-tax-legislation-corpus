@@ -8,7 +8,7 @@ from pathlib import Path
 from typing import Any
 from urllib.parse import urlsplit
 
-from .errors import MonitorError
+from .errors import MonitorError, SourceTooLargeError
 from .persist import write_queue_files
 from .util import SourceSnapshot, load_json, load_json_exact, safe_markdown, sha256_json
 
@@ -940,12 +940,19 @@ def verify_queue_markdown(queue_path: Path, queue: dict[str, Any]) -> None:
     """Refuse a Markdown companion that does not render exactly from the JSON queue."""
     markdown_path = queue_path.with_suffix(".md")
     if markdown_path.exists():
+        expected = render_markdown(queue)
+        # Allow CRLF bytes while preserving read_text's universal newline handling.
+        limit = len(expected.encode("utf-8")) + expected.count("\n")
+        mismatch = "Queue Markdown does not match the JSON evidence; regenerate the pair."
         try:
-            markdown = markdown_path.read_text(encoding="utf-8")
-        except (OSError, UnicodeError) as exc:
+            source = SourceSnapshot.capture(markdown_path, label="Queue Markdown", limit=limit)
+            markdown = source.text(label="Queue Markdown").replace("\r\n", "\n").replace("\r", "\n")
+        except SourceTooLargeError as exc:
+            raise MonitorError(mismatch) from exc
+        except MonitorError as exc:
             raise MonitorError("Queue Markdown could not be read; regenerate the pair.") from exc
-        if markdown != render_markdown(queue):
-            raise MonitorError("Queue Markdown does not match the JSON evidence; regenerate the pair.")
+        if markdown != expected:
+            raise MonitorError(mismatch)
 
 
 def validate_review(*, queue_path: Path, decision_path: Path) -> dict[str, Any]:

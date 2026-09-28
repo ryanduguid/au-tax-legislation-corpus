@@ -14,7 +14,7 @@ from tax_radar_au import exposure as exposure_module
 from tax_radar_au.cli import main
 from tax_radar_au.errors import MonitorError
 from tax_radar_au.exposure import exposure, render_exposure_markdown, write_exposure
-from tax_radar_au.monitor import compare, write_queue
+from tax_radar_au.monitor import compare, validate_review, write_queue
 from tax_radar_au.persist import output_paths
 from tax_radar_au.util import sample_path
 
@@ -129,6 +129,84 @@ def test_a_stale_markdown_companion_is_refused(tmp_path: Path) -> None:
         exposure(queue_path=queue_path, profiles_path=PROFILES)
 
 
+@pytest.mark.parametrize("line_ending", [None, "\n", "\r\n", "\r"])
+def test_markdown_line_endings_and_absent_companion_are_accepted(
+    tmp_path: Path, line_ending: str | None
+) -> None:
+    queue_path = _queue(tmp_path, mapping=SKILL_MAP)
+    decision = sample_path("decisions", "sample-technical-review.json")
+    expected_exposure = exposure(queue_path=queue_path, profiles_path=PROFILES)
+    expected_review = validate_review(queue_path=queue_path, decision_path=decision)
+    markdown = queue_path.with_suffix(".md")
+    if line_ending is None:
+        markdown.unlink()
+    else:
+        text = markdown.read_text(encoding="utf-8")
+        markdown.write_bytes(text.replace("\n", line_ending).encode("utf-8"))
+
+    assert exposure(queue_path=queue_path, profiles_path=PROFILES) == expected_exposure
+    assert validate_review(queue_path=queue_path, decision_path=decision) == expected_review
+
+
+def test_an_oversized_markdown_companion_is_refused_without_reading_it(tmp_path: Path) -> None:
+    queue_path = _queue(tmp_path)
+    queue_path.with_suffix(".md").write_bytes(b" " * 16_000_000)
+    tracemalloc.start()
+    try:
+        with pytest.raises(MonitorError, match="Queue Markdown does not match"):
+            exposure(queue_path=queue_path, profiles_path=PROFILES)
+        peak = tracemalloc.get_traced_memory()[1]
+    finally:
+        tracemalloc.stop()
+    assert peak < 4_000_000
+
+
+@pytest.mark.parametrize("kind", ["directory", "invalid-utf8"])
+def test_unreadable_markdown_companions_keep_the_read_error(tmp_path: Path, kind: str) -> None:
+    queue_path = _queue(tmp_path)
+    markdown = queue_path.with_suffix(".md")
+    if kind == "directory":
+        markdown.unlink()
+        markdown.mkdir()
+    else:
+        markdown.write_bytes(b"\xff")
+    with pytest.raises(MonitorError, match="Queue Markdown could not be read; regenerate the pair."):
+        exposure(queue_path=queue_path, profiles_path=PROFILES)
+
+
+@pytest.mark.skipif(not hasattr(os, "mkfifo"), reason="POSIX FIFOs only")
+@pytest.mark.parametrize("command", ["exposure", "validate-review"])
+def test_cli_refuses_a_fifo_markdown_companion_without_blocking(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str], command: str
+) -> None:
+    queue_path = _queue(tmp_path, mapping=SKILL_MAP)
+    markdown = queue_path.with_suffix(".md")
+    markdown.unlink()
+    os.mkfifo(markdown)
+    out = tmp_path / "report"
+    args = [command, "--queue", str(queue_path), "--out", str(out)]
+    if command == "exposure":
+        args.extend(["--profiles", str(PROFILES)])
+    else:
+        args.extend(["--decision", str(sample_path("decisions", "sample-technical-review.json"))])
+    outcome: list[int | Exception] = []
+
+    def attempt() -> None:
+        try:
+            outcome.append(main(args))
+        except Exception as exc:
+            outcome.append(exc)
+
+    # A regression may block the worker, but must not hang the test suite.
+    worker = threading.Thread(target=attempt, daemon=True)
+    worker.start()
+    worker.join(timeout=10)
+    assert not worker.is_alive(), "opening the Markdown FIFO blocked"
+    assert outcome == [2]
+    assert "Queue Markdown could not be read; regenerate the pair." in capsys.readouterr().err
+    assert not out.exists()
+
+
 def test_blocked_and_not_evaluated_items_keep_their_state(tmp_path: Path) -> None:
     observation = _observation()
     observation["complete"] = False
@@ -206,6 +284,27 @@ def test_a_lone_surrogate_version_is_refused(tmp_path: Path) -> None:
     path = _write(tmp_path / "p.json", {**_load(PROFILES), "profiles_version": "v\ud800"})
     with pytest.raises(MonitorError, match="profiles_version must be"):
         exposure(queue_path=_queue(tmp_path), profiles_path=path)
+
+
+@pytest.mark.parametrize("control", ["\x00", "\t", "\x1b", "\x7f"])
+def test_cli_refuses_profile_version_controls_without_echoing_values(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str], control: str
+) -> None:
+    payload = {**_load(PROFILES), "profiles_version": f"fabricated-private{control}version"}
+    profiles = _write(tmp_path / "profiles.json", payload)
+    out = tmp_path / "report"
+    assert main(["exposure", "--queue", str(_queue(tmp_path)), "--profiles", str(profiles), "--out", str(out)]) == 2
+    error = capsys.readouterr().err
+    assert "profiles_version must be a non-empty string without control characters" in error
+    assert "fabricated-private" not in error
+    assert not out.exists()
+
+
+def test_a_profile_skill_reference_with_del_is_refused_without_echoing_values(tmp_path: Path) -> None:
+    profiles = _profiles(tmp_path, [{"profile_id": "FAB-1", "skill_refs": ["private-\x7fref"]}])
+    with pytest.raises(MonitorError, match="control characters") as caught:
+        exposure(queue_path=_queue(tmp_path), profiles_path=profiles)
+    assert "private-" not in str(caught.value)
 
 
 def test_an_oversized_profiles_file_is_refused(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
