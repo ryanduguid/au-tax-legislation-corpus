@@ -87,6 +87,21 @@ def output_paths(output_dir: Path, *, stem: str = "impact-queue") -> tuple[Path,
     return output_dir / f"{stem}.json", output_dir / f"{stem}.md"
 
 
+def refuse_input_overwrite(destinations: tuple[Path, ...], inputs: tuple[Path, ...]) -> None:
+    """Reject output paths that name an input, including symbolic and hard links."""
+    try:
+        protected = {path.resolve() for path in inputs}
+        for destination in destinations:
+            resolved = destination.resolve()
+            if resolved in protected or (
+                resolved.exists()
+                and any(path.exists() and resolved.samefile(path) for path in protected)
+            ):
+                raise MonitorError("The output path would replace an input file; choose another --out.")
+    except (OSError, RuntimeError) as exc:
+        raise MonitorError("Output paths could not be checked against input files.") from exc
+
+
 def write_queue_files(
     json_text: str,
     markdown_text: str,

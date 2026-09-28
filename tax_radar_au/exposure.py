@@ -16,7 +16,7 @@ from typing import Any
 
 from .errors import MonitorError
 from .monitor import QUEUE_FIELDS, verify_queue_integrity, verify_queue_markdown
-from .persist import output_paths, write_queue_files
+from .persist import output_paths, refuse_input_overwrite, write_queue_files
 from .util import SourceSnapshot, load_json_exact, safe_markdown, sha256_json
 
 PROFILES_SCHEMA = "au-tax-client-profiles.v1"
@@ -256,16 +256,12 @@ def render_exposure_markdown(report: dict[str, Any]) -> str:
 
 
 def write_exposure(
-    report: dict[str, Any], output_dir: Path, *, inputs: tuple[Path, ...]
+    report: dict[str, Any], output_dir: Path, *, inputs: tuple[Path, Path]
 ) -> dict[str, Path]:
-    """Write the report pair owner-only, refusing to replace any input file."""
+    """Write the report pair without replacing the queue/profiles inputs, in that order."""
     destinations = output_paths(output_dir, stem=EXPOSURE_STEM)
-    protected = set()
-    for path in inputs:
-        protected.add(path.resolve())
-        protected.add(path.with_suffix(".md").resolve())
-    if any(destination.resolve() in protected for destination in destinations):
-        raise MonitorError("The output directory would replace an input file; choose another --out.")
+    queue_path, profiles_path = inputs
+    refuse_input_overwrite(destinations, (queue_path, queue_path.with_suffix(".md"), profiles_path))
     return write_queue_files(
         json.dumps(report, indent=2, sort_keys=True) + "\n",
         render_exposure_markdown(report),

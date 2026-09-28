@@ -72,6 +72,8 @@ The accepted timestamp grammar is exactly `YYYY-MM-DDThh:mm:ss[.ffffff][Z|+hh:mm
 
 ## Client exposure
 
+All three commands refuse output paths that refer to an input file, including symbolic and hard links. `validate-review` and `exposure` also protect the queue's Markdown companion.
+
 `exposure` lists the pseudonymous client profiles whose workflows an intact queue names. It runs only on a queue that passes the same checks as `validate-review`: exact schemas, a recomputed `run_id` and `queue_digest`, and a Markdown companion that matches when one exists.
 
 ```bash
