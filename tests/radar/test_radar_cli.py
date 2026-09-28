@@ -34,6 +34,71 @@ def test_cli_compare_and_validate_review(tmp_path: Path) -> None:
     assert validation_out.is_file()
 
 
+@pytest.mark.parametrize("option", ["--baseline", "--observation", "--map"])
+@pytest.mark.parametrize("name", ["impact-queue.json", "impact-queue.md"])
+def test_compare_preserves_inputs_at_output_paths(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str], option: str, name: str,
+) -> None:
+    argv = _compare_argv(tmp_path)
+    position = argv.index(option) + 1
+    source = tmp_path / name
+    original = Path(argv[position]).read_bytes()
+    source.write_bytes(original)
+    argv[position] = str(source)
+
+    assert main(argv) == 2
+    assert "would replace an input file" in capsys.readouterr().err
+    assert source.read_bytes() == original
+    assert sorted(path.name for path in tmp_path.iterdir()) == [name]
+
+
+@pytest.mark.parametrize("target", ["queue", "decision", "markdown"])
+@pytest.mark.parametrize("alias", ["direct", "relative", "hardlink", "symlink"])
+def test_validate_review_preserves_its_inputs(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str],
+    target: str, alias: str,
+) -> None:
+    monkeypatch.chdir(tmp_path)
+    directory = tmp_path / "queue"
+    assert main(_compare_argv(directory)) == 0
+    queue_path = directory / "impact-queue.json"
+    decision_path = tmp_path / "decision.json"
+    decision_path.write_bytes(sample_path("decisions", "sample-technical-review.json").read_bytes())
+    inputs = {"queue": queue_path, "decision": decision_path,
+              "markdown": queue_path.with_suffix(".md")}
+    original = {path: path.read_bytes() for path in inputs.values()}
+    output = inputs[target]
+    if alias == "relative":
+        output = output.relative_to(tmp_path)
+    elif alias in {"hardlink", "symlink"}:
+        output = tmp_path / "alias.json"
+        try:
+            if alias == "hardlink":
+                output.hardlink_to(inputs[target])
+            else:
+                output.symlink_to(inputs[target])
+        except OSError as exc:
+            pytest.skip(f"{alias} unavailable on this filesystem: {exc}")
+    capsys.readouterr()
+
+    assert main(["validate-review", "--queue", str(queue_path),
+                 "--decision", str(decision_path), "--out", str(output)]) == 2
+    assert "would replace an input file" in capsys.readouterr().err
+    assert all(path.read_bytes() == content for path, content in original.items())
+
+
+def test_validate_review_can_replace_an_unrelated_receipt(tmp_path: Path) -> None:
+    directory = tmp_path / "queue"
+    assert main(_compare_argv(directory)) == 0
+    output = tmp_path / "validation.json"
+    output.write_text("previous receipt\n", encoding="utf-8")
+
+    assert main(["validate-review", "--queue", str(directory / "impact-queue.json"),
+                 "--decision", str(sample_path("decisions", "sample-technical-review.json")),
+                 "--out", str(output)]) == 0
+    assert json.loads(output.read_text(encoding="utf-8"))["status"] == "DECISION_RECORDED"
+
+
 def test_a_non_ascii_output_path_does_not_fail_a_successful_run(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:

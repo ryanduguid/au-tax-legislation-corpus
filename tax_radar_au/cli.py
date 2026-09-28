@@ -9,6 +9,7 @@ from pathlib import Path
 from .errors import MonitorError
 from .exposure import exposure, write_exposure
 from .monitor import compare, validate_review, write_queue
+from .persist import output_paths, refuse_input_overwrite
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -137,6 +138,9 @@ def main(argv: list[str] | None = None) -> int:
             # else - a closed stdout under _report, say - is not a path problem
             # and must not be labelled as one.
             try:
+                refuse_input_overwrite(
+                    output_paths(args.out), (args.baseline, args.observation, args.map)
+                )
                 paths = write_queue(queue, args.out)
             except OSError as exc:
                 return _blocked(f"the output directory could not be written: {exc}")
@@ -160,6 +164,9 @@ def main(argv: list[str] | None = None) -> int:
         validation = validate_review(queue_path=args.queue, decision_path=args.decision)
         if args.out:
             try:
+                refuse_input_overwrite(
+                    (args.out,), (args.queue, args.queue.with_suffix(".md"), args.decision)
+                )
                 args.out.parent.mkdir(parents=True, exist_ok=True)
                 args.out.write_text(json.dumps(validation, indent=2, sort_keys=True) + "\n", encoding="utf-8")
             except OSError as exc:

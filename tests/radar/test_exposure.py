@@ -280,6 +280,32 @@ def test_the_report_never_replaces_an_input(tmp_path: Path) -> None:
     assert _load(profiles) == _load(PROFILES)
 
 
+def test_profiles_have_no_markdown_companion(tmp_path: Path) -> None:
+    queue_path = _queue(tmp_path)
+    out = tmp_path / "out"
+    profiles = _write(out / "client-exposure.txt", _load(PROFILES))
+    original = profiles.read_bytes()
+    report = exposure(queue_path=queue_path, profiles_path=profiles)
+
+    paths = write_exposure(report, out, inputs=(queue_path, profiles))
+
+    assert profiles.read_bytes() == original
+    assert _load(paths["json"]) == report
+    assert paths["markdown"].read_text(encoding="utf-8") == render_exposure_markdown(report)
+
+
+def test_the_queue_markdown_companion_is_protected(tmp_path: Path) -> None:
+    out = tmp_path / "out"
+    out.mkdir()
+    queue_path = out / "client-exposure.txt"
+    queue_path.write_bytes(_queue(tmp_path).read_bytes())
+    report = exposure(queue_path=queue_path, profiles_path=PROFILES)
+
+    with pytest.raises(MonitorError, match="would replace an input file"):
+        write_exposure(report, out, inputs=(queue_path, PROFILES))
+    assert not (out / "client-exposure.md").exists()
+
+
 @pytest.mark.skipif(os.name != "posix", reason="POSIX permission bits only")
 def test_the_report_files_are_owner_only(tmp_path: Path) -> None:
     queue_path = _queue(tmp_path)
