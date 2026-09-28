@@ -9,7 +9,7 @@ from importlib.resources import files
 from pathlib import Path
 from typing import Any
 
-from .errors import MonitorError
+from .errors import MonitorError, SourceTooLargeError
 
 
 def _open_nonblocking(file: str, flags: int) -> int:
@@ -32,7 +32,7 @@ def _reject_duplicate_json_members(pairs: list[tuple[str, Any]]) -> dict[str, An
 
 @dataclass(frozen=True, slots=True)
 class SourceSnapshot:
-    """One immutable read of a JSON source and the digest of those exact bytes."""
+    """One immutable read of a source and the digest of those exact bytes."""
 
     path: Path
     content: bytes
@@ -52,7 +52,7 @@ class SourceSnapshot:
                     if not stat.S_ISREG(info.st_mode):
                         raise MonitorError(f"{label} must be a regular file: {path}.")
                     if info.st_size > limit:
-                        raise MonitorError(f"{label} exceeds {limit} bytes.")
+                        raise SourceTooLargeError(f"{label} exceeds {limit} bytes.")
                     # The first read is sized from metadata, since read(n) allocates n
                     # bytes. A growing or size-zero virtual file that holds more than
                     # it reported is then read only to one byte past the limit.
@@ -60,7 +60,7 @@ class SourceSnapshot:
                     if len(content) > info.st_size:
                         content += stream.read(limit + 1 - len(content))
                 if len(content) > limit:
-                    raise MonitorError(f"{label} exceeds {limit} bytes.")
+                    raise SourceTooLargeError(f"{label} exceeds {limit} bytes.")
         except FileNotFoundError as exc:
             raise MonitorError(f"{label} does not exist: {path}.") from exc
         except OSError as exc:

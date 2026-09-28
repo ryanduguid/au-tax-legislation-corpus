@@ -58,7 +58,7 @@ def _skill_ref(value: Any, *, field: str) -> str:
         or not value
         or value != value.strip()
         or len(value) > MAX_SKILL_REF_CHARS
-        or any(ord(character) < 32 for character in value)
+        or any(ord(character) < 32 or ord(character) == 127 for character in value)
         or not _encodable(value)
     ):
         raise MonitorError(
@@ -73,9 +73,15 @@ def _load_profiles(snapshot: SourceSnapshot) -> tuple[str, list[tuple[str, tuple
     if raw["schema_version"] != PROFILES_SCHEMA:
         raise MonitorError("Client profiles have an unsupported schema.")
     version = raw["profiles_version"]
-    if not isinstance(version, str) or not version.strip() or not _encodable(version):
+    if (
+        not isinstance(version, str)
+        or not version.strip()
+        or any(ord(character) < 32 or ord(character) == 127 for character in version)
+        or not _encodable(version)
+    ):
         raise MonitorError(
-            "Client profiles profiles_version must be a non-empty string without lone surrogates."
+            "Client profiles profiles_version must be a non-empty string "
+            "without control characters or lone surrogates."
         )
     entries = raw["profiles"]
     if not isinstance(entries, list) or not entries:

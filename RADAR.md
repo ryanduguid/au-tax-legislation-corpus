@@ -85,6 +85,8 @@ tax-radar-au exposure \
 
 A profiles file (`au-tax-client-profiles.v1`) lists each client under a code with the skill references the firm runs for that client. A profile id is a code of up to 64 letters, digits and `.`, `_`, `:` or `-` characters, with no spaces. Never put a client's name, TFN or ABN in it, and keep real profile files outside this repository. There is deliberately no free-text label field. The shipped sample is fabricated.
 
+Each profile skill reference is limited to 200 characters. Neither `profiles_version` nor skill references may contain ASCII control characters.
+
 A profile is listed against an item only when one of the item's candidate `skill_ref` values appears exactly in the profile's `skill_refs`. Every item keeps its queue state, including `BLOCKED` items that still name a skill:
 
 | `exposure_status` | Meaning |
