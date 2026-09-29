@@ -75,7 +75,13 @@ def window(title: dict) -> tuple[datetime.date, datetime.date | None, datetime.d
     retrieved = _date(title, "retrieved")
     if start > retrieved:
         raise ValueError(f"{title.get('id', '?')}: versionStart is after retrieved")
-    if title.get("version_is_current", True) is False:
+    current = title.get("version_is_current", True)
+    if not isinstance(current, bool):
+        # A string "false" would otherwise read as current and hide the successor.
+        raise ValueError(
+            f"{title.get('id', '?')}: version_is_current must be true or false, not {current!r}"
+        )
+    if current is False:
         superseded = _date(title, "current_version_start")
         if not start < superseded <= retrieved:
             raise ValueError(

@@ -47,6 +47,8 @@ class ClassifyTests(unittest.TestCase):
             dict(SUPERSEDED, current_version_start="2023-09-01"),
             dict(SUPERSEDED, current_version_start="2026-09-01"),
             {k: v for k, v in SUPERSEDED.items() if k != "current_version_start"},
+            dict(SUPERSEDED, version_is_current="false"),
+            dict(CURRENT, version_is_current=None),
         )
         for title in broken:
             with self.subTest(title=title), self.assertRaises(ValueError):
