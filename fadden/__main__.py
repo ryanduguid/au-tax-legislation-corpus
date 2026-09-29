@@ -50,6 +50,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             "capture_register",
             "export_live_evidence_bundles",
             "rulings",
+            "as_at",
         }:
             result = func(forwarded)
         elif args.stage == "extract" and forwarded:

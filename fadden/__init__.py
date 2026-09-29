@@ -23,4 +23,5 @@ STAGES = (
     "capture_register",
     "export_live_evidence_bundles",
     "rulings",
+    "as_at",
 )

@@ -250,7 +250,8 @@ prints a progress line every 25 titles.
   are published. `retry13.py` falls back to the
   most recent version that does have a `registerId` and marks the result
   `version_is_current: false`, in the front matter, on every JSONL row, and in
-  `sources.json`. Substituting an older compilation silently would misreport the
+  `sources.json`. Each row also carries `superseded_from` (the start of the
+  version without a compilation) and `retrieved`. Substituting an older compilation silently would misreport the
   corpus as current. `check_current.py` reports these in their own bucket: it
   used to file them under 'SUPERSEDED, re-download these', which sends you at a
   URL that answers 404. An explicit null `registerId` from this API response is
@@ -388,6 +389,7 @@ python -m fadden pii_scan2     # second pass at a lower threshold, plus emails, 
 python -m fadden finalize      # write the corpus-level index and licence files -> ./corpus/sources.json, INDEX.md, README.md, LICENCE-NOTICE.md
 python -m fadden rates         # derive the rates-and-thresholds index -> ./corpus/rates/rates.jsonl, RATES.md
 python -m fadden check_current # read-only staleness check against the Register
+python -m fadden as_at 2026-07-15 # classify each title's captured compilation against a date (docs/scope.md)
 python -m fadden capture_register -- fadden/manifest_md.json --out build/register-capture-20260829
 python -m fadden export_live_evidence_bundles -- build/register-capture-20260829 --out build/live-evidence-20260829
 ```
