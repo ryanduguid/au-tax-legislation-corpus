@@ -938,6 +938,11 @@ def main(retrieved=None):
                     "compilation_number": a.get("compilationNumber"),
                     "compilation_date": a.get("versionStart"),
                     "version_is_current": a.get("version_is_current", True),
+                    # The row's own window for fadden/as_at.py: the text applies
+                    # from compilation_date until superseded_from, or, for a
+                    # current title, at least until the retrieval date.
+                    "superseded_from": a.get("current_version_start"),
+                    "retrieved": fetched,
                     "row_id": "%s:%04d:%s" % (a["id"], ordinal, s["section"] or "-"),
                     "section": s["section"], "heading": s["heading"],
                     "container": s.get("container"),

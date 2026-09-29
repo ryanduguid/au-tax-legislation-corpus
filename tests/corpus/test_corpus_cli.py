@@ -51,6 +51,7 @@ class FaddenCliTests(unittest.TestCase):
             "export_publication_bundles",
             "capture_register",
             "export_live_evidence_bundles",
+            "as_at",
         ):
             with self.subTest(stage=stage), mock.patch("importlib.import_module") as importer:
                 module = mock.Mock()
@@ -58,7 +59,7 @@ class FaddenCliTests(unittest.TestCase):
                 importer.return_value = module
                 forwarded = (
                     ["a.json", "--out", "out"]
-                    if stage in {"capture_register", "export_live_evidence_bundles"}
+                    if stage in {"capture_register", "export_live_evidence_bundles", "as_at"}
                     else ["a.json", "b.json", "--out", "out"]
                 )
                 self.assertEqual(main([stage, "--", *forwarded]), 0)
@@ -87,6 +88,7 @@ class FaddenCliTests(unittest.TestCase):
                 "capture_register",
                 "export_live_evidence_bundles",
                 "rulings",
+                "as_at",
             ),
         )
 

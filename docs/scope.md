@@ -23,6 +23,38 @@ carry the last compilation the Register holds, marked `version_is_current:
 false` in the front matter and on every row. There is no newer document to
 re-download: the URL built from the in-force date answers 404.
 
+## Dates and past income years
+
+Each row carries the window of the compilation it came from:
+`compilation_date`, the start date of that compiled text; `superseded_from`,
+the start of a later version the Register had published no compilation for
+(otherwise null); and `retrieved`, the day the build obtained it. A compilation
+date is not necessarily the commencement or application date of every
+provision or amendment in the compilation. A provision such as ITAA 1997 s 8-1
+commenced decades before any current compilation of that Act, and its text in
+an earlier year may have differed.
+
+So a row cannot answer a question about an earlier income year on its own.
+`python -m fadden as_at YYYY-MM-DD` classifies every title in the build's
+manifest against a date: `captured` when the compilation the build holds is
+the one its metadata shows for that date, `before_compilation`,
+`superseded` or `after_retrieval` otherwise, each with the next step. It works
+from the committed `fadden/manifest_md.json` unless `--manifest` names another,
+and `--json` prints one object per title.
+
+`captured` is not a finding that the text was the law on that date. A
+compilation does not show application, saving or transitional provisions
+elsewhere, modification by another law, or an amendment with retrospective
+effect registered after the build was retrieved, and the Legislation Act 2003
+does not require a new compilation for one. Read the Register's version
+history and endnotes for any question about a past date.
+
+A consumer that quotes a row should accept a quotation only when it appears
+word for word in the row text. `fadden.as_at.quote_in_text` does that check.
+It applies Unicode NFKC normalisation and reads the Register's non-breaking
+hyphen as `-`, and it changes nothing else. A match shows the quotation is
+faithful to the row, not that the row is the law for the question.
+
 ## What this deliberately does not ship
 
 The corpus itself. It is about 150 MB (the EPUBs, derived markdown and rates,

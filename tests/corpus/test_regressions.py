@@ -326,6 +326,20 @@ class ExtractPipelineTests(unittest.TestCase):
             self.assertIn("version_is_current: false", markdown)
             self.assertTrue(all(r["version_is_current"] is False for r in rows))
 
+    def test_every_row_carries_its_compilation_window(self):
+        # fadden/as_at.py and consumers read a row's window from the row, so
+        # each row must agree with the title it came from.
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            build, _epub = self._fixture(tmp_path)
+            self._run(build, "2026-08-04")
+            _markdown, rows = self._outputs(tmp_path)
+            self.assertTrue(rows)
+            for row in rows:
+                self.assertEqual(row["compilation_date"], "2025-01-01")
+                self.assertEqual(row["superseded_from"], "2026-03-01")
+                self.assertEqual(row["retrieved"], "2026-08-04")
+
     def test_the_retrieved_date_defaults_to_the_epub_mtime(self):
         with tempfile.TemporaryDirectory() as tmp:
             tmp_path = Path(tmp)
