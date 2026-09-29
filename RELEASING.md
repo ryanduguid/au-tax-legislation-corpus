@@ -16,10 +16,9 @@ Before tagging:
    job names or the test matrix.
 
    The list names the `ci.yml` and `no-ai-attribution.yml` jobs. Code scanning
-   is not in it and cannot be: `codeql.yml` is disabled at the repository level
-   and has not run since August, and the scanning that does run is GitHub's
-   default setup, whose workflow path `dynamic/github-code-scanning/codeql` the
-   policy's parser rejects because it accepts only `.github/workflows` paths.
+   is not in it and cannot be: it runs as GitHub's default setup, whose workflow
+   path `dynamic/github-code-scanning/codeql` the policy's parser rejects
+   because it accepts only `.github/workflows` paths.
    `publish-live-evidence.yml` is excluded because it is `workflow_dispatch`
    only. So this gate covers tests, linting, packaging and attribution, and a
    release still needs code-scanning results reviewed separately.

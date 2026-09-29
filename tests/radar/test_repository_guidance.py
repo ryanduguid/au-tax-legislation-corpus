@@ -78,6 +78,9 @@ def _without_fenced_commands(section: str) -> str:
 
 
 def _workflow_run_gates(workflow: str) -> list[tuple[bool, str]]:
+    # The trailing aggregate job checks job results, not the repository, so its
+    # scripts are not contributor commands.
+    workflow = re.split(r"(?m)^  [\w-]+-gates:$", workflow, maxsplit=1)[0]
     lines = workflow.splitlines()
     gates: list[tuple[bool, str]] = []
     index = 0
