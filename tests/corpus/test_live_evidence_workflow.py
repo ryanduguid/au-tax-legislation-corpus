@@ -3,6 +3,7 @@ from __future__ import annotations
 import re
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 ROOT = Path(__file__).resolve().parents[2]
 WORKFLOW = ROOT / ".github" / "workflows" / "publish-live-evidence.yml"
@@ -91,8 +92,40 @@ class LiveEvidenceWorkflowPolicyTests(unittest.TestCase):
 
     def _is_gh_command(self, line: str) -> bool:
         return re.match(
-            r"^(?:&\s+)?gh(?:\.exe)?(?:\s|$)", line.strip(), re.IGNORECASE
+            r"^(?:\$\w+\s*=\s*)?(?:&\s+)?gh(?:\.exe)?(?:\s|$)", line.strip(), re.IGNORECASE
         ) is not None
+
+    def test_command_policy_rejects_unexpected_assigned_calls(self) -> None:
+        workflow = self._workflow()
+        marker = "          $batchSize = 64"
+        self.assertEqual(workflow.count(marker), 1)
+        for command in ("& gh", "gh.exe", "& GH.EXE"):
+            with self.subTest(command=command):
+                extra = f"          $unexpected = {command} release delete $releaseTag --yes\n"
+                changed = workflow.replace(marker, extra + marker)
+                case = LiveEvidenceWorkflowPolicyTests("test_capture_stops_at_a_draft_for_human_review")
+                result = unittest.TestResult()
+                with patch.object(case, "_workflow", return_value=changed):
+                    case.run(result)
+                self.assertEqual(result.errors, [])
+                self.assertEqual(len(result.failures), 1)
+
+    def test_exit_policy_rejects_unchecked_lookups(self) -> None:
+        workflow = self._workflow()
+        for variable in ("existingSha", "isDraft"):
+            with self.subTest(variable=variable):
+                guard = (
+                    "if ($LASTEXITCODE -eq 0 -and -not "
+                    f"[string]::IsNullOrWhiteSpace(${variable})) {{"
+                )
+                self.assertEqual(workflow.count(guard), 1)
+                unchecked = guard.replace("$LASTEXITCODE -eq 0 -and ", "")
+                case = LiveEvidenceWorkflowPolicyTests("test_native_gh_calls_handle_exit_codes_immediately")
+                result = unittest.TestResult()
+                with patch.object(case, "_workflow", return_value=workflow.replace(guard, unchecked)):
+                    case.run(result)
+                self.assertEqual(result.errors, [])
+                self.assertEqual(len(result.failures), 1)
 
     def test_yaml_oracle_exposes_comments_blank_lines_and_scalar_decoys(self) -> None:
         decoy = (
@@ -328,10 +361,14 @@ class LiveEvidenceWorkflowPolicyTests(unittest.TestCase):
             if self._is_gh_command(line)
         ]
         expected_gh_commands = [
+            '$existingSha = & gh api "repos/ryanduguid/au-tax-legislation-corpus/'
+            'git/ref/tags/$releaseTag" --jq \'.object.sha\' 2>$null',
             "& gh api --method POST "
             "repos/ryanduguid/au-tax-legislation-corpus/git/refs "
             "--raw-field \"ref=refs/tags/$releaseTag\" "
             "--raw-field \"sha=$env:GITHUB_SHA\"",
+            "$isDraft = & gh release view $releaseTag "
+            "--repo ryanduguid/au-tax-legislation-corpus --json isDraft --jq '.isDraft' 2>$null",
             "& gh release create $releaseTag "
             "--repo ryanduguid/au-tax-legislation-corpus --draft --verify-tag "
             "--title $releaseTag --notes $notes",
@@ -341,13 +378,13 @@ class LiveEvidenceWorkflowPolicyTests(unittest.TestCase):
         release_gh_commands = [
             line for line in self._active_run_lines(release_step) if self._is_gh_command(line)
         ]
-        self.assertEqual(release_gh_commands, expected_gh_commands[:3])
+        self.assertEqual(release_gh_commands, expected_gh_commands)
         self.assertNotIn("--draft=false", workflow)
         self.assertEqual(
             gh_commands,
             expected_gh_commands,
         )
-        self.assertNotIn("--target", gh_commands[1])
+        self.assertNotIn("--target", gh_commands[3])
 
         enumeration = (
             "          $assetPaths = @(\n"
@@ -392,17 +429,22 @@ class LiveEvidenceWorkflowPolicyTests(unittest.TestCase):
         self.assertIn("gh release upload", token_steps[0])
         self.assertEqual(workflow.count("GH_TOKEN:"), 1)
 
-    def test_every_native_gh_call_has_an_immediate_failure_check(self) -> None:
+    def test_native_gh_calls_handle_exit_codes_immediately(self) -> None:
         workflow = self._workflow()
         lines = workflow.splitlines()
         gh_indexes = [
             index for index, line in enumerate(lines) if self._is_gh_command(line)
         ]
-        self.assertEqual(len(gh_indexes), 3)
-        expected = (
-            "if ($LASTEXITCODE -ne 0) { throw 'GitHub CLI release operation failed.' }"
+        mutation_check = "if ($LASTEXITCODE -ne 0) { throw 'GitHub CLI release operation failed.' }"
+        expected_checks = (
+            "if ($LASTEXITCODE -eq 0 -and -not [string]::IsNullOrWhiteSpace($existingSha)) {",
+            mutation_check,
+            "if ($LASTEXITCODE -eq 0 -and -not [string]::IsNullOrWhiteSpace($isDraft)) {",
+            mutation_check,
+            mutation_check,
         )
-        for index in gh_indexes:
+        self.assertEqual(len(gh_indexes), len(expected_checks))
+        for index, expected in zip(gh_indexes, expected_checks):
             with self.subTest(command=lines[index].strip()):
                 self.assertEqual(lines[index + 1].strip(), expected)
 
