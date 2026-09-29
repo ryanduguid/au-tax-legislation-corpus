@@ -33,15 +33,12 @@ jobs:
       # is built. Each line names one job exactly as GitHub records it, taken
       # from real push runs rather than from the workflow source: the gate
       # fails closed on an empty list and refuses a name matching more than one
-      # job. ci.yml carries no path filter and none of its jobs carries an if:,
-      # so nothing listed here can be skipped into a pass.
+      # job. Neither ci.yml nor codeql.yml carries a path filter, and the only
+      # if: is codeql-gates' always(), which runs its check rather than skipping
+      # it, so nothing listed here can be skipped into a pass.
       #
-      # Two sources are absent deliberately, and neither omission can be fixed
-      # by listing it. publish-live-evidence.yml is workflow_dispatch only.
-      # Code scanning is GitHub's default setup, whose workflow path
-      # (dynamic/github-code-scanning/codeql) the policy's required-checks
-      # parser rejects because it accepts only .github/workflows paths.
-      # Requiring either would block every release.
+      # publish-live-evidence.yml is absent deliberately: it is
+      # workflow_dispatch only, so requiring it would block every release.
       required-checks: |
         .github/workflows/no-ai-attribution.yml: Attribution policy / Attribution policy runner
         .github/workflows/ci.yml: lint
@@ -53,4 +50,7 @@ jobs:
         .github/workflows/ci.yml: test (ubuntu-latest, 3.14, tests)
         .github/workflows/ci.yml: test (windows-latest, 3.12, tests/radar tests/corpus/test_live_evidence_bundle_export.py)
         .github/workflows/ci.yml: tests-gates
+        .github/workflows/codeql.yml: Analyze (actions)
+        .github/workflows/codeql.yml: Analyze (python)
+        .github/workflows/codeql.yml: codeql-gates
       artifact-stem: au-tax-legislation-corpus-builder
