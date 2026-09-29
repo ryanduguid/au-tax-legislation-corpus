@@ -53,8 +53,9 @@ A consumer that quotes a row should accept a quotation only when it appears
 in the row text. `fadden.as_at.quote_in_text` does that check after Unicode
 NFKC normalisation of both, reading the Register's non-breaking hyphen as `-`.
 NFKC also folds other compatibility forms, such as ligatures and full-width
-letters, so a match is close to literal rather than character for character;
-case and other punctuation are not changed. A match shows the quotation is
+letters, and compatibility punctuation such as a full-width comma, so a match
+is close to literal rather than character for character. Case is not folded.
+A match shows the quotation is
 faithful to the row, not that the row is the law for the question.
 
 ## What this deliberately does not ship

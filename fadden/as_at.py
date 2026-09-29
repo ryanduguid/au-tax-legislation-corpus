@@ -108,8 +108,9 @@ def _literal(text: str) -> str:
     # space into a space, a ligature such as U+FB01 into "fi", full-width
     # letters into ordinary ones, and the non-breaking hyphen the Register uses
     # in section numbers (40, U+2011, 1) into U+2010, read here as "-" so a
-    # keyboard hyphen matches. Case and other punctuation are left alone, so a
-    # match is close to literal but not character for character.
+    # keyboard hyphen matches. Compatibility punctuation, such as a full-width
+    # comma, folds too. Case is not folded. So a match is close to literal but
+    # not character for character.
     return unicodedata.normalize("NFKC", text).replace(chr(0x2010), "-")
 
 
