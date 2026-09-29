@@ -36,11 +36,9 @@ jobs:
       # job. ci.yml carries no path filter and none of its jobs carries an if:,
       # so nothing listed here can be skipped into a pass.
       #
-      # Two workflows are absent deliberately, and neither omission can be
-      # fixed by listing it. publish-live-evidence.yml is workflow_dispatch
-      # only. codeql.yml declares push on main but is disabled at the
-      # repository level and has not run since August; the code scanning that
-      # does run is GitHub's default setup, whose workflow path
+      # Two sources are absent deliberately, and neither omission can be fixed
+      # by listing it. publish-live-evidence.yml is workflow_dispatch only.
+      # Code scanning is GitHub's default setup, whose workflow path
       # (dynamic/github-code-scanning/codeql) the policy's required-checks
       # parser rejects because it accepts only .github/workflows paths.
       # Requiring either would block every release.
@@ -54,4 +52,5 @@ jobs:
         .github/workflows/ci.yml: test (ubuntu-latest, 3.13, tests)
         .github/workflows/ci.yml: test (ubuntu-latest, 3.14, tests)
         .github/workflows/ci.yml: test (windows-latest, 3.12, tests/radar tests/corpus/test_live_evidence_bundle_export.py)
+        .github/workflows/ci.yml: tests-gates
       artifact-stem: au-tax-legislation-corpus-builder

@@ -117,3 +117,26 @@ jobs:
       # The lockfile pins 19 packages that ship in the release archive family;
       # nothing checked them against advisories until now.
       - run: uv audit --locked
+
+  tests-gates:
+    # The one context branch protection requires from this workflow. It fails
+    # unless every job it needs succeeded, when a job in this file is missing
+    # from needs, or when a pull request removes a job without adding a
+    # "# removed-jobs: <job>" comment to this file.
+    needs: [test, package, lint]
+    if: always()
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          # The merge commit's first parent holds the base branch's workflow.
+          fetch-depth: 2
+          sparse-checkout: .github
+      - name: Require every job to be listed, kept and successful
+        env:
+          RESULTS: ${{ toJSON(needs) }}
+        run: python3 .github/ci/check_gates.py .github/workflows/ci.yml tests-gates
