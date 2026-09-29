@@ -25,7 +25,8 @@ captured corresponds to DATE according to the build's own metadata:
 ``captured`` is not a finding that the text was the law on DATE.
 
 ``quote_in_text`` is for a consumer that cites a row. It accepts a quotation
-only when it appears word for word in the row text.
+only when it appears in the row text once both are NFKC-normalised, with the
+Register's non-breaking hyphen read as "-".
 
 usage: python -m fadden as_at YYYY-MM-DD [--manifest PATH] [--json]
 """
@@ -103,18 +104,20 @@ def classify(title: dict, on: datetime.date) -> str:
 
 
 def _literal(text: str) -> str:
-    # NFKC turns compatibility forms, such as a non-breaking space, into their
-    # plain equivalents, and turns the non-breaking hyphen the Register uses in
-    # section numbers (40‑1) into U+2010. A quotation typed with a keyboard
-    # hyphen has to match that, so U+2010 is read as "-" too. Nothing else is
-    # folded: no case, whitespace or punctuation changes.
-    return unicodedata.normalize("NFKC", text).replace("‐", "-")
+    # NFKC turns compatibility forms into plain equivalents: a non-breaking
+    # space into a space, a ligature such as U+FB01 into "fi", full-width
+    # letters into ordinary ones, and the non-breaking hyphen the Register uses
+    # in section numbers (40, U+2011, 1) into U+2010, read here as "-" so a
+    # keyboard hyphen matches. Case and other punctuation are left alone, so a
+    # match is close to literal but not character for character.
+    return unicodedata.normalize("NFKC", text).replace(chr(0x2010), "-")
 
 
 def quote_in_text(quote: str, text: str) -> bool:
-    """Whether ``quote`` appears word for word in ``text``.
+    """Whether ``quote`` appears in ``text`` once both are NFKC-normalised.
 
-    A match shows that the quotation is faithful to the row. It does not show
+    A match shows that the quotation is faithful to the row, up to the
+    compatibility forms NFKC folds. It does not show
     that the row states the law for the question or the date. A blank quotation
     is refused rather than matching every text.
     """
@@ -135,6 +138,9 @@ def main(argv: Sequence[str] | None = None) -> int:
     try:
         on = datetime.date.fromisoformat(args.date)
     except ValueError:
+        on = None
+    # fromisoformat also takes 20260710 and 2026-W28-5; the usage is YYYY-MM-DD.
+    if on is None or on.isoformat() != args.date:
         parser.error(f"date must be YYYY-MM-DD, not {args.date!r}")
     try:
         with open(args.manifest, encoding="utf-8") as f:

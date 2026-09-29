@@ -74,6 +74,12 @@ class QuoteTests(unittest.TestCase):
         row = "section 8‑1 of the Income Tax Assessment Act 1997"
         self.assertTrue(as_at.quote_in_text("section 8-1 of the Income Tax Assessment Act", row))
 
+    def test_nfkc_folds_other_compatibility_forms_too(self) -> None:
+        # Documented, not accidental: a ligature in the row matches plain letters,
+        # so a match is close to literal rather than character for character.
+        row = "deduct from your " + chr(0xFB01) + "nancial year income"
+        self.assertTrue(as_at.quote_in_text("deduct from your financial year", row))
+
     def test_a_blank_quotation_is_refused(self) -> None:
         for quote in ("", "   "):
             with self.subTest(quote=quote), self.assertRaises(ValueError):
@@ -117,10 +123,13 @@ class CommandTests(unittest.TestCase):
         self.assertEqual((code, out), (1, ""))
         self.assertIn("C2099A00001: retrieved is not a YYYY-MM-DD date", err)
 
-    def test_a_date_that_is_not_iso_is_a_usage_error(self) -> None:
-        with self.assertRaises(SystemExit) as raised, contextlib.redirect_stderr(io.StringIO()):
-            as_at.main(["10/07/2026"])
-        self.assertEqual(raised.exception.code, 2)
+    def test_a_date_that_is_not_yyyy_mm_dd_is_a_usage_error(self) -> None:
+        # fromisoformat alone would accept the basic and week-date forms.
+        for date in ("10/07/2026", "20260710", "2026-W28-5", "2026-7-10"):
+            with self.subTest(date=date), self.assertRaises(SystemExit) as raised, \
+                    contextlib.redirect_stderr(io.StringIO()):
+                as_at.main([date])
+            self.assertEqual(raised.exception.code, 2)
 
 
 if __name__ == "__main__":
