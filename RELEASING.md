@@ -15,13 +15,11 @@ Before tagging:
    matching more than one job. Keep the list in step with any change to those
    job names or the test matrix.
 
-   The list names the `ci.yml` and `no-ai-attribution.yml` jobs. Code scanning
-   is not in it and cannot be: it runs as GitHub's default setup, whose workflow
-   path `dynamic/github-code-scanning/codeql` the policy's parser rejects
-   because it accepts only `.github/workflows` paths.
+   The list names the `ci.yml`, `codeql.yml` and `no-ai-attribution.yml` jobs.
    `publish-live-evidence.yml` is excluded because it is `workflow_dispatch`
-   only. So this gate covers tests, linting, packaging and attribution, and a
-   release still needs code-scanning results reviewed separately.
+   only. So this gate covers tests, linting, packaging and attribution, and
+   proves CodeQL analysed the release commit. An analysis succeeds even when
+   it raises alerts, so review open code-scanning alerts before releasing.
 2. Enable release immutability in the repository settings.
 3. From an operator session authenticated with repository Administration read access, run:
 
