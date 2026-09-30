@@ -1800,9 +1800,10 @@ def test_v2_observation_missing_evidence_id_is_rejected(tmp_path: Path) -> None:
         _compare_fixtures(tmp_path, observation=observation)
 
 
-def test_unsupported_observation_schema_version_is_rejected(tmp_path: Path) -> None:
+@pytest.mark.parametrize("version", ["au-tax-register-observation.v99", [], {}])
+def test_unsupported_observation_schema_version_is_rejected(tmp_path: Path, version: object) -> None:
     observation = _payload("observations", "sample-register-observation.json")
-    observation["schema_version"] = "au-tax-register-observation.v99"
+    observation["schema_version"] = version
     with pytest.raises(
         MonitorError,
         match=(

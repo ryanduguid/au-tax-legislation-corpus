@@ -291,7 +291,7 @@ def _load_observation(
             {"schema_version", "mode", "observed_at", "expected_register_ids", "complete", "observations"},
             label="Register observation",
         )
-    elif version in {
+    elif isinstance(version, str) and version in {
         "au-tax-register-observation.v2",
         "au-tax-register-observation.v3",
     }:
