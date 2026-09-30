@@ -315,3 +315,31 @@ def test_a_second_run_after_stdout_was_abandoned_still_returns_its_status(
     assert first == second
     assert (tmp_path / "two" / "impact-queue.json").is_file()
     assert (tmp_path / "two" / "impact-queue.md").is_file()
+
+
+@pytest.mark.parametrize("version", [[], {}], ids=["array", "object"])
+def test_compare_blocks_unhashable_observation_schema_version(
+    tmp_path: Path, version: object,
+) -> None:
+    output = tmp_path / "output"
+    argv = _compare_argv(output)
+    position = argv.index("--observation") + 1
+    payload = json.loads(Path(argv[position]).read_text(encoding="utf-8"))
+    payload["schema_version"] = version
+    observation = tmp_path / "observation.json"
+    observation.write_text(json.dumps(payload), encoding="utf-8")
+    argv[position] = str(observation)
+
+    result = subprocess.run(
+        [sys.executable, "-m", "tax_radar_au.cli", *argv],
+        capture_output=True, text=True, check=False,
+    )
+
+    assert result.returncode == 2
+    assert result.stdout == ""
+    assert result.stderr == (
+        "tax-radar-au: blocked: Only au-tax-register-observation.v1, "
+        "au-tax-register-observation.v2 and "
+        "au-tax-register-observation.v3 in synthetic mode are supported.\n"
+    )
+    assert not output.exists()
