@@ -9,9 +9,11 @@
 - **Python**: 3.10 or later. Tests run on 3.10 to 3.14 on Ubuntu, plus a Windows 3.12 leg for the supported live-evidence export boundary.
 
 ## Corpus builder (`fadden`)
-- **Stages**: `discover`, `versions`, `download`, `probe13`, `retry13`, `extract`, `pii_scan`, `pii_scan2`, `finalize`, `rates`, `check_current`, `dist`, `dist_verify`, `export_monitor_contract`, `export_publication_bundles`, `capture_register`, `export_live_evidence_bundles`. `BUILD.md` documents the order and the operating boundaries.
+- **Stages**: `discover`, `versions`, `download`, `probe13`, `retry13`, `extract`, `pii_scan`, `pii_scan2`, `finalize`, `rates`, `check_current`, `dist`, `dist_verify`, `export_monitor_contract`, `export_publication_bundles`, `capture_register`, `export_live_evidence_bundles`, plus the separate `rulings` and `as_at` stages. `BUILD.md` documents the order and the operating boundaries.
 - **Deterministic output root**: no environment variable selects it. In a source checkout the generated files live under `./corpus/`; a deployed build uses the parent of the `build/` directory holding the stage modules.
 - **Privacy gates**: `pii_scan` and `pii_scan2` run before `finalize`, which refuses to run without `pii_flagged.json`. Twelve titles are disciplinary registers naming private individuals.
+- **ATO rulings (`rulings`)**: fetches up to 100 named ATO-authored Legal Database documents (rulings, determinations, practical compliance guidelines, decision impact statements and edited private advice) into paragraph JSONL with the ATO reuse notice. It never touches `./corpus/` and excludes any document that matches a personal-data pattern.
+- **As-at check (`as_at`)**: classifies each captured compilation against a date. `captured` is not a finding that the text was the law on that date.
 - **Evidence contracts**: live Register capture, synthetic observations and publication candidates are distinct. A successful capture or export authorises nothing for publication.
 
 ## Review queue (`tax_radar_au`)
@@ -21,17 +23,24 @@
 - **Human in the loop**: it generates deterministic change candidates. It establishes no current law, legal effect, workflow update or client action.
 
 ## What talks to the network, and when
-Seven builder stages reach the Federal Register. Everything else, including the whole review queue, is local.
+Seven builder stages reach the Federal Register and `rulings` reaches the ATO Legal Database. Everything else, including the whole review queue, is local.
 - `discover` and `versions` call the Register API about 1,100 times at 1.5 to 3 second intervals, roughly 40 minutes combined.
 - `download` fetches one EPUB per title through `curl`, sleeping 10 seconds between titles to honour the Register's `robots.txt` Crawl-delay. All 946 titles take about 2 hours 40 minutes, and titles already downloaded at the same version are skipped.
 - `probe13` reads version history for the titles `download` recorded as `no_epub`, and `retry13` downloads the latest published compilation for those it can recover.
 - `check_current` is a read-only staleness check: 946 API calls at 1.5 seconds, about half an hour.
 - `capture_register` observes every title in a manifest against the Register and retains the exact bounded HTTP 200 response bytes behind each decision. The 946-title manifest needs at least 946 requests, an enforced 1.5-second gap makes a no-retry run about 24 minutes, redirects are refused, the socket timeout is 90 seconds and each title gets at most 3 attempts. No API key is required.
-- `extract`, `pii_scan`, `pii_scan2`, `finalize`, `rates`, `dist`, `dist_verify`, `export_monitor_contract`, `export_publication_bundles` and `export_live_evidence_bundles` make no request at all. The monitor and publication exporters project facts a caller has already collected.
+- `rulings` fetches only the named targets, one request a second, HTML only, at most 8 MiB a page, from `https://www.ato.gov.au`. There is no discovery crawl.
+- `as_at`, `extract`, `pii_scan`, `pii_scan2`, `finalize`, `rates`, `dist`, `dist_verify`, `export_monitor_contract`, `export_publication_bundles` and `export_live_evidence_bundles` make no request at all. The monitor and publication exporters project facts a caller has already collected.
 
-## Reference
-- `README.md`: the offline example and the 2 systems.
-- `BUILD.md`: pipeline commands, timing and the traps the code exists to avoid.
-- `RADAR.md`: the synthetic review queue.
-- `docs/monitor-contract.md`, `docs/evidence-export.md`, `docs/build-evidence.md`, `docs/architecture.md`, `docs/scope.md`.
-- `RELEASING.md` and `AGENTS.md`: release rules and the CI gates.
+## Docs
+- [README](https://github.com/ryanduguid/au-tax-legislation-corpus/blob/main/README.md): the offline example and the 2 systems.
+- [BUILD.md](https://github.com/ryanduguid/au-tax-legislation-corpus/blob/main/BUILD.md): pipeline commands, timing and the traps the code exists to avoid.
+- [RADAR.md](https://github.com/ryanduguid/au-tax-legislation-corpus/blob/main/RADAR.md): the synthetic review queue.
+- [Scope](https://github.com/ryanduguid/au-tax-legislation-corpus/blob/main/docs/scope.md): what a compilation date does and does not show, and the `as_at` stage.
+- [ATO rulings stage](https://github.com/ryanduguid/au-tax-legislation-corpus/blob/main/docs/rulings.md): reuse basis, accepted document families and fetch rules.
+- [Architecture](https://github.com/ryanduguid/au-tax-legislation-corpus/blob/main/docs/architecture.md), [monitor contract](https://github.com/ryanduguid/au-tax-legislation-corpus/blob/main/docs/monitor-contract.md), [evidence export](https://github.com/ryanduguid/au-tax-legislation-corpus/blob/main/docs/evidence-export.md) and [build evidence](https://github.com/ryanduguid/au-tax-legislation-corpus/blob/main/docs/build-evidence.md).
+
+## Optional
+- [Compared with the Open Australian Legal Corpus](https://github.com/ryanduguid/au-tax-legislation-corpus/blob/main/docs/comparison.md)
+- [Route a source change to affected work](https://github.com/ryanduguid/au-tax-legislation-corpus/blob/main/docs/workpaper-impact.md)
+- [RELEASING.md](https://github.com/ryanduguid/au-tax-legislation-corpus/blob/main/RELEASING.md) and [AGENTS.md](https://github.com/ryanduguid/au-tax-legislation-corpus/blob/main/AGENTS.md): release rules and the CI gates.
