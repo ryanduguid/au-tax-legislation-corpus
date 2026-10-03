@@ -188,8 +188,10 @@ def open_epub(path):
     """Admit a bounded archive and retain ownership of its input lifetime."""
     owned = not hasattr(path, "read")
     source = open(path, "rb") if owned else path
-    position = source.tell()
+    position = None
     try:
+        if not owned:
+            position = source.tell()
         _check_zip_directory(source)
         source.seek(0)
         with zipfile.ZipFile(source) as archive:
@@ -198,7 +200,7 @@ def open_epub(path):
     finally:
         if owned:
             source.close()
-        else:
+        elif position is not None:
             source.seek(position)
 
 
@@ -322,7 +324,10 @@ def decode_envelope(path):
 def _require_bounded_curl():
     try:
         # Trusted operator PATH selects the local prerequisite; fixed argv, no shell.
-        result = subprocess.run(["curl", "--version"], capture_output=True, text=True)  # nosec B607,B603
+        executable = shutil.which("curl")
+        if executable is None:
+            raise OSError("curl executable is unavailable")
+        result = subprocess.run([os.path.abspath(executable), "--version"], capture_output=True, text=True)  # nosec B603
     except OSError as exc:
         raise DownloadError("curl 8.4.0 or newer is required for bounded downloads") from exc
     match = re.match(r"curl ([0-9]+)\.([0-9]+)\.([0-9]+)", result.stdout or "")

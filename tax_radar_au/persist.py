@@ -109,17 +109,17 @@ def write_receipt(text: str, path: Path, *, inputs: tuple[Path, ...]) -> Path:
     published = False
     try:
         # Descriptor belongs to exclusive staging for the explicit local CLI destination.
-        stream = os.fdopen(descriptor, "w", encoding="utf-8")  # NOSONAR
+        stream = os.fdopen(descriptor, "w", encoding="utf-8")
         with stream:
-            stream.write(text)  # NOSONAR - retained staging inode, published without clobber
+            stream.write(text)
             stream.flush()
             os.fsync(stream.fileno())
         if os.name == "nt":
             # Windows rename fails if a destination appears after validation.
-            os.rename(staged, path)
+            os.rename(staged, path)  # NOSONAR(S8707) - explicit local CLI output, no clobber
         else:
             # A hard link publishes the fully written inode with no clobber.
-            os.link(staged, path)
+            os.link(staged, path)  # NOSONAR(S8707) - explicit local CLI output, no clobber
         published = True
     except BaseException as error:
         if stream is None:

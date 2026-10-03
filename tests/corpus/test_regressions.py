@@ -1199,7 +1199,7 @@ class DownloadManifestWriteTests(unittest.TestCase):
                 manifest_path.write_text(original, encoding="utf-8")
 
                 def failed_response(args, **kwargs):
-                    if args == ["curl", "--version"]:
+                    if len(args) == 2 and Path(args[0]).name.lower() in ("curl", "curl.exe") and args[1] == "--version":
                         return mock.Mock(stdout="curl 8.4.0", returncode=0)
                     Path(args[args.index("-o") + 1]).write_bytes(body)
                     return mock.Mock(stdout=response_meta, returncode=0)
@@ -1253,7 +1253,7 @@ class DownloadManifestWriteTests(unittest.TestCase):
             sidecar.write_text(old_sidecar, encoding="utf-8")
 
             def blocked(args, **kwargs):
-                if args == ["curl", "--version"]:
+                if len(args) == 2 and Path(args[0]).name.lower() in ("curl", "curl.exe") and args[1] == "--version":
                     return mock.Mock(stdout="curl 8.4.0", returncode=0)
                 Path(args[args.index("-o") + 1]).write_bytes(b"<html>blocked</html>")
                 return mock.Mock(stdout="403|text/html", returncode=0)
@@ -1461,7 +1461,7 @@ class DownloadValidationTests(unittest.TestCase):
     def _fetch(self, download, dst, body, code="200", content_type="text/html",
                returncode=0):
         def fake_run(args, **kwargs):
-            if args == ["curl", "--version"]:
+            if len(args) == 2 and Path(args[0]).name.lower() in ("curl", "curl.exe") and args[1] == "--version":
                 return mock.Mock(stdout="curl 8.4.0", returncode=0)
             output = Path(args[args.index("-o") + 1])
             self.assertNotEqual(output, Path(dst))
@@ -1548,7 +1548,7 @@ class DownloadValidationTests(unittest.TestCase):
         ]
 
         def fake_run(args, **_kwargs):
-            if args == ["curl", "--version"]:
+            if len(args) == 2 and Path(args[0]).name.lower() in ("curl", "curl.exe") and args[1] == "--version":
                 return mock.Mock(stdout="curl 8.4.0", returncode=0)
             body, content_type = responses.pop(0)
             Path(args[args.index("-o") + 1]).write_bytes(body)

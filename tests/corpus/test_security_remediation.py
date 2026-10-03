@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import io
 import json
+import os
 import struct
 import tempfile
 import unittest
@@ -32,6 +33,22 @@ def epub_bytes(*members: str) -> bytes:
 
 
 class ArchiveBudgetTests(unittest.TestCase):
+    def test_initial_tell_failure_closes_owned_stream_and_preserves_borrowed_stream(self):
+        class FailingTell(io.BytesIO):
+            def tell(self):
+                raise OSError("Synthetic initial tell failure")
+
+        for owned in (False, True):
+            with self.subTest(owned=owned):
+                stream = FailingTell(b"invalid archive")
+                with mock.patch.object(download, "open", return_value=stream, create=True):
+                    with self.assertRaisesRegex(OSError, "Synthetic initial tell failure"):
+                        with download.open_epub("owned.epub" if owned else stream):
+                            self.fail("A stream with no cursor entered the archive")
+                self.assertEqual(stream.closed, owned)
+                if not owned:
+                    stream.close()
+
     def test_archive_lifetime_preserves_ownership_on_success_and_admission_failure(self):
         valid = epub_bytes("<html>complete</html>")
         for owned in (False, True):
@@ -250,6 +267,29 @@ class ArchiveBudgetTests(unittest.TestCase):
                         download.fetch("https://example.test/document", str(path))
                 self.assertEqual(path.read_bytes(), b"previous archive")
                 self.assertEqual(list(path.parent.iterdir()), [path])
+        finally:
+            download._require_bounded_curl.cache_clear()
+
+    def test_curl_probe_resolves_the_trusted_executable_before_spawning(self):
+        download._require_bounded_curl.cache_clear()
+        try:
+            with mock.patch.object(download.shutil, "which", return_value="reviewed-curl"), \
+                    mock.patch.object(download.subprocess, "run", return_value=SimpleNamespace(
+                        returncode=0, stdout="curl 8.4.0"
+                    )) as run:
+                download._require_bounded_curl()
+            self.assertEqual(run.call_args.args[0], [os.path.abspath("reviewed-curl"), "--version"])
+        finally:
+            download._require_bounded_curl.cache_clear()
+
+    def test_missing_curl_fails_before_spawning(self):
+        download._require_bounded_curl.cache_clear()
+        try:
+            with mock.patch.object(download.shutil, "which", return_value=None), \
+                    mock.patch.object(download.subprocess, "run") as run:
+                with self.assertRaisesRegex(download.DownloadError, "8.4.0"):
+                    download._require_bounded_curl()
+                run.assert_not_called()
         finally:
             download._require_bounded_curl.cache_clear()
 
