@@ -666,6 +666,18 @@ class ParserRuleTests(unittest.TestCase):
         _md, sections, _en, _lt = self.markdown(blocks, force_bare=True)
         self.assertEqual([s["section"] for s in sections if s["kind"] == "section"], ["3"])
 
+    def test_a_valueless_class_attribute_is_not_a_section_number(self):
+        """html.parser reports `<span class>` with the value None, which an
+        `in` test on the attribute cannot take."""
+        extract = load_module("extract_valueless_class", STAGE / "extract.py")
+        parser = extract.Doc()
+        parser.feed('<html><body><p class>Preamble <span class>1</span> text</p>'
+                    '<p class="ActHead5"><span class="CharSectno">2</span> Title</p>'
+                    '</body></html>')
+        parser._flush()
+        paragraphs = [(b["cls"], b["sectno"]) for b in parser.blocks if b["k"] == "p"]
+        self.assertEqual(paragraphs, [("", False), ("ActHead5", True)])
+
     def test_a_spanned_cell_keeps_later_cells_in_their_column(self):
         extract = load_module("extract_colspan", STAGE / "extract.py")
         parser = extract.Doc()

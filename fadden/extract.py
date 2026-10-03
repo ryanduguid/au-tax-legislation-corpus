@@ -169,7 +169,7 @@ class Doc(HTMLParser):
             self._cls = a.get("class", "")
             self._sectno = False
             self._buf = []
-        elif tag == "span" and "CharSectno" in a.get("class", ""):
+        elif tag == "span" and "CharSectno" in (a.get("class") or ""):
             self._sectno = True
         elif tag in ("td", "th"):
             self._in_td = True
