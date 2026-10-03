@@ -347,6 +347,8 @@ def fetch(docid: str) -> tuple[bytes, str]:
             break
         except urllib.error.HTTPError as exc:
             failure = f"HTTP {exc.code}"
+            # The error carries the open response; nothing here reads its body.
+            exc.close()
             # Only a rate limit or a server fault is worth another attempt.
             if exc.code != 429 and exc.code < 500:
                 raise RulingsError(f"{docid}: fetch failed ({failure})") from exc

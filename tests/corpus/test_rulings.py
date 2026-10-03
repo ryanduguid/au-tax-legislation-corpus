@@ -269,6 +269,26 @@ class FetchTests(unittest.TestCase):
         self.assertEqual(raw, page())
         self.assertEqual(calls, ["request", rulings.http_fetch.RETRY_DELAY, "request"])
 
+    def test_error_responses_are_closed_on_every_attempt(self) -> None:
+        import urllib.error
+
+        # Holding each error stops its finaliser closing the body, so only an
+        # explicit close in fetch passes. The first attempt retries, the second stops.
+        raised = []
+
+        def failing(*args, **kwargs):
+            body = io.BytesIO(b"synthetic error page")
+            code = 404 if raised else 503
+            raised.append((urllib.error.HTTPError(rulings.BASE_URL + DOCID, code, "synthetic", {}, body), body))
+            raise raised[-1][0]
+
+        with mock.patch.object(rulings.urllib.request, "urlopen", failing), \
+                mock.patch.object(rulings.http_fetch.time, "sleep"), \
+                self.assertRaisesRegex(rulings.RulingsError, "HTTP 404"):
+            rulings.fetch(DOCID)
+        self.assertEqual([error.code for error, _ in raised], [503, 404])
+        self.assertTrue(all(body.closed for _, body in raised))
+
     def test_a_valid_page_is_returned_with_its_final_url(self) -> None:
         handle = self.response(rulings.BASE_URL + DOCID, body=page())
         with mock.patch.object(rulings.urllib.request, "urlopen", return_value=handle):
