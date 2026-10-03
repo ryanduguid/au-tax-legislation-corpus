@@ -39,8 +39,9 @@ jobs:
         with:
           languages: ${{ matrix.language }}
           build-mode: none
-          # Default setup also treated command-line arguments, environment
-          # variables and files as untrusted; keep those local sources.
+          # Include local input sources where the installed query packs support
+          # them. Local-input Python regression tests remain part of the full
+          # pytest gate regardless of the scanner's coverage.
           config: |
             threat-models: local
 

@@ -197,14 +197,14 @@ class PublicationBundleExportTests(unittest.TestCase):
                 lambda _candidate_baseline, candidate_observation: candidate_observation[
                     "observations"
                 ][0].__setitem__(
-                    "evidence_url", "https://example.invalid/" + "x" * 2025
+                    "evidence_url", "https://www.legislation.gov.au/" + "x" * 2025
                 ),
             ),
             (
                 "canonical URL Unicode",
                 lambda _candidate_baseline, candidate_observation: candidate_observation[
                     "observations"
-                ][0].__setitem__("evidence_url", "https://example.invalid/\ud800"),
+                ][0].__setitem__("evidence_url", "https://www.legislation.gov.au/\ud800"),
             ),
             (
                 "canonical URL identity",
@@ -212,7 +212,7 @@ class PublicationBundleExportTests(unittest.TestCase):
                     "observations"
                 ][0].__setitem__(
                     "evidence_url",
-                    "https://example.invalid/C2099A99999/latest/text",
+                    "https://www.legislation.gov.au/C2099A99999/latest/text",
                 ),
             ),
             (
@@ -262,7 +262,7 @@ class PublicationBundleExportTests(unittest.TestCase):
         second_observation["observed_register_document_id"] = "C2099C00003"
         second_observation["evidence_id"] = "ev-c2099a00002-01"
         second_observation["evidence_url"] = (
-            "https://example.invalid/C2099A00002/latest/text"
+            "https://www.legislation.gov.au/C2099A00002/latest/text"
         )
         observation["expected_register_ids"].append("C2099A00002")
         observation["observations"].append(second_observation)
@@ -408,7 +408,7 @@ class PublicationBundleExportTests(unittest.TestCase):
             marker.write_bytes(b"keep")
 
             with mock.patch.object(
-                exporter.os, "rename", side_effect=OSError("injected promotion failure")
+                exporter, "_promote_no_replace", side_effect=OSError("injected promotion failure")
             ):
                 with self.assertRaisesRegex(
                     exporter.PublicationBundleError, "could not be promoted"

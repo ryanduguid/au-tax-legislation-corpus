@@ -13,8 +13,29 @@ import glob
 import json
 import os
 import re
+from typing import TYPE_CHECKING
 
-from corpus_paths import child, corpus_root, refuse_unlisted_titles, register_id
+if TYPE_CHECKING or __package__:
+    from .corpus_paths import (
+        atomic_text_writer,
+        child,
+        corpus_root,
+        markdown_text,
+        refuse_unlisted_titles,
+        register_id,
+        require_builder_layout,
+    )
+else:
+    from corpus_paths import (
+        atomic_text_writer,
+        child,
+        corpus_root,
+        markdown_text,
+        refuse_unlisted_titles,
+        register_id,
+        require_builder_layout,
+    )
+
 
 ROOT = corpus_root(__file__)
 OUT = child(ROOT, "rates")
@@ -213,9 +234,9 @@ def stale_source_lines(records):
              "provision on the Register before relying on a number.", ""]
     for register_id_value, r in sorted(stale.items()):
         lines.append("- %s (%s): compilation %s of %s, `version_is_current: false`"
-                     % (r.get("act") or "-", register_id_value,
-                        r.get("compilation_number") or "-",
-                        r.get("compilation_date") or "-"))
+                     % (markdown_text(r.get("act") or "-"), markdown_text(register_id_value),
+                        markdown_text(r.get("compilation_number") or "-"),
+                        markdown_text(r.get("compilation_date") or "-")))
     lines.append("")
     return lines
 
@@ -269,6 +290,7 @@ def sentences(text):
 
 
 def main():
+    require_builder_layout(__file__)
     # The title list finalize wrote, so a directory a rebuild dropped is not
     # indexed as a current rate.
     with open(child(ROOT, "sources.json"), encoding="utf-8") as f:
@@ -279,8 +301,8 @@ def main():
 
     markdown_root = child(ROOT, "markdown")
     for candidate in sorted(glob.glob(os.path.join(markdown_root, "*", "sections.jsonl"))):
-        rid = register_id(os.path.basename(os.path.dirname(candidate)))
-        p = child(markdown_root, rid, "sections.jsonl")
+        directory_id = register_id(os.path.basename(os.path.dirname(candidate)))
+        p = child(markdown_root, directory_id, "sections.jsonl")
         with open(p, encoding="utf-8") as source:
             for line in source:
                 if not line.strip():
@@ -288,6 +310,8 @@ def main():
                 row = json.loads(line)
                 text = row.get("text") or ""
                 rid = register_id(row["register_id"])
+                if rid != directory_id:
+                    raise ValueError("section register ID does not match its title directory")
                 # Gross-up factors, indexation factors and statutory fractions are
                 # bare decimals (2.0802, 1.8868, 0.5), not $ or %, so a filter on
                 # currency and per cent alone misses them entirely.
@@ -368,7 +392,7 @@ def main():
         r["content_ascii"] = fold(r["content"])
         r["heading_ascii"] = fold(r["heading"]) if r.get("heading") else None
 
-    with open(child(OUT, "rates.jsonl"), "w", encoding="utf-8") as f:
+    with atomic_text_writer(child(OUT, "rates.jsonl")) as f:
         for r in records:
             f.write(json.dumps(r, ensure_ascii=False) + "\n")
 
@@ -404,7 +428,7 @@ def main():
         md.append("| %s | %s |" % (k, f"{n:,}"))
     md += ["", "| Collection | Count |", "|---|---|"]
     for c, n in by_coll.most_common():
-        md.append("| %s | %s |" % (c, f"{n:,}"))
+        md.append("| %s | %s |" % (markdown_text(c), f"{n:,}"))
     md += ["", "| Topic | Count |", "|---|---|"]
     for t, n in by_topic.most_common():
         md.append("| %s | %s |" % (t, f"{n:,}"))
@@ -417,11 +441,11 @@ def main():
             md.append("### Rate tables")
             md.append("")
             for r in tables[:40]:
-                md.append("**%s**%s %s — %s" % (
-                    r["act"],
+                md.append("**%s**%s %s: %s" % (
+                    markdown_text(r["act"]),
                     " _(instrument)_" if (r["collection"] or "Act") != "Act" else "",
-                    ("s " + r["section"]) if r["section"] else "",
-                    r["heading"] or ""))
+                    ("s " + markdown_text(r["section"])) if r["section"] else "",
+                    markdown_text(r["heading"] or "")))
                 md.append("")
                 md.append(r["content"])
                 md.append("")
@@ -435,16 +459,16 @@ def main():
                    "|---|---|---|---|---|---|"]
             for r in others[:120]:
                 md.append("| %s | %s | %s | %s | %s | %s |" % (
-                    r["act"].replace("|", "\\|")[:48],
+                    markdown_text(r["act"][:48]),
                     "Act" if (r["collection"] or "Act") == "Act" else "instrument",
-                    r["section"] or "-", r["kind"],
-                    ", ".join(r.get("amounts", []))[:40],
-                    r["content"].replace("|", "\\|").replace("\n", " ")[:150]))
+                    markdown_text(r["section"] or "-"), markdown_text(r["kind"]),
+                    markdown_text(", ".join(r.get("amounts", []))[:40]),
+                    markdown_text(r["content"][:150])))
             if len(others) > 120:
                 md.append("")
                 md.append("_%d further provisions in rates.jsonl._" % (len(others) - 120))
 
-    with open(child(OUT, "RATES.md"), "w", encoding="utf-8") as f:
+    with atomic_text_writer(child(OUT, "RATES.md")) as f:
         f.write("\n".join(md) + "\n")
 
     print("entries: %d  titles: %d" % (

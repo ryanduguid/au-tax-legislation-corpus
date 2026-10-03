@@ -14,9 +14,29 @@ current.
 import json
 import os
 import time
+from typing import TYPE_CHECKING
 
-import download as dl
-from corpus_paths import child, corpus_root, register_id
+if TYPE_CHECKING or __package__:
+    from . import download as dl
+    from .corpus_paths import (
+        child,
+        compilation_id,
+        corpus_root,
+        register_id,
+        require_builder_layout,
+        version_date,
+    )
+else:
+    import download as dl
+    from corpus_paths import (
+        child,
+        compilation_id,
+        corpus_root,
+        register_id,
+        require_builder_layout,
+        version_date,
+    )
+
 
 SCRATCH = os.path.dirname(os.path.abspath(__file__))
 ROOT = corpus_root(__file__)
@@ -24,6 +44,7 @@ EPUB_DIR = child(ROOT, "epub")
 
 
 def main():
+    require_builder_layout(__file__)
     with open(os.path.join(SCRATCH, "probe13.json"), encoding="utf-8") as source:
         probe = {p["id"]: p for p in json.load(source)}
     with open(os.path.join(SCRATCH, "manifest_raw.json"), encoding="utf-8") as source:
@@ -36,7 +57,8 @@ def main():
         for i, a in enumerate(todo, 1):
             rid = register_id(a["id"])
             v = probe[rid]["latest_doc"]
-            d = v["start"][:10]
+            d = version_date(v.get("start"))
+            compilation_id(v)
             dst = child(EPUB_DIR, "%s.epub" % rid)
             side = child(EPUB_DIR, "%s.epub.meta.json" % rid)
             url = "https://www.legislation.gov.au/%s/%s/%s/text/original/epub" % (rid, d, d)
@@ -47,7 +69,7 @@ def main():
                    "compilationNumber": v.get("compilationNumber"),
                    "compilationRegisterId": (meta or {}).get("registerId") or v.get("registerId"),
                    "version_is_current": False,
-                   "current_version_start": (a.get("versionStart") or "")[:10],
+                   "current_version_start": version_date(a.get("versionStart")),
                    "current_version_has_document": False}
             if meta:
                 rec["isAuthorised"] = meta.get("isAuthorised")

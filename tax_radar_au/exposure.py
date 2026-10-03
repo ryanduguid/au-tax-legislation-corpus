@@ -34,6 +34,8 @@ MAX_PROFILES = 10_000
 MAX_SKILL_REFS = 200
 MAX_SKILL_REF_CHARS = 200
 MAX_MATCHES = 200_000
+MAX_ASSOCIATIONS = 200_000
+MAX_MATCH_WORK = 1_000_000
 LIMITATIONS = (
     "A listed profile is a prompt to review that client's work, not a finding that the client is affected or that a source change has any legal effect.",
     "Matching is exact skill-reference membership. A profile that lists none of an item's skills is not thereby shown to be unaffected: the mapping may be incomplete.",
@@ -146,6 +148,8 @@ def exposure(*, queue_path: Path, profiles_path: Path) -> dict[str, Any]:
     version, profiles = _load_profiles(profiles_source)
 
     by_skill: dict[str, list[str]] = {}
+    if sum(len(refs) for _, refs in profiles) > MAX_ASSOCIATIONS:
+        raise MonitorError(f"Profiles exceed {MAX_ASSOCIATIONS} skill associations; split the profiles file.")
     for profile_id, refs in profiles:
         for ref in refs:
             by_skill.setdefault(ref, []).append(profile_id)
@@ -153,18 +157,23 @@ def exposure(*, queue_path: Path, profiles_path: Path) -> dict[str, Any]:
     items: list[dict[str, Any]] = []
     matched_profiles: set[str] = set()
     match_count = 0
+    work = 0
     for item in queue["items"]:
         found: dict[str, tuple[set[str], set[str]]] = {}
         for candidate in item["impact_candidates"]:
             for profile_id in by_skill.get(candidate["skill_ref"], ()):
+                work += 1
+                if work > MAX_MATCH_WORK:
+                    raise MonitorError(f"Exposure exceeds {MAX_MATCH_WORK} candidate/profile visits; split the inputs.")
+                if profile_id not in found:
+                    match_count += 1
+                    if match_count > MAX_MATCHES:
+                        raise MonitorError(
+                            f"Exposure exceeds {MAX_MATCHES} profile matches; split the profiles file."
+                        )
                 skills, mappings = found.setdefault(profile_id, (set(), set()))
                 skills.add(candidate["skill_ref"])
                 mappings.add(candidate["mapping_id"])
-        match_count += len(found)
-        if match_count > MAX_MATCHES:
-            raise MonitorError(
-                f"Exposure exceeds {MAX_MATCHES} profile matches; split the profiles file."
-            )
         matched_profiles.update(found)
         items.append(
             {
@@ -235,14 +244,14 @@ def render_exposure_markdown(report: dict[str, Any]) -> str:
             lines.append("- Source: none; the observation scope was incomplete.")
         else:
             lines.append(
-                f"- Source: {safe_markdown(source['title'])} (`{safe_markdown(source['register_id'])}`, {safe_markdown(source['collection'])})"
+                f"- Source: {safe_markdown(source['title'])} ({safe_markdown(source['register_id'])}, {safe_markdown(source['collection'])})"
             )
         lines.append(f"- Mapping status: {item['mapping_status']}")
         for match in item["matches"]:
-            skills = ", ".join(f"`{safe_markdown(ref)}`" for ref in match["matched_skill_refs"])
-            mappings = ", ".join(f"`{safe_markdown(ref)}`" for ref in match["mapping_ids"])
+            skills = ", ".join(f"{safe_markdown(ref)}" for ref in match["matched_skill_refs"])
+            mappings = ", ".join(f"{safe_markdown(ref)}" for ref in match["mapping_ids"])
             lines.append(
-                f"- Profile `{safe_markdown(match['profile_id'])}`: skills {skills} (mappings {mappings})"
+                f"- Profile {safe_markdown(match['profile_id'])}: skills {skills} (mappings {mappings})"
             )
         if item["exposure_status"] == "NO_PROFILE_MATCH":
             lines.append("- No profile lists a candidate skill for this item.")
@@ -252,7 +261,7 @@ def render_exposure_markdown(report: dict[str, Any]) -> str:
     lines += ["## Profiles without a candidate match", ""]
     if report["profiles_without_candidate_match"]:
         lines += [
-            f"- `{safe_markdown(profile_id)}`"
+            f"- {safe_markdown(profile_id)}"
             for profile_id in report["profiles_without_candidate_match"]
         ]
     else:

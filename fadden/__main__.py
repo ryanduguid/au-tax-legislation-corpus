@@ -5,20 +5,10 @@ from __future__ import annotations
 import argparse
 import datetime
 import importlib
-import os
 import sys
 from typing import Sequence
 
-import fadden
 from fadden import STAGES
-
-# Stage modules import their shared helpers by bare name (corpus_paths,
-# http_fetch, download) so the same files run unchanged in the flat deployed
-# build/ layout. Under `python -m fadden` those names are not importable until
-# the package directory itself is on sys.path.
-_PACKAGE_DIR = os.path.dirname(os.path.abspath(fadden.__file__))
-if _PACKAGE_DIR not in sys.path:
-    sys.path.insert(0, _PACKAGE_DIR)
 
 
 def main(argv: Sequence[str] | None = None) -> int:

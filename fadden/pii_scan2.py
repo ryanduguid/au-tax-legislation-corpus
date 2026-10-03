@@ -17,24 +17,36 @@ import glob
 import json
 import os
 import sys
+from typing import TYPE_CHECKING
 
-from corpus_paths import child, corpus_root, register_id
-from pii_patterns import (
-    contact_fingerprints,
-    load_contact_allowlist,
-    private_person_registration_details,
-)
+if TYPE_CHECKING or __package__:
+    from .corpus_paths import child, corpus_root, register_id, require_builder_layout
+    from .pii_patterns import (
+        contact_fingerprints,
+        load_contact_allowlist,
+        private_person_registration_details,
+    )
+else:
+    from corpus_paths import child, corpus_root, register_id, require_builder_layout
+    from pii_patterns import (
+        contact_fingerprints,
+        load_contact_allowlist,
+        private_person_registration_details,
+    )
+
 
 ROOT = corpus_root(__file__)
-with open(os.path.join(os.path.dirname(os.path.abspath(__file__)),
-                       "pii_flagged.json"), encoding="utf-8") as source:
-    KNOWN = {item["register_id"] for item in json.load(source)}
+
 
 ALLOWLIST = os.path.join(os.path.dirname(os.path.abspath(__file__)),
                          "pii_contact_allowlist.json")
 
 
 def main():
+    require_builder_layout(__file__)
+    with open(os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                           "pii_flagged.json"), encoding="utf-8") as source:
+        known = {item["register_id"] for item in json.load(source)}
     approved = load_contact_allowlist(ALLOWLIST)
     weak, contacts, unapproved = [], collections.Counter(), collections.Counter()
     ex = collections.defaultdict(list)
@@ -58,7 +70,7 @@ def main():
                             # enough information to find and compare a match without
                             # copying the contact identifier into those logs.
                             ex[label].append((rid, row.get("row_id"), digest[:16]))
-                if rid in KNOWN:
+                if rid in known:
                     continue
                 names, regs = private_person_registration_details(text)
                 if names and regs:

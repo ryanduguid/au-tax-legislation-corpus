@@ -2,9 +2,17 @@
 import os
 import time
 import urllib.parse
+from typing import TYPE_CHECKING
 
-from download import write_json_atomic
-from http_fetch import fetch_json
+if TYPE_CHECKING or __package__:
+    from .corpus_paths import require_builder_layout
+    from .download import write_json_atomic
+    from .http_fetch import fetch_json
+else:
+    from corpus_paths import require_builder_layout
+    from download import write_json_atomic
+    from http_fetch import fetch_json
+
 
 API = "https://api.prod.legislation.gov.au/v1"
 SCRATCH = os.path.dirname(os.path.abspath(__file__))
@@ -47,6 +55,7 @@ def page_titles(keyword, collection="Act"):
 
 
 def main():
+    require_builder_layout(__file__)
     seen, all_rows = set(), []
     for coll in COLLECTIONS:
         for kw in KEYWORDS:

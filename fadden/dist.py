@@ -27,12 +27,35 @@ import os
 import re
 import shutil
 import uuid
+from typing import TYPE_CHECKING
 
-from corpus_paths import child, corpus_root, is_reparse_point, register_id, reject_symlinks
-from dist_verify import LICENCE_EXCLUDED, _expected_title_files, verify_distribution
-from dist_verify import _title_tree as _verifier_title_tree
-from pii_patterns import load_contact_allowlist, privacy_findings_in_file
-from rates import stale_source_lines
+if TYPE_CHECKING or __package__:
+    from .corpus_paths import (
+        child,
+        corpus_root,
+        is_reparse_point,
+        register_id,
+        reject_symlinks,
+        require_builder_layout,
+    )
+    from .dist_verify import LICENCE_EXCLUDED, _expected_title_files, verify_distribution
+    from .dist_verify import _title_tree as _verifier_title_tree
+    from .pii_patterns import load_contact_allowlist, privacy_findings_in_file
+    from .rates import stale_source_lines
+else:
+    from corpus_paths import (
+        child,
+        corpus_root,
+        is_reparse_point,
+        register_id,
+        reject_symlinks,
+        require_builder_layout,
+    )
+    from dist_verify import LICENCE_EXCLUDED, _expected_title_files, verify_distribution
+    from dist_verify import _title_tree as _verifier_title_tree
+    from pii_patterns import load_contact_allowlist, privacy_findings_in_file
+    from rates import stale_source_lines
+
 
 ROOT = corpus_root(__file__)
 DIST = child(ROOT, "dist")
@@ -693,6 +716,7 @@ def _build_distribution(staging):
 
 def main():
     """Build, validate and publish ``dist/`` without exposing partial output."""
+    require_builder_layout(__file__)
     target = _validated_distribution_target(DIST)
     staging = _new_managed_sibling(target, "stage")
     os.mkdir(staging)

@@ -4,12 +4,16 @@ import hashlib
 import json
 import os
 import stat
+import string
 from dataclasses import dataclass
 from importlib.resources import files
 from pathlib import Path
 from typing import Any
 
 from .errors import MonitorError, SourceTooLargeError
+
+MAX_JSON_BYTES = 50_000_000
+MAX_JSON_DEPTH = 64
 
 
 def _open_nonblocking(file: str, flags: int) -> int:
@@ -39,28 +43,27 @@ class SourceSnapshot:
     sha256: str
 
     @classmethod
-    def capture(cls, path: Path, *, label: str, limit: int | None = None) -> SourceSnapshot:
+    def capture(cls, path: Path, *, label: str, limit: int = MAX_JSON_BYTES) -> SourceSnapshot:
         """Read path once; with a limit, read only a regular file and at most limit bytes."""
         try:
-            if limit is None:
-                content = path.read_bytes()
-            else:
-                # A non-blocking open returns at once even for a FIFO, and fstat then
-                # checks the object actually opened, not whatever the path named earlier.
-                with open(path, "rb", opener=_open_nonblocking) as stream:
-                    info = os.fstat(stream.fileno())
-                    if not stat.S_ISREG(info.st_mode):
-                        raise MonitorError(f"{label} must be a regular file: {path}.")
-                    if info.st_size > limit:
-                        raise SourceTooLargeError(f"{label} exceeds {limit} bytes.")
-                    # The first read is sized from metadata, since read(n) allocates n
-                    # bytes. A growing or size-zero virtual file that holds more than
-                    # it reported is then read only to one byte past the limit.
-                    content = stream.read(info.st_size + 1)
-                    if len(content) > info.st_size:
-                        content += stream.read(limit + 1 - len(content))
-                if len(content) > limit:
+            if limit < 0:
+                raise ValueError("source byte limit must be non-negative")
+            # A non-blocking open returns at once even for a FIFO, and fstat then
+            # checks the object actually opened, not whatever the path named earlier.
+            with open(path, "rb", opener=_open_nonblocking) as stream:
+                info = os.fstat(stream.fileno())
+                if not stat.S_ISREG(info.st_mode):
+                    raise MonitorError(f"{label} must be a regular file: {path}.")
+                if info.st_size > limit:
                     raise SourceTooLargeError(f"{label} exceeds {limit} bytes.")
+                # The first read is sized from metadata, since read(n) allocates n
+                # bytes. A growing or size-zero virtual file that holds more than
+                # it reported is then read only to one byte past the limit.
+                content = stream.read(info.st_size + 1)
+                if len(content) > info.st_size:
+                    content += stream.read(limit + 1 - len(content))
+            if len(content) > limit:
+                raise SourceTooLargeError(f"{label} exceeds {limit} bytes.")
         except FileNotFoundError as exc:
             raise MonitorError(f"{label} does not exist: {path}.") from exc
         except OSError as exc:
@@ -102,16 +105,37 @@ def load_json(
         path if isinstance(path, SourceSnapshot) else SourceSnapshot.capture(path, label=label)
     )
     source_path = snapshot.path
+    if len(snapshot.content) > MAX_JSON_BYTES:
+        raise SourceTooLargeError(f"{label} exceeds {MAX_JSON_BYTES} bytes.")
+    text = snapshot.text(label=label)
+    depth = 0
+    quoted = escaped = False
+    for character in text:
+        if quoted:
+            if escaped:
+                escaped = False
+            elif character == "\\":
+                escaped = True
+            elif character == '"':
+                quoted = False
+        elif character == '"':
+            quoted = True
+        elif character in "[{":
+            depth += 1
+            if depth > MAX_JSON_DEPTH:
+                raise MonitorError(f"{label} exceeds {MAX_JSON_DEPTH} JSON nesting levels.")
+        elif character in "]}":
+            depth -= 1
     try:
         return json.loads(
-            snapshot.text(label=label),
+            text,
             object_pairs_hook=_reject_duplicate_json_members,
         )
     except _DuplicateJsonMemberError as exc:
         raise MonitorError(
             f"{label} contains duplicate JSON members: {source_path}."
         ) from exc
-    except json.JSONDecodeError as exc:
+    except (ValueError, RecursionError) as exc:
         raise MonitorError(f"{label} is not valid JSON: {source_path}.") from exc
 
 
@@ -125,8 +149,6 @@ def load_json_exact(
 
 
 def safe_markdown(value: str) -> str:
-    # Angle brackets are escaped alongside the Markdown metacharacters. Most
-    # renderers pass raw HTML straight through, so a source title carrying a
-    # <script> tag would run in the queue a reviewer opens and forwards; the
-    # control-character gate does not reject it, because it is not one.
-    return value.replace("\\", "\\\\").replace("`", "\\`").replace("|", "\\|").replace("[", "\\[").replace("]", "\\]").replace("<", "\\<").replace(">", "\\>").replace("\n", " ").replace("\r", " ")
+    """Escape metadata as ordinary Markdown text, outside code spans."""
+    text = " ".join(value.splitlines())
+    return "".join("\\" + char if char in string.punctuation else char for char in text)

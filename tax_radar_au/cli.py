@@ -9,7 +9,7 @@ from pathlib import Path
 from .errors import MonitorError
 from .exposure import exposure, write_exposure
 from .monitor import compare, validate_review, write_queue
-from .persist import output_paths, refuse_input_overwrite
+from .persist import output_paths, refuse_input_overwrite, write_receipt
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -164,11 +164,10 @@ def main(argv: list[str] | None = None) -> int:
         validation = validate_review(queue_path=args.queue, decision_path=args.decision)
         if args.out:
             try:
-                refuse_input_overwrite(
-                    (args.out,), (args.queue, args.queue.with_suffix(".md"), args.decision)
+                write_receipt(
+                    json.dumps(validation, indent=2, sort_keys=True) + "\n", args.out,
+                    inputs=(args.queue, args.queue.with_suffix(".md"), args.decision),
                 )
-                args.out.parent.mkdir(parents=True, exist_ok=True)
-                args.out.write_text(json.dumps(validation, indent=2, sort_keys=True) + "\n", encoding="utf-8")
             except OSError as exc:
                 return _blocked(f"the validation output file could not be written: {exc}")
         return _report([f"tax-radar-au: {validation['status']}; {validation['decision_count']} decision(s)"], 0)

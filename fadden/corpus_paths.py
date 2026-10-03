@@ -11,14 +11,131 @@ builder directly keeps generated data under ``<checkout>/corpus`` instead.
 
 from __future__ import annotations
 
+import contextlib
+import datetime
+import json
 import os
 import re
 import stat
+import string
+import uuid
 from pathlib import Path
-from typing import Any, Union
+from typing import Any, Iterator, TextIO, Union
 
-_REGISTER_ID = re.compile(r"[A-Z]\d{4}[A-Z]\d{5}\Z")
+_REGISTER_ID = re.compile(r"[A-Z][0-9]{4}[A-Z][0-9]{5}\Z")
+_DATE = re.compile(r"[0-9]{4}-[0-9]{2}-[0-9]{2}\Z")
+_START = re.compile(
+    r"[0-9]{4}-[0-9]{2}-[0-9]{2}"
+    r"(?:T[0-9]{2}:[0-9]{2}:[0-9]{2}(?:\.[0-9]{1,7})?"
+    r"(?:Z|[+-][0-9]{2}:[0-9]{2})?)?\Z"
+)
 PathPart = Union[str, os.PathLike[str]]
+
+
+def iso_date(value: object) -> str:
+    """Validate one calendar date before it becomes a URL component."""
+    if not isinstance(value, str) or not _DATE.fullmatch(value):
+        raise ValueError("invalid ISO calendar date")
+    datetime.date.fromisoformat(value)
+    return value
+
+
+def version_date(value: object) -> str:
+    """Validate the Register's date or timestamp and retain its calendar day."""
+    if not isinstance(value, str) or not _START.fullmatch(value):
+        raise ValueError("invalid Register version start")
+    if len(value) > 10:
+        offset = re.search(r"[+-]([0-9]{2}):([0-9]{2})$", value)
+        if offset and (int(offset[1]) > 23 or int(offset[2]) > 59):
+            raise ValueError("invalid Register timestamp offset")
+        # The day is the result; validate the clock without relying on the
+        # fraction grammar that changed after Python 3.10.
+        datetime.time(int(value[11:13]), int(value[14:16]), int(value[17:19]))
+    return iso_date(value[:10])
+
+
+def version_rows(payload: object, title_id: str) -> list[dict[str, Any]]:
+    """Reject malformed or misattributed API rows before consuming their fields."""
+    if not isinstance(payload, dict) or not isinstance(payload.get("value"), list):
+        raise ValueError("invalid Register versions response")
+    rows = payload["value"]
+    for row in rows:
+        if not isinstance(row, dict) or row.get("titleId") != title_id:
+            raise ValueError("Register version belongs to another or unknown title")
+    return rows
+
+
+def compilation_id(row: dict[str, Any]) -> str | None:
+    """A missing field is an API failure; an explicit null means no document."""
+    if "registerId" not in row:
+        raise ValueError("Register version has no document identity field")
+    value = row["registerId"]
+    return None if value is None else register_id(value)
+
+
+def require_builder_layout(script_file: PathPart) -> None:
+    """Refuse checkout-only stages in an installed wheel before any side effect."""
+    directory = Path(script_file).resolve().parent
+    if directory.name == "build" or (directory / "sources.json").is_file():
+        return
+    if directory.name == "fadden":
+        project = directory.parent
+        if project.name == "build" or (
+            (project / "pyproject.toml").is_file() and (project / "VERSION").is_file()
+        ):
+            return
+    raise RuntimeError(
+        "corpus stages require a source checkout or deployed build directory; "
+        "installed package directories are read-only inputs"
+    )
+
+
+def markdown_text(value: object) -> str:
+    """Render metadata as one literal Markdown line, leaving body markup alone."""
+    text = " ".join(str(value).splitlines())
+    return "".join("\\" + char if char in string.punctuation else char for char in text)
+
+
+@contextlib.contextmanager
+def atomic_text_writer(path: PathPart) -> Iterator[TextIO]:
+    """Replace one mutable file after writing and syncing its unique sibling."""
+    destination = Path(path)
+    while True:
+        temporary = destination.with_name(
+            f".{destination.name}.{uuid.uuid4().hex}.tmp"
+        )
+        try:
+            descriptor = os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o666)
+        except FileExistsError:
+            continue
+        break
+    target = None
+    try:
+        target = os.fdopen(descriptor, "w", encoding="utf-8")
+        with target:
+            # Caller exceptions close and remove staging below; promotion requires success.
+            yield target  # NOSONAR(S9152)
+            target.flush()
+            os.fsync(target.fileno())
+        if destination.exists():
+            os.chmod(temporary, stat.S_IMODE(destination.stat().st_mode))
+        os.replace(os.fspath(temporary), os.fspath(destination))
+    except BaseException as error:
+        if target is None:
+            os.close(descriptor)
+        try:
+            temporary.unlink()
+        except FileNotFoundError:
+            pass
+        except OSError as cleanup_error:
+            raise error from cleanup_error
+        raise
+
+
+def write_json_atomic(path: PathPart, value: Any, **kwargs: Any) -> None:
+    """Keep caller-specific JSON formatting behind the shared file transaction."""
+    with atomic_text_writer(path) as target:
+        json.dump(value, target, **kwargs)
 
 
 def is_reparse_point(path: PathPart) -> bool:

@@ -14,7 +14,6 @@ import re
 import shutil
 import sys
 import tempfile
-import time
 import unittest
 import urllib.parse
 import warnings
@@ -41,6 +40,61 @@ def load_module(name, path):
         return module
     finally:
         sys.path.remove(module_dir)
+
+
+class WorkText(str):
+    """Count character inspections and native scans without a machine-speed limit."""
+
+    def __new__(cls, value, budget=None):
+        instance = super().__new__(cls, value)
+        instance.budget = budget if budget is not None else [0, 128 * max(1, len(value))]
+        return instance
+
+    def _charge(self, units):
+        self.budget[0] += units
+        if self.budget[0] > self.budget[1]:
+            raise AssertionError("text scanner exceeded its linear work budget")
+
+    def __getitem__(self, key):
+        value = super().__getitem__(key)
+        self._charge(len(value))
+        return value
+
+    def __contains__(self, needle):
+        self._charge(len(self) + len(needle))
+        return super().__contains__(needle)
+
+    def casefold(self):
+        self._charge(len(self))
+        return WorkText(super().casefold(), self.budget)
+
+    def find(self, needle, start=0, end=None):
+        end = len(self) if end is None else end
+        found = super().find(needle, start, end)
+        self._charge(max(0, end - start) if found < 0 else found - start + len(needle))
+        return found
+
+    def startswith(self, prefix, start=0, end=None):
+        self._charge(len(prefix))
+        return super().startswith(prefix, start, len(self) if end is None else end)
+
+
+@contextlib.contextmanager
+def linear_work(value):
+    """Reject a native regex bypass and stop excessive Python work immediately."""
+    text = WorkText(value)
+    previous = sys.getprofile()
+
+    def profile(_frame, event, function):
+        if event == "c_call" and isinstance(getattr(function, "__self__", None), re.Pattern):
+            raise AssertionError("unbounded input must use a linear text scan")
+
+    sys.setprofile(profile)
+    try:
+        yield text
+        assert 0 < text.budget[0] <= text.budget[1]
+    finally:
+        sys.setprofile(previous)
 
 
 class ArchiveLifecycleTests(unittest.TestCase):
@@ -82,7 +136,7 @@ class ArchiveLifecycleTests(unittest.TestCase):
             opened.append(archive)
             return archive
 
-        with mock.patch.object(extract.zipfile, "ZipFile", side_effect=tracked_zipfile):
+        with mock.patch("zipfile.ZipFile", side_effect=tracked_zipfile):
             blocks = extract.epub_blocks(io.BytesIO(epub_bytes))
         self.assertTrue(any(block.get("text") == "1 Short title" for block in blocks))
         self.assertEqual(len(opened), 1)
@@ -282,7 +336,7 @@ class ExtractPipelineTests(unittest.TestCase):
     def _fixture(self, tmp_path):
         build = tmp_path / "build"
         build.mkdir()
-        for name in ("extract.py", "corpus_paths.py"):
+        for name in ("extract.py", "corpus_paths.py", "download.py"):
             shutil.copy2(stage_file(name), build / name)
         epub = tmp_path / "epub" / ("%s.epub" % self.REGISTER_ID)
         epub.parent.mkdir(parents=True)
@@ -349,7 +403,7 @@ class ExtractPipelineTests(unittest.TestCase):
             expected = datetime.date.fromtimestamp(stamp).isoformat()
             self._run(build, None)
             markdown, rows = self._outputs(tmp_path)
-            self.assertIn("retrieved: %s" % expected, markdown)
+            self.assertIn('retrieved: "%s"' % expected, markdown)
             self.assertIn(expected, rows[0]["attribution"])
 
     def test_the_retrieved_argument_overrides_a_restored_mtime(self):
@@ -362,8 +416,8 @@ class ExtractPipelineTests(unittest.TestCase):
             os.utime(epub, (stamp, stamp))
             self._run(build, "2026-08-04")
             markdown, rows = self._outputs(tmp_path)
-            self.assertIn("retrieved: 2026-08-04", markdown)
-            self.assertNotIn("retrieved: 2026-02-03", markdown)
+            self.assertIn('retrieved: "2026-08-04"', markdown)
+            self.assertNotIn('retrieved: "2026-02-03"', markdown)
             self.assertEqual(rows[0]["attribution"].count("2026-08-04"), 1)
             manifest = json.loads((build / "manifest_md.json").read_text(encoding="utf-8"))
             self.assertEqual(manifest[0]["retrieved"], "2026-08-04")
@@ -398,7 +452,7 @@ class ExtractPipelineTests(unittest.TestCase):
                 build, _epub = self._fixture(tmp_path)
                 self._run(build, supplied)
                 markdown, rows = self._outputs(tmp_path)
-                self.assertIn("retrieved: %s" % expected, markdown)
+                self.assertIn('retrieved: "%s"' % expected, markdown)
                 self.assertNotIn(supplied, markdown)
                 self.assertNotIn(supplied, rows[0]["attribution"])
                 self.assertIn(expected, rows[0]["attribution"])
@@ -851,7 +905,7 @@ class FinalizeMissingTitleTests(unittest.TestCase):
             self.assertIn("| Reason |", index_md)
             self.assertIn(
                 "| Unpublished Instrument | LegislativeInstrument | F2020L01498 "
-                "| current_version_has_no_document |", index_md)
+                "| current\\_version\\_has\\_no\\_document |", index_md)
             self.assertNotIn("| None | None |", index_md)
 
 
@@ -1024,7 +1078,7 @@ class Retry13ManifestWriteTests(unittest.TestCase):
             real_replace = retry13.dl.os.replace
 
             def fail_manifest_replace(source, destination):
-                if (source == str(manifest_path) + ".tmp"
+                if (Path(source).name.startswith(".manifest_raw.json.") and Path(source).suffix == ".tmp"
                         and destination == str(manifest_path)):
                     raise OSError("no space left on device")
                 return real_replace(source, destination)
@@ -1096,7 +1150,7 @@ class DownloadManifestWriteTests(unittest.TestCase):
             real_dump = download.json.dump
 
             def exploding_dump(obj, fp, **kwargs):
-                if os.path.basename(getattr(fp, "name", "")).startswith("manifest_raw.json"):
+                if isinstance(obj, list):
                     fp.write('[{"id": "F2020')
                     raise OSError("no space left on device")
                 return real_dump(obj, fp, **kwargs)
@@ -1145,6 +1199,8 @@ class DownloadManifestWriteTests(unittest.TestCase):
                 manifest_path.write_text(original, encoding="utf-8")
 
                 def failed_response(args, **kwargs):
+                    if len(args) == 2 and Path(args[0]).name.lower() in ("curl", "curl.exe") and args[1] == "--version":
+                        return mock.Mock(stdout="curl 8.4.0", returncode=0)
                     Path(args[args.index("-o") + 1]).write_bytes(body)
                     return mock.Mock(stdout=response_meta, returncode=0)
 
@@ -1197,6 +1253,8 @@ class DownloadManifestWriteTests(unittest.TestCase):
             sidecar.write_text(old_sidecar, encoding="utf-8")
 
             def blocked(args, **kwargs):
+                if len(args) == 2 and Path(args[0]).name.lower() in ("curl", "curl.exe") and args[1] == "--version":
+                    return mock.Mock(stdout="curl 8.4.0", returncode=0)
                 Path(args[args.index("-o") + 1]).write_bytes(b"<html>blocked</html>")
                 return mock.Mock(stdout="403|text/html", returncode=0)
 
@@ -1349,7 +1407,7 @@ class DownloadManifestWriteTests(unittest.TestCase):
                 real_replace = download.os.replace
 
                 def fail_sidecar_replace(source, destination):
-                    if source == str(sidecar) + ".tmp" and destination == str(sidecar):
+                    if Path(source).name.startswith("." + sidecar.name + ".") and Path(source).suffix == ".tmp" and destination == str(sidecar):
                         raise OSError("injected sidecar failure")
                     return real_replace(source, destination)
 
@@ -1403,6 +1461,8 @@ class DownloadValidationTests(unittest.TestCase):
     def _fetch(self, download, dst, body, code="200", content_type="text/html",
                returncode=0):
         def fake_run(args, **kwargs):
+            if len(args) == 2 and Path(args[0]).name.lower() in ("curl", "curl.exe") and args[1] == "--version":
+                return mock.Mock(stdout="curl 8.4.0", returncode=0)
             output = Path(args[args.index("-o") + 1])
             self.assertNotEqual(output, Path(dst))
             output.write_bytes(body)
@@ -1488,6 +1548,8 @@ class DownloadValidationTests(unittest.TestCase):
         ]
 
         def fake_run(args, **_kwargs):
+            if len(args) == 2 and Path(args[0]).name.lower() in ("curl", "curl.exe") and args[1] == "--version":
+                return mock.Mock(stdout="curl 8.4.0", returncode=0)
             body, content_type = responses.pop(0)
             Path(args[args.index("-o") + 1]).write_bytes(body)
             return mock.Mock(stdout="200|%s" % content_type, returncode=0)
@@ -3058,11 +3120,9 @@ class DistributionTests(unittest.TestCase):
             "5 Acts and 6 legislative and notifiable instruments.")
 
         digits = "9" * 200_000
-        started = time.perf_counter()
-        rewritten = dist.replace_readme_collection_counts(
-            digits + " Acts and " + digits + " legislative and notifiable", 5, 6)
+        with linear_work(digits + " Acts and " + digits + " legislative and notifiable") as text:
+            rewritten = dist.replace_readme_collection_counts(text, 5, 6)
         self.assertEqual(rewritten, "5 Acts and 6 legislative and notifiable")
-        self.assertLess(time.perf_counter() - started, 2.0)
 
 
 class PathBoundaryTests(unittest.TestCase):
@@ -3186,11 +3246,12 @@ class RateParsingTests(unittest.TestCase):
     def test_numeric_scanners_complete_linearly_on_long_digit_runs(self):
         rates = load_module("rates_linear_regression", STAGE / "rates.py")
         digits = "9" * 200_000
-        started = time.perf_counter()
-        self.assertEqual(rates.percentage_values(digits + "."), [])
-        self.assertEqual(len(rates.money_values("$" + digits + ".")), 1)
-        self.assertTrue(rates.is_ownership_test(digits + "% stake"))
-        self.assertLess(time.perf_counter() - started, 2.0)
+        with linear_work(digits + ".") as text:
+            self.assertEqual(rates.percentage_values(text), [])
+        with linear_work("$" + digits + ".") as text:
+            self.assertEqual(len(rates.money_values(text)), 1)
+        with linear_work(digits + "% stake") as text:
+            self.assertTrue(rates.is_ownership_test(text))
 
 
 class RateExportContractTests(unittest.TestCase):
@@ -3254,7 +3315,7 @@ class RateExportContractTests(unittest.TestCase):
              "attribution": "Fabricated source for a regression test"})
         # The compilation reference the reader needs stays alongside the warning.
         self.assertIn("already stale", stale_markdown)
-        self.assertIn("Zulu Tax Example Act (C2099A00001): compilation 1 of 2099-01-01",
+        self.assertIn("Zulu Tax Example Act (C2099A00001): compilation 1 of 2099\\-01\\-01",
                       stale_markdown)
 
         # Control: a current source produces the same fields and no warning.
@@ -3622,9 +3683,9 @@ class DistTableBlockParagraphTests(unittest.TestCase):
         rates.py, so the replacement must stay a scan, not a regex."""
         dist = self._dist()
         hostile = dist.TABLE_BLOCK_LEAD * 20000
-        start = time.monotonic()
-        dist.replace_readme_table_block_paragraph(hostile, 2)
-        self.assertLess(time.monotonic() - start, 1.0)
+        with linear_work(hostile) as text:
+            result = dist.replace_readme_table_block_paragraph(text, 2)
+        self.assertIn("2 titles", result)
 
     def test_it_rewrites_the_real_generated_corpus_paragraph(self):
         """The shape finalize.py actually emits, not just a hand-written one."""

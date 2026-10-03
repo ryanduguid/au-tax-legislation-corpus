@@ -41,10 +41,14 @@ import urllib.error
 import urllib.parse
 import urllib.request
 from pathlib import Path
-from typing import Any, Callable, Sequence
+from typing import TYPE_CHECKING, Any, Callable, Sequence
 
-import http_fetch
-import pii_patterns
+if TYPE_CHECKING or __package__:
+    from . import http_fetch, pii_patterns
+else:
+    import http_fetch
+    import pii_patterns
+
 
 BASE_URL = "https://www.ato.gov.au/law/view/document?docid="
 UA = "au-tax-legislation-corpus (+https://github.com/ryanduguid/au-tax-legislation-corpus)"
