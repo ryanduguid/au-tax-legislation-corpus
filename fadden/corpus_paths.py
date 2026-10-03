@@ -113,7 +113,8 @@ def atomic_text_writer(path: PathPart) -> Iterator[TextIO]:
     try:
         target = os.fdopen(descriptor, "w", encoding="utf-8")
         with target:
-            yield target
+            # Caller exceptions close and remove staging below; promotion requires success.
+            yield target  # NOSONAR
             target.flush()
             os.fsync(target.fileno())
         if destination.exists():

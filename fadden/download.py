@@ -117,73 +117,83 @@ def discard_snapshots(snapshots):
     return leftovers
 
 
+def _check_zip_directory(source):
+    """Bound the raw directory before ZipFile allocates member objects."""
+    source.seek(0, os.SEEK_END)
+    size = source.tell()
+    source.seek(0)
+    if size > MAX_EPUB_BYTES:
+        raise DownloadError("EPUB exceeds the compressed input budget")
+    # Bound central-directory parsing too: ZipFile allocates member objects
+    # before infolist can enforce the member budget.
+    tail_start = max(0, size - 65_557)
+    source.seek(tail_start)
+    tail = source.read(65_557)
+    marker = tail.rfind(b"PK\x05\x06")
+    if marker < 0 or len(tail) - marker < 22:
+        raise DownloadError("EPUB has no complete ZIP directory record")
+    (_, disk, directory_disk, disk_members, members, directory_bytes,
+     offset, comment_bytes) = struct.unpack("<4s4H2LH", tail[marker:marker + 22])
+    directory_end = tail_start + marker
+    if directory_end >= 20:
+        source.seek(directory_end - 20)
+        if source.read(4) == b"PK\x06\x07":
+            raise DownloadError("EPUB uses an unsupported ZIP64 directory")
+    if (disk or directory_disk or disk_members != members
+            or marker + 22 + comment_bytes != len(tail)
+            or members > MAX_EPUB_MEMBERS
+            or directory_bytes > MAX_EPUB_DIRECTORY_BYTES
+            or offset == 0xffffffff or offset + directory_bytes != directory_end):
+        raise DownloadError("EPUB exceeds the supported ZIP directory budget")
+    source.seek(offset)
+    count = 0
+    while source.tell() < directory_end:
+        header = source.read(46)
+        if len(header) != 46 or header[:4] != b"PK\x01\x02":
+            raise DownloadError("EPUB has an invalid ZIP directory member")
+        count += 1
+        if count > MAX_EPUB_MEMBERS:
+            raise DownloadError("EPUB exceeds the member count budget")
+        lengths = struct.unpack_from("<3H", header, 28)
+        next_member = source.tell() + sum(lengths)
+        if next_member > directory_end:
+            raise DownloadError("EPUB has an invalid ZIP directory extent")
+        source.seek(next_member)
+    if count != members:
+        raise DownloadError("EPUB ZIP directory member count is inconsistent")
+
+
+def _admit_epub_members(archive):
+    """Reject unsupported metadata before any member is decoded."""
+    members = archive.infolist()
+    if len({member.filename for member in members}) != len(members):
+        raise DownloadError("EPUB contains duplicate ZIP member names")
+    if len(members) > MAX_EPUB_MEMBERS:
+        raise DownloadError("EPUB exceeds the member count budget")
+    if any(member.file_size > MAX_EPUB_MEMBER_BYTES for member in members):
+        raise DownloadError("EPUB exceeds the uncompressed member budget")
+    if sum(member.file_size for member in members) > MAX_EPUB_UNCOMPRESSED_BYTES:
+        raise DownloadError("EPUB exceeds the total uncompressed budget")
+    if any(member.compress_type not in (zipfile.ZIP_STORED, zipfile.ZIP_DEFLATED)
+           or member.flag_bits & 1 for member in members):
+        raise DownloadError("EPUB uses unsupported compression or encryption")
+    offsets = sorted(member.header_offset for member in members)
+    if len(set(offsets)) != len(offsets):
+        raise DownloadError("EPUB members share a local header")
+    setattr(archive, "_epub_member_ends", dict(zip(offsets, offsets[1:] + [archive.start_dir])))
+
+
 @contextlib.contextmanager
 def open_epub(path):
-    """Admit a bounded archive before CRC checks or member decompression."""
+    """Admit a bounded archive and retain ownership of its input lifetime."""
     owned = not hasattr(path, "read")
     source = open(path, "rb") if owned else path
     position = source.tell()
     try:
-        source.seek(0, os.SEEK_END)
-        size = source.tell()
-        source.seek(0)
-        if size > MAX_EPUB_BYTES:
-            raise DownloadError("EPUB exceeds the compressed input budget")
-        # Bound central-directory parsing too: ZipFile allocates member objects
-        # before infolist can enforce the member budget.
-        tail_start = max(0, size - 65_557)
-        source.seek(tail_start)
-        tail = source.read(65_557)
-        marker = tail.rfind(b"PK\x05\x06")
-        if marker < 0 or len(tail) - marker < 22:
-            raise DownloadError("EPUB has no complete ZIP directory record")
-        (_, disk, directory_disk, disk_members, members, directory_bytes,
-         offset, comment_bytes) = struct.unpack("<4s4H2LH", tail[marker:marker + 22])
-        directory_end = tail_start + marker
-        if directory_end >= 20:
-            source.seek(directory_end - 20)
-            if source.read(4) == b"PK\x06\x07":
-                raise DownloadError("EPUB uses an unsupported ZIP64 directory")
-        if (disk or directory_disk or disk_members != members
-                or marker + 22 + comment_bytes != len(tail)
-                or members > MAX_EPUB_MEMBERS
-                or directory_bytes > MAX_EPUB_DIRECTORY_BYTES
-                or offset == 0xffffffff or offset + directory_bytes != directory_end):
-            raise DownloadError("EPUB exceeds the supported ZIP directory budget")
-        source.seek(offset)
-        count = 0
-        while source.tell() < directory_end:
-            header = source.read(46)
-            if len(header) != 46 or header[:4] != b"PK\x01\x02":
-                raise DownloadError("EPUB has an invalid ZIP directory member")
-            count += 1
-            if count > MAX_EPUB_MEMBERS:
-                raise DownloadError("EPUB exceeds the member count budget")
-            lengths = struct.unpack_from("<3H", header, 28)
-            next_member = source.tell() + sum(lengths)
-            if next_member > directory_end:
-                raise DownloadError("EPUB has an invalid ZIP directory extent")
-            source.seek(next_member)
-        if count != members:
-            raise DownloadError("EPUB ZIP directory member count is inconsistent")
+        _check_zip_directory(source)
         source.seek(0)
         with zipfile.ZipFile(source) as archive:
-            members = archive.infolist()
-            if len({member.filename for member in members}) != len(members):
-                raise DownloadError("EPUB contains duplicate ZIP member names")
-            if len(members) > MAX_EPUB_MEMBERS:
-                raise DownloadError("EPUB exceeds the member count budget")
-            if any(member.file_size > MAX_EPUB_MEMBER_BYTES for member in members):
-                raise DownloadError("EPUB exceeds the uncompressed member budget")
-            if sum(member.file_size for member in members) > MAX_EPUB_UNCOMPRESSED_BYTES:
-                raise DownloadError("EPUB exceeds the total uncompressed budget")
-            if any(member.compress_type not in (zipfile.ZIP_STORED, zipfile.ZIP_DEFLATED)
-                   or member.flag_bits & 1 for member in members):
-                raise DownloadError("EPUB uses unsupported compression or encryption")
-            offsets = sorted(member.header_offset for member in members)
-            if len(set(offsets)) != len(offsets):
-                raise DownloadError("EPUB members share a local header")
-            setattr(archive, "_epub_member_ends", dict(zip(offsets, offsets[1:] + [archive.start_dir])))
+            _admit_epub_members(archive)
             yield archive
     finally:
         if owned:
@@ -192,9 +202,8 @@ def open_epub(path):
             source.seek(position)
 
 
-def read_epub_member(archive, member, *, retain=True):
-    """Bound inflation itself and verify the complete member before using its bytes."""
-    info = archive.getinfo(member) if isinstance(member, str) else member
+def _position_epub_member(archive, info):
+    """Validate local data extent and position the admitted stream for decoding."""
     source = archive.fp
     if (source is None or not 0 <= info.file_size <= MAX_EPUB_MEMBER_BYTES
             or not 0 <= info.compress_size <= MAX_EPUB_BYTES
@@ -217,6 +226,13 @@ def read_epub_member(archive, member, *, retain=True):
         raise DownloadError("EPUB member metadata does not match its local data")
     if method == zipfile.ZIP_STORED and info.compress_size != info.file_size:
         raise DownloadError("EPUB stored member has inconsistent lengths")
+    return source, method
+
+
+def read_epub_member(archive, member, *, retain=True):
+    """Bound inflation itself and verify the complete member before using its bytes."""
+    info = archive.getinfo(member) if isinstance(member, str) else member
+    source, method = _position_epub_member(archive, info)
     inflater = zlib.decompressobj(-zlib.MAX_WBITS) if method == zipfile.ZIP_DEFLATED else None
     remaining = info.compress_size
     total = crc = 0
@@ -305,7 +321,8 @@ def decode_envelope(path):
 @functools.lru_cache(maxsize=1)
 def _require_bounded_curl():
     try:
-        result = subprocess.run(["curl", "--version"], capture_output=True, text=True)
+        # Trusted operator PATH selects the local prerequisite; fixed argv, no shell.
+        result = subprocess.run(["curl", "--version"], capture_output=True, text=True)  # nosec B607,B603
     except OSError as exc:
         raise DownloadError("curl 8.4.0 or newer is required for bounded downloads") from exc
     match = re.match(r"curl ([0-9]+)\.([0-9]+)\.([0-9]+)", result.stdout or "")

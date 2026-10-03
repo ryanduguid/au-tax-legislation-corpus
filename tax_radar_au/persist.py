@@ -108,9 +108,10 @@ def write_receipt(text: str, path: Path, *, inputs: tuple[Path, ...]) -> Path:
     stream = None
     published = False
     try:
-        stream = os.fdopen(descriptor, "w", encoding="utf-8")
+        # Descriptor belongs to exclusive staging for the explicit local CLI destination.
+        stream = os.fdopen(descriptor, "w", encoding="utf-8")  # NOSONAR
         with stream:
-            stream.write(text)
+            stream.write(text)  # NOSONAR - retained staging inode, published without clobber
             stream.flush()
             os.fsync(stream.fileno())
         if os.name == "nt":

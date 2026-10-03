@@ -1,4 +1,4 @@
-"""Input budgets, literal metadata and receipt publication regressions."""
+"""Input and receipt regressions; B101 marks pytest outcome assertions."""
 
 from __future__ import annotations
 
@@ -36,10 +36,10 @@ def test_relative_symlink_and_parent_components_use_one_interpretation(tmp_path,
         with pytest.raises(MonitorError):
             persist.output_paths(Path("jump/../out"))
     else:
-        assert receipt == root / "safe" / "out" / "receipt.json"
-        assert receipt.read_text(encoding="utf-8") == "complete"
-        assert persist.output_paths(Path("jump/../out"))[0].parent == root / "safe" / "out"
-    assert list(outside.iterdir()) == []
+        assert receipt == root / "safe" / "out" / "receipt.json"  # nosec B101
+        assert receipt.read_text(encoding="utf-8") == "complete"  # nosec B101
+        assert persist.output_paths(Path("jump/../out"))[0].parent == root / "safe" / "out"  # nosec B101
+    assert list(outside.iterdir()) == []  # nosec B101
 
 
 def test_interrupt_after_completed_queue_promotion_restores_old_bytes(tmp_path, monkeypatch):
@@ -58,9 +58,9 @@ def test_interrupt_after_completed_queue_promotion_restores_old_bytes(tmp_path, 
     monkeypatch.setattr(persist.os, "replace", interrupt_after_replace)
     with pytest.raises(KeyboardInterrupt):
         persist.write_queue_files("new json", "new markdown", output)
-    assert paths["json"].read_text(encoding="utf-8") == "old json"
-    assert paths["markdown"].read_text(encoding="utf-8") == "old markdown"
-    assert list(output.glob("*.partial")) == []
+    assert paths["json"].read_text(encoding="utf-8") == "old json"  # nosec B101
+    assert paths["markdown"].read_text(encoding="utf-8") == "old markdown"  # nosec B101
+    assert list(output.glob("*.partial")) == []  # nosec B101
 
 
 def test_backup_link_failure_keeps_the_original_path_and_bytes(tmp_path, monkeypatch):
@@ -68,15 +68,15 @@ def test_backup_link_failure_keeps_the_original_path_and_bytes(tmp_path, monkeyp
     paths = persist.write_queue_files("old json", "old markdown", output)
 
     def fail_link(_source, _target, **_kwargs):
-        assert paths["json"].read_text(encoding="utf-8") == "old json"
+        assert paths["json"].read_text(encoding="utf-8") == "old json"  # nosec B101
         raise OSError("backup links unavailable")
 
     monkeypatch.setattr(persist.os, "link", fail_link)
     with pytest.raises(OSError, match="backup links unavailable"):
         persist.write_queue_files("new json", "new markdown", output)
-    assert paths["json"].read_text(encoding="utf-8") == "old json"
-    assert paths["markdown"].read_text(encoding="utf-8") == "old markdown"
-    assert list(output.glob("*.partial")) == []
+    assert paths["json"].read_text(encoding="utf-8") == "old json"  # nosec B101
+    assert paths["markdown"].read_text(encoding="utf-8") == "old markdown"  # nosec B101
+    assert list(output.glob("*.partial")) == []  # nosec B101
 
 
 @pytest.mark.parametrize("json_exists", (False, True))
@@ -101,11 +101,11 @@ def test_all_backups_are_prepared_before_any_promotion(tmp_path, monkeypatch, js
     with pytest.raises(OSError, match="backup links unavailable"):
         persist.write_queue_files("new json", "new markdown", output)
     promote.assert_not_called()
-    assert json_path.exists() == json_exists
+    assert json_path.exists() == json_exists  # nosec B101
     if json_exists:
-        assert json_path.read_bytes() == b"old json"
-    assert markdown_path.read_bytes() == b"old markdown"
-    assert list(output.glob("*.partial")) == []
+        assert json_path.read_bytes() == b"old json"  # nosec B101
+    assert markdown_path.read_bytes() == b"old markdown"  # nosec B101
+    assert list(output.glob("*.partial")) == []  # nosec B101
 
 
 def test_backup_retains_the_original_inode_and_access_controls(tmp_path):
@@ -114,14 +114,14 @@ def test_backup_retains_the_original_inode_and_access_controls(tmp_path):
     destination.chmod(0o640)
     original = destination.stat()
     backup = persist._backup_existing(destination)
-    assert backup is not None
+    assert backup is not None  # nosec B101
     retained = backup.stat()
-    assert (retained.st_dev, retained.st_ino, retained.st_uid, retained.st_gid, retained.st_mode) == (
+    assert (retained.st_dev, retained.st_ino, retained.st_uid, retained.st_gid, retained.st_mode) == (  # nosec B101
         original.st_dev, original.st_ino, original.st_uid, original.st_gid, original.st_mode
     )
     persist._restore_quietly(backup, destination)
-    assert destination.read_bytes() == b"old private bytes"
-    assert not backup.exists()
+    assert destination.read_bytes() == b"old private bytes"  # nosec B101
+    assert not backup.exists()  # nosec B101
 
 
 def oversized_file(path: Path) -> Path:
@@ -136,9 +136,9 @@ def test_json_depth_and_parser_recursion_fail_as_monitor_errors(tmp_path, monkey
     with pytest.raises(MonitorError, match="nesting levels"):
         util.load_json(path, label="input")
     path.write_text(json.dumps({"literal": "[" * 1000 + '\\"'}), encoding="utf-8")
-    assert util.load_json(path, label="input")["literal"].startswith("[")
+    assert util.load_json(path, label="input")["literal"].startswith("[")  # nosec B101
     path.write_text("[" * 64 + "0" + "]" * 64, encoding="utf-8")
-    assert isinstance(util.load_json(path, label="input"), list)
+    assert isinstance(util.load_json(path, label="input"), list)  # nosec B101
 
     def recurse(*_args, **_kwargs):
         raise RecursionError("parser recursion")
@@ -175,10 +175,10 @@ def test_review_budget_blocks_before_receipt_creation(tmp_path, capsys, option):
     else:
         decision = oversized_file(tmp_path / "oversized.json")
     receipt = tmp_path / "new-parent" / "receipt.json"
-    assert main(["validate-review", "--queue", str(queue), "--decision", str(decision),
+    assert main(["validate-review", "--queue", str(queue), "--decision", str(decision),  # nosec B101
                  "--out", str(receipt)]) == 2
-    assert "exceeds 50000000 bytes" in capsys.readouterr().err
-    assert not receipt.parent.exists()
+    assert "exceeds 50000000 bytes" in capsys.readouterr().err  # nosec B101
+    assert not receipt.parent.exists()  # nosec B101
 
 
 def test_receipt_relative_escape_is_refused_before_parents(tmp_path, monkeypatch):
@@ -187,10 +187,10 @@ def test_receipt_relative_escape_is_refused_before_parents(tmp_path, monkeypatch
     monkeypatch.chdir(working)
     with pytest.raises(MonitorError, match="stay within"):
         persist.write_receipt("{}\n", Path("../outside/receipt.json"), inputs=())
-    assert not (tmp_path / "outside").exists()
+    assert not (tmp_path / "outside").exists()  # nosec B101
     absolute = tmp_path / "explicit" / "receipt.json"
-    assert persist.write_receipt("{}\n", absolute, inputs=()) == absolute
-    assert absolute.read_text(encoding="utf-8") == "{}\n"
+    assert persist.write_receipt("{}\n", absolute, inputs=()) == absolute  # nosec B101
+    assert absolute.read_text(encoding="utf-8") == "{}\n"  # nosec B101
 
 
 def test_receipt_dangling_link_is_preserved(tmp_path, monkeypatch):
@@ -202,8 +202,8 @@ def test_receipt_dangling_link_is_preserved(tmp_path, monkeypatch):
         pytest.skip(f"symbolic links unavailable: {exc}")
     with pytest.raises(MonitorError, match="must not exist"):
         persist.write_receipt("{}\n", Path("receipt.json"), inputs=())
-    assert path.is_symlink()
-    assert not (tmp_path / "absent.json").exists()
+    assert path.is_symlink()  # nosec B101
+    assert not (tmp_path / "absent.json").exists()  # nosec B101
 
 
 def test_receipt_destination_race_cannot_overwrite_another_file(tmp_path, monkeypatch):
@@ -218,8 +218,8 @@ def test_receipt_destination_race_cannot_overwrite_another_file(tmp_path, monkey
     monkeypatch.setattr(persist.os, operation, competing_file)
     with pytest.raises(FileExistsError):
         persist.write_receipt("{}\n", path, inputs=())
-    assert path.read_text(encoding="utf-8") == "another writer\n"
-    assert list(tmp_path.iterdir()) == [path]
+    assert path.read_text(encoding="utf-8") == "another writer\n"  # nosec B101
+    assert list(tmp_path.iterdir()) == [path]  # nosec B101
 
 
 def test_receipt_sync_failure_does_not_publish_partial_bytes(tmp_path, monkeypatch):
@@ -229,7 +229,7 @@ def test_receipt_sync_failure_does_not_publish_partial_bytes(tmp_path, monkeypat
     monkeypatch.setattr(persist.os, "fsync", fail)
     with pytest.raises(OSError, match="sync failure"):
         persist.write_receipt("{}\n", tmp_path / "receipt.json", inputs=())
-    assert not list(tmp_path.iterdir())
+    assert not list(tmp_path.iterdir())  # nosec B101
 
 
 def test_staged_writes_keep_the_exclusive_descriptors(tmp_path, monkeypatch):
@@ -239,9 +239,9 @@ def test_staged_writes_keep_the_exclusive_descriptors(tmp_path, monkeypatch):
     monkeypatch.setattr(Path, "write_text", reopened)
     pair = persist.write_queue_files("{}\n", "Literal Markdown\n", tmp_path / "pair")
     receipt = persist.write_receipt("{}\n", tmp_path / "receipt.json", inputs=())
-    assert pair["json"].read_text(encoding="utf-8") == "{}\n"
-    assert pair["markdown"].read_text(encoding="utf-8") == "Literal Markdown\n"
-    assert receipt.read_text(encoding="utf-8") == "{}\n"
+    assert pair["json"].read_text(encoding="utf-8") == "{}\n"  # nosec B101
+    assert pair["markdown"].read_text(encoding="utf-8") == "Literal Markdown\n"  # nosec B101
+    assert receipt.read_text(encoding="utf-8") == "{}\n"  # nosec B101
 
 
 def test_interrupt_between_backup_and_promotion_restores_the_pair(tmp_path, monkeypatch):
@@ -260,9 +260,9 @@ def test_interrupt_between_backup_and_promotion_restores_the_pair(tmp_path, monk
     monkeypatch.setattr(persist.os, "replace", interrupt)
     with pytest.raises(KeyboardInterrupt):
         persist.write_queue_files("new json", "new markdown", output)
-    assert paths["json"].read_text(encoding="utf-8") == "old json"
-    assert paths["markdown"].read_text(encoding="utf-8") == "old markdown"
-    assert list(output.glob("*.partial")) == []
+    assert paths["json"].read_text(encoding="utf-8") == "old json"  # nosec B101
+    assert paths["markdown"].read_text(encoding="utf-8") == "old markdown"  # nosec B101
+    assert list(output.glob("*.partial")) == []  # nosec B101
 
 
 @pytest.mark.parametrize("limit", ["MAX_ASSOCIATIONS", "MAX_MATCH_WORK", "MAX_MATCHES"])
@@ -275,8 +275,8 @@ def test_exposure_aggregate_budgets_block_the_complete_report(tmp_path, monkeypa
     monkeypatch.setattr(exposure_module, limit, 1)
     with pytest.raises(MonitorError, match="exceed") as caught:
         exposure_module.exposure(queue_path=queue, profiles_path=profiles)
-    assert "FAB-001" not in str(caught.value)
-    assert "FAB-002" not in str(caught.value)
+    assert "FAB-001" not in str(caught.value)  # nosec B101
+    assert "FAB-002" not in str(caught.value)  # nosec B101
 
 
 def test_metadata_is_literal_text_outside_code_spans(tmp_path):
@@ -286,6 +286,6 @@ def test_metadata_is_literal_text_outside_code_spans(tmp_path):
     source["title"] = "# **Title** _italic_ <img> ![link](url)"
     source["register_id"] = "id`close`"
     text = render_markdown(queue)
-    assert r"\# \*\*Title\*\* \_italic\_ \<img\> \!\[link\]\(url\)" in text
-    assert r"id\`close\`" in text
-    assert r"`id\`close\``" not in text
+    assert r"\# \*\*Title\*\* \_italic\_ \<img\> \!\[link\]\(url\)" in text  # nosec B101
+    assert r"id\`close\`" in text  # nosec B101
+    assert r"`id\`close\``" not in text  # nosec B101
