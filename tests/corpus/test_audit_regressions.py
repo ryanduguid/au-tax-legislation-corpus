@@ -65,7 +65,7 @@ class AuditRegressionTests(unittest.TestCase):
             os.utime(epub, (0, 0))
             helper._run(build, None)
             markdown, rows = helper._outputs(root)
-            self.assertIn("retrieved: 2026-08-04", markdown)
+            self.assertIn('retrieved: "2026-08-04"', markdown)
             self.assertTrue(all("2026-08-04" in row["attribution"] for row in rows))
 
     def test_cached_download_preserves_authorisation_and_retrieval(self):

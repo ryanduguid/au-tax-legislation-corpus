@@ -93,8 +93,12 @@ def _utc_timestamp(value: Any, field: str) -> str:
     text = _non_empty(value, field)
     if UTC_TIMESTAMP.fullmatch(text) is None:
         raise ContractError(f"{field} must be an explicit UTC timestamp ending in Z.")
+    parsed = text[:-1]
+    if "." in parsed:
+        clock, fraction = parsed.split(".")
+        parsed = clock + "." + fraction.ljust(6, "0")
     try:
-        dt.datetime.fromisoformat(text.replace("Z", "+00:00"))
+        dt.datetime.fromisoformat(parsed + "+00:00")
     except ValueError as exc:
         raise ContractError(f"{field} must be an explicit UTC timestamp ending in Z.") from exc
     return text
@@ -378,8 +382,9 @@ def project_observation(
 
 def _write_staged(path: Path, value: dict[str, Any]) -> Path:
     staged = path.with_name(f".{path.name}.monitor-contract-{uuid.uuid4().hex}.tmp")
+    target = open(staged, "x", encoding="utf-8", newline="\n")
     try:
-        with open(staged, "x", encoding="utf-8", newline="\n") as target:
+        with target:
             json.dump(value, target, indent=2, sort_keys=True, ensure_ascii=False)
             target.write("\n")
         return staged
@@ -437,6 +442,10 @@ class _OutputDirectoryLock:
         """Leave this writer's lock in place until an operator recovers the pair."""
         self._recovery_required = True
 
+    def pair_is_consistent(self) -> None:
+        """Permit lock release only after publication or rollback fully completes."""
+        self._recovery_required = False
+
     def __enter__(self) -> _OutputDirectoryLock:
         deadline = time.monotonic() + PUBLISH_LOCK_TIMEOUT_SECONDS
         while True:
@@ -449,7 +458,8 @@ class _OutputDirectoryLock:
             except FileExistsError:
                 if time.monotonic() >= deadline:
                     raise ContractError(
-                        f"monitor output directory is locked by another writer: {self.path}."
+                        f"monitor output directory is locked by another writer or an interrupted publication: {self.path}. "
+                        "Wait for an active writer, or recover the output pair before removing its lock."
                     )
                 time.sleep(PUBLISH_LOCK_RETRY_SECONDS)
                 continue
@@ -473,8 +483,10 @@ class _OutputDirectoryLock:
                 and self.path.read_bytes() == self._token
             ):
                 _remove(self.path)
-        except OSError:
-            pass
+        except OSError as cleanup_error:
+            if isinstance(exc, BaseException):
+                raise exc from cleanup_error
+            raise ContractError("monitor output was published, but its owned lock could not be removed") from cleanup_error
 
 
 def _publish(staged: dict[str, Path], destinations: dict[str, Path]) -> None:
@@ -484,44 +496,47 @@ def _publish(staged: dict[str, Path], destinations: dict[str, Path]) -> None:
                 _validate_existing_destination(destination)
             backups: dict[str, Path | None] = {}
             promoted: list[str] = []
-            recovery_required = False
+            publisher_lock.retain_for_recovery()
             try:
                 for name, destination in destinations.items():
                     backup = destination.with_name(f".{destination.name}.monitor-contract-{uuid.uuid4().hex}.bak")
                     if destination.exists():
-                        os.replace(destination, backup)
+                        if os.path.lexists(backup):
+                            raise ContractError("monitor backup staging path already exists.")
                         backups[name] = backup
+                        os.replace(destination, backup)
                     else:
                         backups[name] = None
-                    os.replace(staged[name], destination)
                     promoted.append(name)
+                    os.replace(staged[name], destination)
             except BaseException:
                 rollback_errors: list[BaseException] = []
-                for name in reversed(promoted):
+                for name, previous in reversed(list(backups.items())):
                     try:
-                        _remove(destinations[name])
-                        previous = backups[name]
-                        if previous is not None:
+                        if previous is None:
+                            if name in promoted:
+                                _remove(destinations[name])
+                        elif previous.exists():
                             os.replace(previous, destinations[name])
                             backups[name] = None
+                        elif name not in promoted and destinations[name].exists():
+                            # Parking did not happen; the original is still in place.
+                            _validate_existing_destination(destinations[name])
+                            backups[name] = None
+                        else:
+                            raise ContractError("monitor rollback state is uncertain.")
                     except BaseException as rollback_error:
                         rollback_errors.append(rollback_error)
-                for name, unpromoted in backups.items():
-                    if name not in promoted and unpromoted is not None:
-                        try:
-                            os.replace(unpromoted, destinations[name])
-                            backups[name] = None
-                        except BaseException as rollback_error:
-                            rollback_errors.append(rollback_error)
                 if rollback_errors:
-                    recovery_required = True
-                    publisher_lock.retain_for_recovery()
                     raise ContractError(
                         "monitor output publication rollback failed; retain the lock and any remaining .bak recovery files for operator recovery."
                     ) from rollback_errors[0]
+                publisher_lock.pair_is_consistent()
                 raise
+            else:
+                publisher_lock.pair_is_consistent()
             finally:
-                if not recovery_required:
+                if not publisher_lock._recovery_required:
                     for remaining in backups.values():
                         _remove(remaining)
     finally:

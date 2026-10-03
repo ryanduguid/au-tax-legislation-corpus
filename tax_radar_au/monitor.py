@@ -667,16 +667,16 @@ def render_markdown(queue: dict[str, Any]) -> str:
         source = item["source"]
         if source is not None:
             lines += [
-                f"- Source: {safe_markdown(source['title'])} (`{safe_markdown(source['register_id'])}`, {safe_markdown(source['collection'])})",
+                f"- Source: {safe_markdown(source['title'])} ({safe_markdown(source['register_id'])}, {safe_markdown(source['collection'])})",
                 f"- Baseline compilation: {safe_markdown(source['baseline_compilation']['number'])} dated {source['baseline_compilation']['date']}",
                 f"- Evidence: {safe_markdown(source['evidence_url'])}",
             ]
             if source["observed_compilation"]:
                 observed = source["observed_compilation"]
-                lines.append(f"- Observed compilation: {safe_markdown(observed['number'])} dated {observed['date']} (`{safe_markdown(observed['document_id'])}`)")
+                lines.append(f"- Observed compilation: {safe_markdown(observed['number'])} dated {observed['date']} ({safe_markdown(observed['document_id'])})")
         lines.append(f"- Mapping status: {item['mapping_status']}")
         for candidate in item["impact_candidates"]:
-            lines.append(f"- Review candidate (`{safe_markdown(candidate['skill_ref'])}`): {safe_markdown(candidate['review_question'])}")
+            lines.append(f"- Review candidate ({safe_markdown(candidate['skill_ref'])}): {safe_markdown(candidate['review_question'])}")
         for limitation in item["limitations"]:
             lines.append(f"- Limitation: {safe_markdown(limitation)}")
         lines.append("")

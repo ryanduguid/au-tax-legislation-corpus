@@ -87,7 +87,7 @@ def test_validate_review_preserves_its_inputs(
     assert all(path.read_bytes() == content for path, content in original.items())
 
 
-def test_validate_review_can_replace_an_unrelated_receipt(tmp_path: Path) -> None:
+def test_validate_review_preserves_an_existing_receipt(tmp_path: Path) -> None:
     directory = tmp_path / "queue"
     assert main(_compare_argv(directory)) == 0
     output = tmp_path / "validation.json"
@@ -95,8 +95,8 @@ def test_validate_review_can_replace_an_unrelated_receipt(tmp_path: Path) -> Non
 
     assert main(["validate-review", "--queue", str(directory / "impact-queue.json"),
                  "--decision", str(sample_path("decisions", "sample-technical-review.json")),
-                 "--out", str(output)]) == 0
-    assert json.loads(output.read_text(encoding="utf-8"))["status"] == "DECISION_RECORDED"
+                 "--out", str(output)]) == 2
+    assert output.read_text(encoding="utf-8") == "previous receipt\n"
 
 
 def test_a_non_ascii_output_path_does_not_fail_a_successful_run(
@@ -190,7 +190,7 @@ def test_validate_review_out_colliding_with_a_directory_is_blocked(tmp_path: Pat
     ])
 
     assert code == 2
-    assert "blocked: the validation output file could not be written:" in capsys.readouterr().err
+    assert "blocked: The validation output must not exist;" in capsys.readouterr().err
 
 
 def test_an_oserror_that_is_not_a_path_problem_is_not_labelled_as_one(

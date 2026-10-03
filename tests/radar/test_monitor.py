@@ -1061,7 +1061,7 @@ def test_markdown_escapes_raw_html_in_source_text() -> None:
 
     assert "<script>" not in markdown
     assert "</script>" not in markdown
-    assert "Evil \\<script\\>alert(1)\\</script\\> Act" in markdown
+    assert "Evil \\<script\\>alert\\(1\\)\\<\\/script\\> Act" in markdown
 
 
 def test_baseline_reusing_a_register_id_across_collections_is_rejected(tmp_path: Path) -> None:
@@ -1093,7 +1093,7 @@ def test_markdown_escapes_observed_compilation_metadata() -> None:
     assert "1 \\| \\[not a link\\]" in markdown
     assert "2\\`code" in markdown
     assert "C2099C00002\\`injected" in markdown
-    assert "https://example.test/C2099A00001\\`tick" in markdown
+    assert "https\\:\\/\\/example\\.test\\/C2099A00001\\`tick" in markdown
 
 
 def test_control_characters_in_source_metadata_are_rejected(tmp_path: Path) -> None:
@@ -1138,26 +1138,33 @@ def test_queue_writes_and_human_decision_is_structurally_valid(tmp_path: Path) -
     assert validation["mode"] == "synthetic"
 
 
-def test_interrupted_pair_write_cannot_validate_against_old_markdown(monkeypatch, tmp_path):
+def test_interrupted_pair_write_restores_the_previous_pair(monkeypatch, tmp_path):
     output = tmp_path / "queue"
     paths = write_queue(_queue(), output)
     replacement = _queue()
     replacement["baseline"]["source"] = "Replacement source"
     replacement["queue_digest"] = _expected_queue_digest(replacement)
-    swap = persist_module._swap_into_place
+    replace = persist_module.os.replace
+    interrupted = False
 
     def interrupt_before_markdown(staged, destination):
-        if destination.suffix == ".md":
+        nonlocal interrupted
+        if not interrupted and Path(destination).suffix == ".md":
+            interrupted = True
             raise KeyboardInterrupt("simulated process termination")
-        return swap(staged, destination)
+        return replace(staged, destination)
 
-    monkeypatch.setattr(persist_module, "_swap_into_place", interrupt_before_markdown)
+    monkeypatch.setattr(persist_module.os, "replace", interrupt_before_markdown)
     with pytest.raises(KeyboardInterrupt):
         write_queue(replacement, output)
     decision = tmp_path / "decision.json"
     decision.write_text(json.dumps(_matching_decision(replacement)), encoding="utf-8")
-    with pytest.raises(MonitorError, match="Markdown"):
+    with pytest.raises(MonitorError, match="queue_digest"):
         validate_review(queue_path=paths["json"], decision_path=decision)
+    assert json.loads(paths["json"].read_text(encoding="utf-8")) == _queue()
+    assert paths["markdown"].read_text(encoding="utf-8") == render_markdown(_queue())
+    decision.write_text(json.dumps(_matching_decision(_queue())), encoding="utf-8")
+    assert validate_review(queue_path=paths["json"], decision_path=decision)["status"] == "DECISION_RECORDED"
 
 
 def test_second_queue_commit_failure_restores_the_previous_pair(

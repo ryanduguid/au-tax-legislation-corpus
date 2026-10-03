@@ -24,13 +24,37 @@ import json
 import os
 import sys
 import traceback
+from typing import TYPE_CHECKING
 
-from corpus_paths import child, corpus_root, is_reparse_point, register_id, reject_symlinks
-from pii_patterns import (
-    has_private_person_registration_pair,
-    load_contact_allowlist,
-    privacy_findings_in_file,
-)
+if TYPE_CHECKING or __package__:
+    from .corpus_paths import (
+        child,
+        corpus_root,
+        is_reparse_point,
+        register_id,
+        reject_symlinks,
+        require_builder_layout,
+    )
+    from .pii_patterns import (
+        has_private_person_registration_pair,
+        load_contact_allowlist,
+        privacy_findings_in_file,
+    )
+else:
+    from corpus_paths import (
+        child,
+        corpus_root,
+        is_reparse_point,
+        register_id,
+        reject_symlinks,
+        require_builder_layout,
+    )
+    from pii_patterns import (
+        has_private_person_registration_pair,
+        load_contact_allowlist,
+        privacy_findings_in_file,
+    )
+
 
 #: Exit statuses. See the module docstring: 2 is "not checked", never "clean".
 EXIT_OK = 0
@@ -364,6 +388,7 @@ def verify_distribution(distribution=None, contact_allowlist=None):
 
 
 def main():
+    require_builder_layout(__file__)
     try:
         fails = verify_distribution()
     except Exception:

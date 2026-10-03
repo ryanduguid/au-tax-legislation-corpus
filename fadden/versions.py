@@ -3,21 +3,43 @@ import json
 import os
 import time
 import urllib.parse
+from typing import TYPE_CHECKING
 
-from http_fetch import fetch_json
+if TYPE_CHECKING or __package__:
+    from .corpus_paths import (
+        compilation_id,
+        register_id,
+        require_builder_layout,
+        version_date,
+        version_rows,
+        write_json_atomic,
+    )
+    from .http_fetch import fetch_json
+else:
+    from corpus_paths import (
+        compilation_id,
+        register_id,
+        require_builder_layout,
+        version_date,
+        version_rows,
+        write_json_atomic,
+    )
+    from http_fetch import fetch_json
+
 
 API = "https://api.prod.legislation.gov.au/v1"
 SCRATCH = os.path.dirname(os.path.abspath(__file__))
 
 
 def main():
+    require_builder_layout(__file__)
     with open(os.path.join(SCRATCH, "titles_all.json"), encoding="utf-8") as f:
         rows = json.load(f)
 
     # Proper dedup by register id.
     by_id = {}
     for r in rows:
-        by_id[r["id"]] = r
+        by_id[register_id(r["id"])] = r
     principal = sorted([r for r in by_id.values() if r.get("isPrincipal")],
                        key=lambda r: r["name"])
     # titles_all.json holds Acts, legislative instruments and notifiable
@@ -48,19 +70,22 @@ def main():
 
     resolved, failed = [], []
     for i, t in enumerate(principal, 1):
-        f = "titleId eq '%s' and isCurrent eq true" % t["id"]
+        rid = register_id(t["id"])
+        f = "titleId eq '%s' and isCurrent eq true" % rid
         d = fetch_json("%s/versions?$top=1&$filter=%s&$select=titleId,start,compilationNumber,registerId"
                        % (API, urllib.parse.quote(f)))
-        v = (d or {}).get("value") or []
-        # Reject a response that belongs to a different Act.
-        if v and v[0].get("titleId") not in (None, t["id"]):
-            print("  MISMATCH %s got %s" % (t["id"], v[0].get("titleId")))
+        try:
+            v = version_rows(d, rid)
+            if v:
+                start = version_date(v[0].get("start"))
+                document_id = compilation_id(v[0])
+        except ValueError:
             v = []
         if v:
             rec = dict(t)
-            rec["versionStart"] = v[0]["start"][:10]
+            rec["versionStart"] = start
             rec["compilationNumber"] = v[0].get("compilationNumber")
-            rec["compilationRegisterId"] = v[0].get("registerId")
+            rec["compilationRegisterId"] = document_id
             resolved.append(rec)
         else:
             failed.append(t)
@@ -80,8 +105,7 @@ def main():
                            "refusing to write acts_resolved.json"
                            % len(failed))
 
-    with open(os.path.join(SCRATCH, "acts_resolved.json"), "w", encoding="utf-8") as f:
-        json.dump(resolved, f, indent=1)
+    write_json_atomic(os.path.join(SCRATCH, "acts_resolved.json"), resolved, indent=1)
 
 
 if __name__ == "__main__":

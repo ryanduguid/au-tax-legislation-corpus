@@ -3,13 +3,17 @@
 from __future__ import annotations
 
 import argparse
+import ctypes
 import datetime as dt
+import errno
 import json
 import os
 import re
 import shutil
 import stat
+import sys
 import uuid
+from importlib.metadata import PackageNotFoundError, version
 from pathlib import Path
 from typing import Any, Sequence
 from urllib.parse import urlsplit
@@ -31,6 +35,34 @@ SAFE_UPSTREAM_ID = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,79}")
 PUBLISHER_ID = re.compile(r"[a-z0-9][a-z0-9._-]{2,79}")
 SAFE_OUTPUT_LEAF = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,99}")
 VERSION_PATH = Path(__file__).resolve().parent.parent / "VERSION"
+
+
+def _producer_version() -> str:
+    try:
+        return VERSION_PATH.read_text(encoding="utf-8").strip()
+    except FileNotFoundError:
+        try:
+            return version("tax-radar-au")
+        except PackageNotFoundError as exc:
+            raise PublicationBundleError("producer version metadata is unavailable.") from exc
+
+
+def _promote_no_replace(staging: Path, output: Path) -> None:
+    """Publish an absent directory using the platform's no-replace operation."""
+    if os.name == "nt":
+        os.rename(staging, output)
+        return
+    if sys.platform != "linux":
+        raise OSError(errno.ENOTSUP, "no-replace directory publication is unavailable")
+    rename = getattr(ctypes.CDLL(None, use_errno=True), "renameat2", None)
+    if rename is None:
+        raise OSError(errno.ENOTSUP, "renameat2 is unavailable")
+    rename.argtypes = [ctypes.c_int, ctypes.c_char_p, ctypes.c_int, ctypes.c_char_p, ctypes.c_uint]
+    rename.restype = ctypes.c_int
+    # AT_FDCWD=-100; RENAME_NOREPLACE=1. Never fall back to an overwriting rename.
+    if rename(-100, os.fsencode(staging), -100, os.fsencode(output), 1) != 0:
+        error = ctypes.get_errno()
+        raise OSError(error, os.strerror(error), os.fspath(output))
 
 
 def _required_text(value: Any, field: str) -> str:
@@ -80,7 +112,11 @@ def _publisher_https_url(value: Any, field: str, *, expected_path: str) -> str:
     if (
         utf16_length > 2048
         or parsed.scheme.lower() != "https"
-        or not hostname
+        or hostname is None
+        or hostname.lower() != "www.legislation.gov.au"
+        or parsed.port not in (None, 443)
+        or parsed.query
+        or parsed.fragment
         or parsed.username is not None
         or parsed.password is not None
         or "\\" in parsed.netloc
@@ -455,7 +491,8 @@ def _remove_owned_staging(staging: Path, *, parent: Path, prefix: str) -> None:
         details = os.lstat(staging)
     except FileNotFoundError:
         return
-    if not stat.S_ISDIR(details.st_mode) or os.path.islink(staging) or _path_is_junction(staging):
+    if (not stat.S_ISDIR(details.st_mode) or _is_reparse_point(details)
+            or os.path.islink(staging) or _path_is_junction(staging)):
         raise PublicationBundleError(
             f"publication bundle staging path is no longer an ordinary directory: {staging}."
         )
@@ -488,7 +525,7 @@ def export_publication_bundles(
         facts_document = load_json(facts_snapshot, label="observation facts input")
         baseline = monitor_contract.project_baseline(source_document)
         observation = monitor_contract.project_observation(baseline, facts_document)
-        producer_version = VERSION_PATH.read_text(encoding="utf-8").strip()
+        producer_version = _producer_version()
         bundles = build_publication_bundles(
             baseline,
             observation,
@@ -516,9 +553,12 @@ def export_publication_bundles(
 
     prefix = f".{output.name}.publication-bundles-"
     staging = output.parent / f"{prefix}{uuid.uuid4().hex}.tmp"
+    created_staging = False
+    primary_error = None
     try:
         try:
             os.mkdir(staging, 0o700)
+            created_staging = True
             for bundle in bundles:
                 destination = staging / f"{bundle['bundle_id']}.json"
                 _write_bundle(destination, bundle_bytes(bundle))
@@ -529,13 +569,22 @@ def export_publication_bundles(
 
         _require_absent(output)
         try:
-            os.rename(staging, output)
+            _promote_no_replace(staging, output)
         except OSError as exc:
             raise PublicationBundleError(
                 f"publication bundle output could not be promoted: {exc}."
             ) from exc
+    except BaseException as exc:
+        primary_error = exc
+        raise
     finally:
-        _remove_owned_staging(staging, parent=output.parent, prefix=prefix)
+        if created_staging:
+            try:
+                _remove_owned_staging(staging, parent=output.parent, prefix=prefix)
+            except BaseException as cleanup_error:
+                if primary_error is not None:
+                    raise primary_error from cleanup_error
+                raise
 
     return [output / f"{bundle['bundle_id']}.json" for bundle in bundles]
 

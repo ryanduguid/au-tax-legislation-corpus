@@ -10,14 +10,13 @@ import pyperf
 
 REPOSITORY = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(REPOSITORY))
-sys.path.insert(0, str(REPOSITORY / "fadden"))
 
 from fadden.extract import to_markdown  # noqa: E402
 
 SECTION_COUNT = 2_000
 EXPECTED_TABLE_COUNT = 100
 TABLE_HEADER = "| Band | Rate | Amount |"
-EXPECTED_RENDERED_SHA256 = "00b054b04d41da8a3a279a8549f715f5ce20882e6e9328a6066488baa6a825aa"
+EXPECTED_RENDERED_SHA256 = "70b2c5b7a3aa5dc5e4c2a6c9ad4f69c2fbef8b0937cd038f046190ccc2836217"
 META = {
     "id": "C2099A00001",
     "name": "Fabricated Tax Benchmark Act 2099",

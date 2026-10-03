@@ -21,9 +21,31 @@ import os
 import sys
 import time
 import urllib.parse
+from typing import TYPE_CHECKING
 
-from corpus_paths import child, corpus_root
-from http_fetch import fetch_json
+if TYPE_CHECKING or __package__:
+    from .corpus_paths import (
+        child,
+        compilation_id,
+        corpus_root,
+        register_id,
+        require_builder_layout,
+        version_date,
+        version_rows,
+    )
+    from .http_fetch import fetch_json
+else:
+    from corpus_paths import (
+        child,
+        compilation_id,
+        corpus_root,
+        register_id,
+        require_builder_layout,
+        version_date,
+        version_rows,
+    )
+    from http_fetch import fetch_json
+
 
 API = "https://api.prod.legislation.gov.au/v1"
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -34,6 +56,7 @@ DELAY = 1.5
 
 
 def main():
+    require_builder_layout(__file__)
     with open(child(ROOT, "sources.json"), encoding="utf-8") as f:
         src = json.load(f)
 
@@ -50,15 +73,18 @@ def main():
              ("  Roughly %d minutes." % max(1, round(len(acts) * DELAY / 60)))))
     stale, unchanged, errors, gone, nodoc = [], 0, [], [], []
 
-    def versions(flt, top=1):
+    def versions(flt, rid, top=1):
         d = fetch_json("%s/versions?$top=%d&$filter=%s"
                        "&$select=titleId,start,compilationNumber,registerId,status"
                        % (API, top, urllib.parse.quote(flt)))
-        v = (d or {}).get("value") or []
-        return v if d is not None else None
+        try:
+            return version_rows(d, rid)
+        except ValueError:
+            return None
 
     for i, a in enumerate(acts, 1):
-        v = versions("titleId eq '%s' and isCurrent eq true" % a["register_id"])
+        rid = register_id(a["register_id"])
+        v = versions("titleId eq '%s' and isCurrent eq true" % rid, rid)
         # Guard against a response for the wrong title being read as this one's.
         if v is None:
             errors.append(a)
@@ -66,7 +92,7 @@ def main():
             errors.append(a)
         elif not v:
             # Distinguish sunset or repealed from a failed lookup.
-            any_v = versions("titleId eq '%s'" % a["register_id"])
+            any_v = versions("titleId eq '%s'" % rid, rid)
             time.sleep(DELAY)
             if any_v is None:
                 errors.append(a)
@@ -83,15 +109,21 @@ def main():
             # compilation and the reader was told to wait for one.
             gone.append(a)
         else:
+            try:
+                now_d = version_date(v[0].get("start"))
+                document_id = compilation_id(v[0])
+            except ValueError:
+                errors.append(a)
+                time.sleep(DELAY)
+                continue
             now_c = v[0].get("compilationNumber")
-            now_d = v[0]["start"][:10]
             if str(now_c) != str(a["compilation_number"]) or now_d != a["compilation_date"]:
                 # A current version with no registerId has no document behind
                 # it: the Register knows the amendment commenced but has not
                 # published the compilation. Telling anyone to re-download it
                 # sends them at a URL that answers 404. These are the titles
                 # retry13.py already resolved to the last published version.
-                if v[0].get("registerId") is None:
+                if document_id is None:
                     nodoc.append((a, now_d))
                 else:
                     stale.append((a, now_c, now_d))

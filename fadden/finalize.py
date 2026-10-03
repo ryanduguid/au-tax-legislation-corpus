@@ -5,9 +5,29 @@ import json
 import os
 import re
 import shutil
-from typing import NamedTuple
+from typing import TYPE_CHECKING, NamedTuple
 
-from corpus_paths import child, corpus_root, refuse_unlisted_titles, register_id
+if TYPE_CHECKING or __package__:
+    from .corpus_paths import (
+        atomic_text_writer,
+        child,
+        corpus_root,
+        markdown_text,
+        refuse_unlisted_titles,
+        register_id,
+        require_builder_layout,
+    )
+else:
+    from corpus_paths import (
+        atomic_text_writer,
+        child,
+        corpus_root,
+        markdown_text,
+        refuse_unlisted_titles,
+        register_id,
+        require_builder_layout,
+    )
+
 
 SCRATCH = os.path.dirname(os.path.abspath(__file__))
 ROOT = corpus_root(__file__)
@@ -296,8 +316,8 @@ def build_index_document(inventory, retrieved):
                 "|---|---|---|---|---|---|"]
         for a in group:
             idx.append("| [%s](markdown/%s) | %s | %s | %s | %s | %s |" % (
-                a["name"].replace("|", "\\|"), a["markdown"], a["id"],
-                a.get("compilationNumber") or "-", a.get("versionStart") or "-",
+                markdown_text(a["name"]), a["markdown"], markdown_text(a["id"]),
+                markdown_text(a.get("compilationNumber") or "-"), markdown_text(a.get("versionStart") or "-"),
                 f"{a['_rows']:,}", f"{a.get('words', 0):,}"))
     leftover = [a for a in ok if (a.get("collection") or "unknown")
                 not in {k for k, _ in coll_label}]
@@ -306,16 +326,16 @@ def build_index_document(inventory, retrieved):
                 "| Title | Collection | Register ID | Rows |", "|---|---|---|---|"]
         for a in leftover:
             idx.append("| [%s](markdown/%s) | %s | %s | %s |" % (
-                a["name"].replace("|", "\\|"), a["markdown"],
-                a.get("collection") or "-", a["id"], f"{a['_rows']:,}"))
+                markdown_text(a["name"]), a["markdown"],
+                markdown_text(a.get("collection") or "-"), markdown_text(a["id"]), f"{a['_rows']:,}"))
     if missing:
         idx += ["", "## Titles with no EPUB available", "",
                 "| Title | Collection | Register ID | Reason |",
                 "|---|---|---|---|"]
         for a in missing:
             idx.append("| %s | %s | %s | %s |" % (
-                a["name"], a.get("collection") or "-", a["id"],
-                a.get("reason") or "-"))
+                markdown_text(a["name"]), markdown_text(a.get("collection") or "-"), markdown_text(a["id"]),
+                markdown_text(a.get("reason") or "-")))
     return "\n".join(idx) + "\n"
 
 
@@ -535,7 +555,7 @@ def finish_corpus_publication(inventory, retrieved, pii_counts=None):
     n_inst = inventory.instruments
 
     pii_titles, pii_names = pii_summary() if pii_counts is None else pii_counts
-    with open(child(ROOT, "README.md"), "w", encoding="utf-8") as f:
+    with atomic_text_writer(child(ROOT, "README.md")) as f:
         f.write(build_readme_document(
             inventory, retrieved, pii_titles=pii_titles, pii_names=pii_names))
 
@@ -565,19 +585,20 @@ def finish_corpus_publication(inventory, retrieved, pii_counts=None):
 
 
 def main(retrieved):
+    require_builder_layout(__file__)
     raw, markdown = load_retrieval_inventory(SCRATCH)
     refuse_unlisted_titles(ROOT, {register_id(a["id"]) for a in markdown if a.get("markdown")})
     pii_counts = pii_summary()
     inventory = assemble_corpus_inventory(raw, markdown, ROOT)
 
     sources = build_sources_document(inventory, retrieved)
-    with open(child(ROOT, "sources.json"), "w", encoding="utf-8") as f:
+    with atomic_text_writer(child(ROOT, "sources.json")) as f:
         json.dump(sources, f, indent=1, ensure_ascii=False)
 
-    with open(child(ROOT, "INDEX.md"), "w", encoding="utf-8") as f:
+    with atomic_text_writer(child(ROOT, "INDEX.md")) as f:
         f.write(build_index_document(inventory, retrieved))
 
-    with open(child(ROOT, "LICENCE-NOTICE.md"), "w", encoding="utf-8") as f:
+    with atomic_text_writer(child(ROOT, "LICENCE-NOTICE.md")) as f:
         f.write(build_licence_notice(retrieved))
 
     finish_corpus_publication(inventory, retrieved, pii_counts)

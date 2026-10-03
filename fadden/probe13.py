@@ -5,20 +5,42 @@ import json
 import os
 import time
 import urllib.parse
+from typing import TYPE_CHECKING
 
-from http_fetch import fetch_json
+if TYPE_CHECKING or __package__:
+    from .corpus_paths import (
+        compilation_id,
+        register_id,
+        require_builder_layout,
+        version_date,
+        version_rows,
+        write_json_atomic,
+    )
+    from .http_fetch import fetch_json
+else:
+    from corpus_paths import (
+        compilation_id,
+        register_id,
+        require_builder_layout,
+        version_date,
+        version_rows,
+        write_json_atomic,
+    )
+    from http_fetch import fetch_json
+
 
 API = "https://api.prod.legislation.gov.au/v1"
 SCRATCH = os.path.dirname(os.path.abspath(__file__))
 
 
 def main():
+    require_builder_layout(__file__)
     with open(os.path.join(SCRATCH, "manifest_raw.json"), encoding="utf-8") as source:
         manifest = json.load(source)
     missing = [item for item in manifest if not item.get("epub")]
     output = []
     for item in missing:
-        rid = item["id"]
+        rid = register_id(item["id"])
         # Descending by start: $top caps the page, so ascending order would
         # return the 60 OLDEST versions and a long-history title would resolve
         # to a decades-old compilation.
@@ -32,7 +54,10 @@ def main():
             raise RuntimeError(
                 "version lookup failed for %s after retries; refusing to "
                 "write probe13.json with that title missing" % rid)
-        versions = response.get("value") or []
+        versions = version_rows(response, rid)
+        for version in versions:
+            version_date(version.get("start"))
+            compilation_id(version)
         with_document = [version for version in versions if version.get("registerId")]
         current = [version for version in versions if version.get("isCurrent")]
         latest = max(with_document, key=lambda version: version["start"]) if with_document else None
@@ -47,8 +72,7 @@ def main():
             rid, len(versions), bool(current and current[0].get("registerId")),
             (latest or {}).get("registerId"), (latest or {}).get("start", "")[:10]))
         time.sleep(1.5)
-    with open(os.path.join(SCRATCH, "probe13.json"), "w", encoding="utf-8") as destination:
-        json.dump(output, destination, indent=1)
+    write_json_atomic(os.path.join(SCRATCH, "probe13.json"), output, indent=1)
 
 
 if __name__ == "__main__":

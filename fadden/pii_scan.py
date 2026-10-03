@@ -14,14 +14,21 @@ a statute.
 import glob
 import json
 import os
+from typing import TYPE_CHECKING
 
-from corpus_paths import child, corpus_root, register_id
-from pii_patterns import private_person_registration_details
+if TYPE_CHECKING or __package__:
+    from .corpus_paths import child, corpus_root, register_id, require_builder_layout
+    from .pii_patterns import private_person_registration_details
+else:
+    from corpus_paths import child, corpus_root, register_id, require_builder_layout
+    from pii_patterns import private_person_registration_details
+
 
 ROOT = corpus_root(__file__)
 
 
 def main():
+    require_builder_layout(__file__)
     scratch = os.path.dirname(os.path.abspath(__file__))
     with open(os.path.join(scratch, "manifest_md.json"), encoding="utf-8") as source:
         titles = json.load(source)

@@ -23,11 +23,27 @@ import json
 import os
 import re
 import sys
-import zipfile
 from html.parser import HTMLParser
+from typing import TYPE_CHECKING
 
-from corpus_paths import child, corpus_root, register_id
-from download import write_json_atomic
+if TYPE_CHECKING or __package__:
+    from .corpus_paths import child, corpus_root, markdown_text, register_id, require_builder_layout
+    from .download import open_epub, read_epub_member, write_json_atomic
+else:
+    from corpus_paths import child, corpus_root, markdown_text, register_id, require_builder_layout
+    from download import open_epub, read_epub_member, write_json_atomic
+
+
+MAX_COLSPAN = 1024
+MAX_TABLE_COLUMNS = 4096
+MAX_TABLE_CELLS = 1_000_000
+
+
+def yaml_scalar(value):
+    """JSON scalars are also YAML scalars, with types and line breaks preserved."""
+    if value is not None and not isinstance(value, (str, bool, int, float)):
+        raise ValueError("front matter requires a scalar value")
+    return json.dumps(value, ensure_ascii=True, allow_nan=False)
 
 SKIP_CLASS = re.compile(r'^(TOC\d|TofSects|Contents|Header|Footer)', re.I)
 # The contents page on its own. A running header or footer is skipped by
@@ -140,6 +156,8 @@ class Doc(HTMLParser):
         # cell. The table buffers are per-table, so an inner <table> must not
         # be allowed to clear the enclosing one's rows.
         self._tables = []
+        self._expanded_cells = 0
+        self._rendered_cells = 0
 
     def handle_starttag(self, tag, attrs):
         a = dict(attrs)
@@ -157,10 +175,15 @@ class Doc(HTMLParser):
             self._in_td = True
             self._cell = []
             self._buf = []
+            span = a.get("colspan") or "1"
+            if len(span) > 32:
+                raise ValueError("table colspan exceeds the supported budget")
             try:
-                self._colspan = max(1, int(a.get("colspan", 1)))
+                self._colspan = max(1, int(span))
             except ValueError:
                 self._colspan = 1
+            if self._colspan > MAX_COLSPAN:
+                raise ValueError("table colspan exceeds the supported budget")
         elif tag == "table":
             self._flush()
             self._tables.append((self._table, self._table_raw, self._row,
@@ -215,6 +238,11 @@ class Doc(HTMLParser):
             self._flush()
         elif tag in ("td", "th") and self._in_td:
             self._flush()
+            if len(self._row) + self._colspan > MAX_TABLE_COLUMNS:
+                raise ValueError("table row exceeds the supported column budget")
+            self._expanded_cells += self._colspan
+            if self._expanded_cells > MAX_TABLE_CELLS:
+                raise ValueError("document exceeds the supported table cell budget")
             cell = " ".join(x for x in self._cell if x).strip()
             self._row_raw.append(cell)
             self._row.append(cell)
@@ -234,6 +262,10 @@ class Doc(HTMLParser):
             # The source colspan defines the logical column, even when
             # row widths differ. Never infer a different alignment from width.
             rows = exp
+            if rows:
+                self._rendered_cells += len(rows) * max(map(len, rows))
+                if self._rendered_cells > MAX_TABLE_CELLS:
+                    raise ValueError("document exceeds the supported padded table budget")
             nested = bool(self._tables and self._tables[-1][5])
             if rows and not nested:
                 self.blocks.append({"k": "table", "rows": rows})
@@ -268,7 +300,7 @@ class Doc(HTMLParser):
 
 
 def epub_blocks(path):
-    with zipfile.ZipFile(path) as archive:
+    with open_epub(path) as archive:
         names = [n for n in archive.namelist() if n.lower().endswith((".html", ".xhtml"))]
 
         def key(n):
@@ -277,10 +309,13 @@ def epub_blocks(path):
 
         sizes = {os.path.basename(i.filename): i.file_size for i in archive.infolist()}
         out = []
+        table_counts = (0, 0)
         for n in sorted(names, key=key):
             d = Doc(sizes)
-            d.feed(archive.read(n).decode("utf-8", "replace"))
+            d._expanded_cells, d._rendered_cells = table_counts
+            d.feed(read_epub_member(archive, n).decode("utf-8", "replace"))
             d._flush()
+            table_counts = d._expanded_cells, d._rendered_cells
             out.append({"k": "file"})      # volume boundary
             out += d.blocks
     return out
@@ -288,6 +323,8 @@ def epub_blocks(path):
 
 def md_table(rows):
     w = max(len(r) for r in rows)
+    if w > MAX_TABLE_COLUMNS or w * len(rows) > MAX_TABLE_CELLS:
+        raise ValueError("table exceeds the supported rectangular cell budget")
     rows = [[c.replace("|", "\\|") for c in r] + [""] * (w - len(r)) for r in rows]
     out = ["| " + " | ".join(rows[0]) + " |",
            "|" + "|".join(["---"] * w) + "|"]
@@ -754,30 +791,30 @@ def to_markdown(blocks, meta, force_bare=False):
 
     attr = attribution(meta["retrieved"])
     fm = ["---",
-          "register_id: %s" % meta["id"],
-          "title: %s" % json.dumps(meta["name"]),
-          "long_title: %s" % json.dumps(long_title or ""),
+          "register_id: %s" % yaml_scalar(meta["id"]),
+          "title: %s" % yaml_scalar(meta["name"]),
+          "long_title: %s" % yaml_scalar(long_title or ""),
           # Act / LegislativeInstrument / NotifiableInstrument. Without it a
           # regulation reads as though Parliament enacted it.
-          "collection: %s" % (meta.get("collection") or "null"),
-          "compilation_number: %s" % (meta.get("compilationNumber") or "null"),
-          "compilation_date: %s" % meta.get("versionStart"),
+          "collection: %s" % yaml_scalar(meta.get("collection")),
+          "compilation_number: %s" % yaml_scalar(meta.get("compilationNumber")),
+          "compilation_date: %s" % yaml_scalar(meta.get("versionStart")),
           # The Register can record that a version commenced without publishing
           # a compilation for it. For titles in that state, the text below is
           # the last compilation that exists, not the law in force.
           # Say so on the face of the document rather than only in sources.json.
           "version_is_current: %s" % ("false" if meta.get("version_is_current") is False
                                       else "true"),
-          "superseded_from: %s" % (meta.get("current_version_start") or "null"),
-          "source_url: %s" % meta.get("sourceUrl", ""),
-          "register_page: https://www.legislation.gov.au/%s/latest/text" % meta["id"],
-          "retrieved: %s" % meta["retrieved"],
-          "licence: %s" % LICENCE,
-          "licence_url: %s" % LICENCE_URL,
+          "superseded_from: %s" % yaml_scalar(meta.get("current_version_start")),
+          "source_url: %s" % yaml_scalar(meta.get("sourceUrl", "")),
+          "register_page: %s" % yaml_scalar("https://www.legislation.gov.au/%s/latest/text" % meta["id"]),
+          "retrieved: %s" % yaml_scalar(meta["retrieved"]),
+          "licence: %s" % yaml_scalar(LICENCE),
+          "licence_url: %s" % yaml_scalar(LICENCE_URL),
           "authorised: false",
-          "attribution: %s" % json.dumps(attr),
+          "attribution: %s" % yaml_scalar(attr),
           "---", ""]
-    head = "# " + meta["name"] + "\n"
+    head = "# " + markdown_text(meta["name"]) + "\n"
     if long_title:
         head += "\n> " + long_title + "\n"
     body = head + "\n".join(lines)
@@ -791,6 +828,7 @@ def main(retrieved=None):
     Legacy EPUBs without a recorded timestamp retain their mtime fallback,
     with an explicit provenance warning in the output manifest.
     """
+    require_builder_layout(__file__)
     if retrieved is not None:
         retrieved = datetime.date.fromisoformat(retrieved).isoformat()
     scratch = os.path.dirname(os.path.abspath(__file__))
@@ -883,21 +921,21 @@ def main(retrieved=None):
             # its own provenance block.
             en_fm = "\n".join([
                 "---",
-                "register_id: %s" % a["id"],
-                "title: %s" % json.dumps("Endnotes: " + a["name"]),
-                "collection: %s" % (a.get("collection") or "null"),
-                "compilation_number: %s" % (a.get("compilationNumber") or "null"),
-                "compilation_date: %s" % a.get("versionStart"),
-                "source_url: %s" % a.get("sourceUrl", ""),
-                "register_page: https://www.legislation.gov.au/%s/latest/text" % a["id"],
-                "retrieved: %s" % fetched,
-                "licence: %s" % LICENCE,
-                "licence_url: %s" % LICENCE_URL,
+                "register_id: %s" % yaml_scalar(a["id"]),
+                "title: %s" % yaml_scalar("Endnotes: " + a["name"]),
+                "collection: %s" % yaml_scalar(a.get("collection")),
+                "compilation_number: %s" % yaml_scalar(a.get("compilationNumber")),
+                "compilation_date: %s" % yaml_scalar(a.get("versionStart")),
+                "source_url: %s" % yaml_scalar(a.get("sourceUrl", "")),
+                "register_page: %s" % yaml_scalar("https://www.legislation.gov.au/%s/latest/text" % a["id"]),
+                "retrieved: %s" % yaml_scalar(fetched),
+                "licence: %s" % yaml_scalar(LICENCE),
+                "licence_url: %s" % yaml_scalar(LICENCE_URL),
                 "authorised: false",
-                "attribution: %s" % json.dumps(attr),
+                "attribution: %s" % yaml_scalar(attr),
                 "---", ""])
             with open(child(d, "endnotes.md"), "w", encoding="utf-8") as f:
-                f.write(en_fm + "# Endnotes: %s\n\n%s\n" % (a["name"], endnotes))
+                f.write(en_fm + "# Endnotes: %s\n\n%s\n" % (markdown_text(a["name"]), endnotes))
 
         body = md.split("\n---\n", 1)[-1] if md.startswith("---") else md
         emitted = [s for s in sections if any(x.strip() for x in s["text"])]

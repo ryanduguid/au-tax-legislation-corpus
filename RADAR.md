@@ -42,6 +42,12 @@ The example creates one `SUPERSEDED` source item mapped to a BAS-review question
 
 The output directory contains deterministic `impact-queue.json` and `impact-queue.md` files. Both are staged before publication. An ordinary write failure rolls back the previous pair, but process termination or power loss between replacements can leave 2 runs mixed together. The Markdown displays its `queue_digest`; when the companion Markdown exists, `validate-review` requires it to match the complete rendering of the JSON evidence. Regenerate a mismatched pair before reviewing it. Standalone JSON queues remain supported and undergo the same evidence-digest validation. Input digests and identifiers come from the same immutable byte snapshots that are parsed. The v2 JSON queue records the baseline, observation and mapping snapshot digests in `source_digests`. Its source-derived `run_id` identifies that 3-file run, while `queue_digest` identifies the complete canonical queue evidence: schema version, run summary, source digests, baseline, observation and every item field. The digest is calculated before the `queue_digest` field itself is added.
 
+Updating an existing queue or exposure pair requires a filesystem that supports
+hard links. Backups retain the original inode, ownership and access controls;
+an unsupported filesystem refuses the update before replacing either file.
+Use one writer per output directory. An interruption during rollback preserves
+the backup when restoration cannot finish.
+
 An item is `OPEN` when it needs human technical review, carrying `change_kind` `SUPERSEDED` or `NO_LONGER_IN_FORCE`. An item is `BLOCKED` for any of 5 reasons, each named by its own `change_kind`:
 
 | `change_kind` | Cause |
@@ -73,6 +79,23 @@ The accepted timestamp grammar is exactly `YYYY-MM-DDThh:mm:ss[.ffffff][Z|+hh:mm
 ## Client exposure
 
 All three commands refuse output paths that refer to an input file, including symbolic and hard links. `validate-review` and `exposure` also protect the queue's Markdown companion.
+
+Relative outputs must stay inside the working directory. Absolute paths are
+explicit destinations. A validation receipt requires a new path, including
+when an earlier receipt or dangling link occupies the name. The command stages
+and syncs the complete receipt, then publishes it without overwriting a file
+that appears during the write.
+
+JSON inputs are limited to 50,000,000 bytes and 64 nesting levels. Client
+profiles retain their smaller 4,000,000-byte limit. Exposure also limits total
+profile/skill associations to 200,000, candidate/profile visits to 1,000,000 and
+matches to 200,000. Exceeding a limit blocks the whole report; split the inputs
+instead of treating a truncated result as complete.
+
+Metadata is rendered as literal Markdown text. After upgrading the renderer,
+regenerate a retained synthetic queue pair from its original inputs before
+reviewing it. Earlier Markdown companions may fail the exact rendering check;
+validation does not rewrite them.
 
 `exposure` lists the pseudonymous client profiles whose workflows an intact queue names. It runs only on a queue that passes the same checks as `validate-review`: exact schemas, a recomputed `run_id` and `queue_digest`, and a Markdown companion that matches when one exists.
 

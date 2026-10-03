@@ -312,10 +312,11 @@ class MonitorContractTests(unittest.TestCase):
         self.assertIn("rollback itself fails", build)
         self.assertIn(".bak", readme)
         self.assertIn(".bak", build)
-        self.assertIn("restore or", readme)
-        self.assertIn("restore or", build)
-        self.assertIn("deliberately retire", readme)
-        self.assertIn("deliberately retire", build)
+        for document in (readme, build):
+            self.assertIn("30 seconds", document)
+            self.assertIn("known consistent", document)
+            self.assertIn("regenerate", document)
+            self.assertIn("do not prove consistency", document)
 
     def test_projects_rich_sources_to_the_monitor_exact_baseline_shape(self):
         baseline = contract.project_baseline(sources_document())
@@ -800,7 +801,6 @@ class MonitorContractTests(unittest.TestCase):
             second_reached_publisher = threading.Event()
             errors: list[BaseException] = []
             original_replace = contract.os.replace
-            original_remove = contract._remove
 
             def fail_second_promotion(source, destination):
                 if (
@@ -811,18 +811,16 @@ class MonitorContractTests(unittest.TestCase):
                     second_promotion_ready.set()
                     allow_promotion_failure.wait(5)
                     raise OSError("simulated second promotion failure")
-                if threading.current_thread().name == "writer-b":
-                    second_reached_publisher.set()
-                return original_replace(source, destination)
-
-            def pause_rollback(path):
                 if (
                     threading.current_thread().name == "writer-a"
-                    and path == output / "monitor-baseline.json"
+                    and Path(source).name.endswith(".bak")
+                    and Path(destination) == output / "monitor-baseline.json"
                 ):
                     rollback_started.set()
                     allow_rollback.wait(5)
-                return original_remove(path)
+                if threading.current_thread().name == "writer-b":
+                    second_reached_publisher.set()
+                return original_replace(source, destination)
 
             def write_pair(sources, facts):
                 try:
@@ -830,10 +828,7 @@ class MonitorContractTests(unittest.TestCase):
                 except BaseException as exc:
                     errors.append(exc)
 
-            with (
-                mock.patch.object(contract.os, "replace", side_effect=fail_second_promotion),
-                mock.patch.object(contract, "_remove", side_effect=pause_rollback),
-            ):
+            with mock.patch.object(contract.os, "replace", side_effect=fail_second_promotion):
                 first = threading.Thread(target=write_pair, args=(sources_a, facts_a), name="writer-a")
                 second = threading.Thread(target=write_pair, args=(sources_b, facts_b), name="writer-b")
                 first.start()

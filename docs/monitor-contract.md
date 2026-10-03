@@ -18,13 +18,14 @@ scope, collection, UTC timestamps, HTTPS evidence links and state-specific
 fields, rejects duplicate JSON members and control characters, and refuses an
 input whose resolved path is either output filename. Existing output names must
 be ordinary files, never directories, links, junctions or other special paths.
-Exactly one writer may publish to an output directory at a time; any existing
-publisher lock fails closed. If it has no recovery artefacts, an operator may
-remove `.monitor-contract.publish.lock` after confirming its owner is no longer
-running. If rollback itself fails, the exporter retains that lock and every unrecovered
-`.bak` file, so no later publisher proceeds. The operator must restore or
-deliberately retire the old/new pair and its recovery artefacts before removing
-the lock.
+Exactly one writer may publish to an output directory at a time. An existing
+publisher lock blocks for up to 30 seconds before reporting an active writer
+or interrupted publication. The operator must stop writers and readers and
+preserve the pair and recovery artefacts. Restore a known consistent pair or
+retire the synthetic output and regenerate it in a new directory before removing
+`.monitor-contract.publish.lock`. A dead owner, an old timestamp or missing
+`.bak` files alone do not prove consistency. If rollback itself fails, the
+exporter retains the lock and unrecovered backups. Lock cleanup failures are reported.
 
 The exporter stages both files and restores the prior pair after an ordinary
 write failure. `monitor-baseline.json` and `register-observation.json` are

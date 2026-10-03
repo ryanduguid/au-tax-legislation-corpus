@@ -47,13 +47,14 @@ writes the deterministic, exact monitor inputs `monitor-baseline.json` and
 `register-observation.json` with duplicate-member, control-character and
 resolved input/output-collision checks. Existing output names must be ordinary
 files, never directories, links, junctions or other special paths. Exactly one writer
-can publish to a given output directory at a time. Any existing lock
-fails closed; if it has no recovery artefacts, an operator may remove
-`.monitor-contract.publish.lock` after confirming its owner is no longer running.
-If rollback itself fails,
-the exporter retains that lock and every unrecovered `.bak` file, so no later publisher
-proceeds. The operator must restore or deliberately retire the old/new pair and its
-recovery artefacts before removing the lock. It never queries the Register:
+can publish to a given output directory at a time. An existing lock blocks for up
+to 30 seconds, then reports an active writer or interrupted publication. A dead
+process or an old timestamp does not make the output pair safe. Stop writers and
+readers, preserve the pair and recovery artefacts, then restore a known consistent
+pair or retire the synthetic output and regenerate it in a new directory. Remove
+`.monitor-contract.publish.lock` only after that recovery. Missing `.bak` files
+alone do not prove consistency. If rollback itself fails, the exporter retains
+the lock and unrecovered backups. Lock cleanup failures are reported. It never queries the Register:
 `check_current.py` remains the read-only Register lookup stage, and the adapter
 only validates and projects facts a caller has already collected.
 
@@ -167,6 +168,11 @@ under a private sibling and renames that complete directory into place. A
 failure removes only that private staging directory. The bundle is metadata-only
 and contains no source extract, impact assessment or explainer.
 
+Directory promotion refuses a destination that appears after validation. This
+operation uses Windows rename or Linux `renameat2(RENAME_NOREPLACE)` and fails
+closed where neither is available. In an installed wheel, the producer version
+comes from distribution metadata; a source checkout uses its `VERSION` file.
+
 The publication adapter and its fixtures still accept only `mode: synthetic`
 v3 input. The live capture emits v4 and is deliberately incompatible; passing
 either contract test does not make a development ready for professional
@@ -217,6 +223,31 @@ second intervals, about 40 minutes combined. `extract.py`, `finalize.py` and
 prints a progress line every 25 titles.
 
 ## Traps this code exists to avoid
+
+The checkout-only stages require a source checkout or the deployed `build/`
+layout before network access or writes. An installed wheel supports radar use
+and stage imports, but refuses those corpus stages. The source distribution
+includes `VERSION` so rebuilding a wheel retains the release version.
+
+Mutable manifests and the finaliser's 4 documents use unique sibling files,
+flush and sync them, then replace each destination. The rate JSONL and Markdown
+use the same writer. Each replacement is atomic; this does not make the whole
+set crash atomic. Extraction's document and section files still use ordinary
+writes, so rerun extraction after an interrupted write before finalising.
+
+Downloads require curl 8.4.0 or newer and permit only HTTPS, including redirects.
+The transfer cap is 192 MiB; the decoded EPUB cap is 128 MiB. Archives admit at
+most 4,096 members, 64 MiB per member and 256 MiB total declared uncompressed
+content before CRC checks or extraction. Directory records and their actual
+member count are checked before archive metadata allocation; duplicate names
+and ZIP64 directories are refused. Stored and deflated members are decoded
+in bounded chunks. Their actual length, CRC and stream end must match the
+directory record, so a forged size cannot bypass the limits. Other compression
+methods and encrypted members are refused. Table spans above 1,024 columns, rows
+above 4,096 columns and EPUBs above 1,000,000 expanded or padded cells fail
+extraction. The extractor rejects these inputs rather than changing their
+column alignment. Front matter uses typed, quoted scalar values; corpus index
+and rate metadata are escaped as literal Markdown.
 
 - **`curl` does not truncate `-o` on transport failure.** A shared temp file
   silently re-reads the previous response. On the paging path that dropped 142

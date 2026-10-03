@@ -31,7 +31,7 @@ SUPPORT = (
 # and repeal detection was corrected to match the pipeline; the other three
 # documents are unchanged from that parent.
 OUTPUT_HASHES = {
-    "INDEX.md": "4a312fb1aab3b2f0c2499bc82e6c90ff34324a7843c4a4566f4cbddbc50b46ab",
+    "INDEX.md": "c80623ba5f390136de52680cf543da0a5ff19d318c91cb1b09613e28eac8b740",
     "LICENCE-NOTICE.md": "736c818cd50e48d1e3052ffd58e9fd238c803a9949c617e9973a85f6753ba915",
     "README.md": "9070510df8a853a935d4fc3cecf078edc664153958e71d308b44b0e795bfe980",
     "sources.json": "44fb7fea960c7aaf98ce2abc9d642eaaae08872cfc062418950e271921349a0b",
