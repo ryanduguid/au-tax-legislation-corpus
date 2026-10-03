@@ -327,6 +327,8 @@ def _require_bounded_curl():
         executable = shutil.which("curl")
         if executable is None:
             raise OSError("curl executable is unavailable")
+        # Fixed argv invokes the absolute prerequisite selected from the trusted operator PATH.
+        # nosemgrep: python.lang.security.audit.dangerous-subprocess-use-audit.dangerous-subprocess-use-audit
         result = subprocess.run([os.path.abspath(executable), "--version"], capture_output=True, text=True)  # nosec B603
     except OSError as exc:
         raise DownloadError("curl 8.4.0 or newer is required for bounded downloads") from exc
