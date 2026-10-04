@@ -99,7 +99,7 @@ intended version changes and bind verification to the exact source and policy
 commit:
 
 ```bash
-tag=v0.1.7
+tag=v0.2.0
 repo=ryanduguid/au-tax-legislation-corpus
 release_commit="$(git ls-remote "https://github.com/$repo.git" "refs/tags/$tag^{}" | cut -f1)"
 test -n "$release_commit"
