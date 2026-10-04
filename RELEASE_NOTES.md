@@ -1,3 +1,15 @@
+# v0.2.0
+
+This candidate contains the corpus builder source. It excludes generated legislation and live evidence.
+
+- Breaking: the builder and radar require Python 3.11 or later; 0.1.7 remains the last release for Python 3.10 (#162).
+- An `as_at` stage checks a compilation's point in time, each row carries its compilation window, and a literal quotation check compares quoted text with the source (#154).
+- Archive and table extraction are bounded, Register identities and timestamps are validated, and existing corpus and radar outputs survive a failed staging or promotion (#159).
+- The radar keeps its input files when an output path names one of them, directly or through a link (#149), bounds its companion reads and rejects control characters in profile labels (#150), and reports a non-string observation schema version as blocked input with exit 2 (#155).
+- The extractor treats a valueless `class` attribute as empty instead of stopping (#161), and the rulings fetch closes HTTP error responses before retrying (#160).
+- CodeQL runs from a repository workflow so a release can require it (#152).
+- This release contains builder source only, without a corpus or live evidence.
+
 # v0.1.7
 
 This candidate contains the corpus builder source. It excludes generated legislation and live evidence.
