@@ -32,6 +32,21 @@ class ReleaseArchiveTests(unittest.TestCase):
         self.assertNotIn("build_release_archives.py", workflow)
         self.assertNotIn("\n          git archive ", workflow)
 
+    def test_release_requires_each_check_once(self) -> None:
+        # The release policy refuses a check listed twice, but only once a tag
+        # runs it: the v0.2.0 tag stopped there after the floor change renamed
+        # the 3.10 leg to 3.11, which was already listed.
+        workflow = (ROOT / ".github" / "workflows" / "release.yml").read_text(
+            encoding="utf-8",
+        )
+        checks = []
+        for line in workflow.split("required-checks: |\n", 1)[1].splitlines():
+            if not line.startswith("        .github/workflows/"):
+                break
+            checks.append(line.strip())
+        self.assertTrue(checks)
+        self.assertEqual(len(checks), len(set(checks)), checks)
+
     def test_release_preflight_discovery_runs_without_pytest(self) -> None:
         """The policy's consumer-tests job runs `python -B -m unittest discover
         -s tests` with nothing installed beyond requirements-test.txt, which
