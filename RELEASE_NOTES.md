@@ -1,7 +1,8 @@
-# v0.2.0
+# v0.2.1
 
 This candidate contains the corpus builder source. It excludes generated legislation and live evidence.
 
+- No v0.2.0 release exists. The v0.2.0 tag (5 October 2026) stopped at the release preflight because the release workflow listed its Python 3.11 check twice; it now lists it once, and a test refuses a repeated check. 0.2.1 carries every change below.
 - Breaking: the builder and radar require Python 3.11 or later; 0.1.7 remains the last release for Python 3.10 (#162).
 - An `as_at` stage checks a compilation's point in time, each row carries its compilation window, and a literal quotation check compares quoted text with the source (#154).
 - Archive and table extraction are bounded, Register identities and timestamps are validated, and existing corpus and radar outputs survive a failed staging or promotion (#159).

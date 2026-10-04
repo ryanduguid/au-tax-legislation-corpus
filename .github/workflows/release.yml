@@ -44,7 +44,6 @@ jobs:
         .github/workflows/ci.yml: lint
         .github/workflows/ci.yml: package
         .github/workflows/ci.yml: test (ubuntu-latest, 3.11, tests)
-        .github/workflows/ci.yml: test (ubuntu-latest, 3.11, tests)
         .github/workflows/ci.yml: test (ubuntu-latest, 3.12, tests)
         .github/workflows/ci.yml: test (ubuntu-latest, 3.13, tests)
         .github/workflows/ci.yml: test (ubuntu-latest, 3.14, tests)
