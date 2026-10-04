@@ -160,7 +160,7 @@ def _iso_date(value: Any, *, field: str, nullable: bool = False) -> str | None:
     text = _non_empty(value, field=field)
     # Match before parsing: date.fromisoformat accepts the ISO basic form
     # ("20990701") and week dates ("2099-W27-1") from Python 3.11 and rejects
-    # both on the declared 3.10 floor, so delegating to it alone would let the
+    # both on 3.10, so delegating to it alone would let the
     # interpreter decide whether a stored artefact is valid.
     if DATE_PATTERN.fullmatch(text) is None:
         raise MonitorError(f"{field} must be an ISO date.")
@@ -176,8 +176,7 @@ def _parse_timestamp(text: str, *, field: str) -> datetime:
 
     datetime.fromisoformat widened its grammar in Python 3.11: the basic form
     ("20260808T000000Z"), week dates, a bare-hour offset ("+00") and a
-    lowercase "z" all parse there and raise on 3.10, which is inside this
-    package's declared requires-python range and inside its own CI matrix.
+    lowercase "z" all parse there and raise on 3.10.
     Delegating to it would make an artefact valid or invalid according to
     whichever interpreter the next reviewer happens to run. Matching
     TIMESTAMP_PATTERN first, then parsing with strptime, keeps the accepted set

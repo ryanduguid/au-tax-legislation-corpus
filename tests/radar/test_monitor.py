@@ -1295,7 +1295,7 @@ def test_a_date_alone_is_never_a_timestamp_however_it_is_qualified(value: str) -
     ],
 )
 def test_timestamp_grammar_does_not_depend_on_the_interpreter(value: str) -> None:
-    """Each of these parses on Python 3.11+ and raises on the declared 3.10 floor.
+    """Each of these parses on Python 3.11+ and raises on Python 3.10.
 
     Verified against origin/main's fromisoformat-based helper on 3.10.20 and
     3.12.10. datetime.fromisoformat decides the answer, so without an explicit
