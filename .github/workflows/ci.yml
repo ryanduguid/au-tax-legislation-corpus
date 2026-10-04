@@ -12,6 +12,10 @@ concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
 
+# CI follows Python 3.14 maintenance releases; local development pins the patch.
+env:
+  UV_PYTHON: "3.14"
+
 jobs:
   test:
     permissions:
@@ -20,11 +24,11 @@ jobs:
       fail-fast: false
       matrix:
         os: [ubuntu-latest]
-        python: ["3.11", "3.12", "3.13", "3.14"]
+        python: ["3.14"]
         tests: ["tests"]
         include:
           - os: windows-latest
-            python: "3.12"   # where path handling can diverge
+            python: "3.14"   # where path handling can diverge
             # The corpus half has never run on Windows: before the merge its
             # only CI was the ubuntu-only verify workflow. It fails 15 tests
             # there on 8.3 short paths (RUNNER~1 against runneradmin), NTFS
@@ -130,6 +134,9 @@ jobs:
     permissions:
       contents: read
     steps:
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.14"
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
