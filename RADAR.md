@@ -1,6 +1,6 @@
 # Tax Radar AU
 
-[![tests](https://github.com/ryanduguid/au-tax-legislation-corpus/actions/workflows/ci.yml/badge.svg)](https://github.com/ryanduguid/au-tax-legislation-corpus/actions/workflows/ci.yml) [![License: MIT](https://img.shields.io/badge/License-MIT-4F485E.svg?labelColor=04001F)](LICENSE) [![Python 3.10+](https://img.shields.io/badge/python-3.11%2B-5C2D91.svg?logo=python&logoColor=white&labelColor=04001F)](https://www.python.org/downloads/)
+[![tests](https://github.com/ryanduguid/au-tax-legislation-corpus/actions/workflows/ci.yml/badge.svg)](https://github.com/ryanduguid/au-tax-legislation-corpus/actions/workflows/ci.yml) [![License: MIT](https://img.shields.io/badge/License-MIT-4F485E.svg?labelColor=04001F)](LICENSE) [![Python 3.11+](https://img.shields.io/badge/python-3.11%2B-5C2D91.svg?logo=python&logoColor=white&labelColor=04001F)](https://www.python.org/downloads/)
 
 This is a provenance-first change-review queue. It does not answer tax questions and it does not update skills automatically.
 
