@@ -120,7 +120,7 @@ jobs:
       - run: uv run --locked --extra dev mypy
       # The lockfile pins 19 packages that ship in the release archive family;
       # nothing checked them against advisories until now.
-      - run: uv audit --locked
+      - run: uv audit --locked --no-config --python-version 3.14
 
   tests-gates:
     # The one context branch protection requires from this workflow. It fails

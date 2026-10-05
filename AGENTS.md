@@ -49,7 +49,7 @@ uv run --locked --extra dev pytest tests/radar tests/corpus/test_live_evidence_b
 uv run --locked --extra dev --python 3.14 python -m build
 uv run --locked --extra dev ruff check .
 uv run --locked --extra dev mypy
-uv audit --locked
+uv audit --locked --no-config --python-version 3.14
 ```
 
 ## Package build and installed-wheel smoke
