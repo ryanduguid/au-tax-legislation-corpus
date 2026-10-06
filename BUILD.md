@@ -421,6 +421,7 @@ python -m fadden finalize      # write the corpus-level index and licence files 
 python -m fadden rates         # derive the rates-and-thresholds index -> ./corpus/rates/rates.jsonl, RATES.md
 python -m fadden check_current # read-only staleness check against the Register
 python -m fadden as_at 2026-07-15 # classify each title's captured compilation against a date (docs/scope.md)
+python -m fadden compare_builds OLD_ROOT NEW_ROOT # list the sections added, removed and changed between two builds
 python -m fadden capture_register -- fadden/manifest_md.json --out build/register-capture-20260829
 python -m fadden export_live_evidence_bundles -- build/register-capture-20260829 --out build/live-evidence-20260829
 ```
