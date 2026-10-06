@@ -52,6 +52,7 @@ class FaddenCliTests(unittest.TestCase):
             "capture_register",
             "export_live_evidence_bundles",
             "as_at",
+            "compare_builds",
         ):
             with self.subTest(stage=stage), mock.patch("importlib.import_module") as importer:
                 module = mock.Mock()
@@ -89,6 +90,7 @@ class FaddenCliTests(unittest.TestCase):
                 "export_live_evidence_bundles",
                 "rulings",
                 "as_at",
+                "compare_builds",
             ),
         )
 

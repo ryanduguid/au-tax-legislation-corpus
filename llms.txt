@@ -9,11 +9,12 @@
 - **Python**: 3.11 or later. Tests run on 3.11 to 3.14 on Ubuntu, plus a Windows 3.12 leg for the supported live-evidence export boundary.
 
 ## Corpus builder (`fadden`)
-- **Stages**: `discover`, `versions`, `download`, `probe13`, `retry13`, `extract`, `pii_scan`, `pii_scan2`, `finalize`, `rates`, `check_current`, `dist`, `dist_verify`, `export_monitor_contract`, `export_publication_bundles`, `capture_register`, `export_live_evidence_bundles`, plus the separate `rulings` and `as_at` stages. `BUILD.md` documents the order and the operating boundaries.
+- **Stages**: `discover`, `versions`, `download`, `probe13`, `retry13`, `extract`, `pii_scan`, `pii_scan2`, `finalize`, `rates`, `check_current`, `dist`, `dist_verify`, `export_monitor_contract`, `export_publication_bundles`, `capture_register`, `export_live_evidence_bundles`, plus the separate `rulings`, `as_at` and `compare_builds` stages. `BUILD.md` documents the order and the operating boundaries.
 - **Deterministic output root**: no environment variable selects it. In a source checkout the generated files live under `./corpus/`; a deployed build uses the parent of the `build/` directory holding the stage modules.
 - **Privacy gates**: `pii_scan` and `pii_scan2` run before `finalize`, which refuses to run without `pii_flagged.json`. Twelve titles are disciplinary registers naming private individuals.
 - **ATO rulings (`rulings`)**: fetches up to 100 named ATO-authored Legal Database documents (rulings, determinations, practical compliance guidelines, decision impact statements and edited private advice) into paragraph JSONL with the ATO reuse notice. It never touches `./corpus/` and excludes any document that matches a personal-data pattern.
 - **As-at check (`as_at`)**: classifies each captured compilation against a date. `captured` is not a finding that the text was the law on that date.
+- **Build comparison (`compare_builds`)**: lists the sections added, removed and changed between two local builds, matched on container and section label. It compares the derived reading view, not the authorised text, and says nothing about an amendment's legal effect.
 - **Evidence contracts**: live Register capture, synthetic observations and publication candidates are distinct. A successful capture or export authorises nothing for publication.
 
 ## Review queue (`tax_radar_au`)
@@ -30,7 +31,7 @@ Seven builder stages reach the Federal Register and `rulings` reaches the ATO Le
 - `check_current` is a read-only staleness check: 946 API calls at 1.5 seconds, about half an hour.
 - `capture_register` observes every title in a manifest against the Register and retains the exact bounded HTTP 200 response bytes behind each decision. The 946-title manifest needs at least 946 requests, an enforced 1.5-second gap makes a no-retry run about 24 minutes, redirects are refused, the socket timeout is 90 seconds and each title gets at most 3 attempts. No API key is required.
 - `rulings` fetches only the named targets, one request a second, HTML only, at most 8 MiB a page, from `https://www.ato.gov.au`. There is no discovery crawl.
-- `as_at`, `extract`, `pii_scan`, `pii_scan2`, `finalize`, `rates`, `dist`, `dist_verify`, `export_monitor_contract`, `export_publication_bundles` and `export_live_evidence_bundles` make no request at all. The monitor and publication exporters project facts a caller has already collected.
+- `as_at`, `compare_builds`, `extract`, `pii_scan`, `pii_scan2`, `finalize`, `rates`, `dist`, `dist_verify`, `export_monitor_contract`, `export_publication_bundles` and `export_live_evidence_bundles` make no request at all. The monitor and publication exporters project facts a caller has already collected.
 
 ## Docs
 - [README](https://github.com/ryanduguid/au-tax-legislation-corpus/blob/main/README.md): the offline example and the 2 systems.
