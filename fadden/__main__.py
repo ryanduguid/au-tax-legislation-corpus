@@ -41,6 +41,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             "export_live_evidence_bundles",
             "rulings",
             "as_at",
+            "compare_builds",
         }:
             result = func(forwarded)
         elif args.stage == "extract" and forwarded:
