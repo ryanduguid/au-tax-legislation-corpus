@@ -1,0 +1,23 @@
+cff-version: 1.2.0
+message: "If you use this work, cite it with this metadata and the release tag or commit you used."
+title: "au-tax-legislation-corpus"
+type: software
+authors:
+  - family-names: Duguid
+    given-names: Ryan
+abstract: "Code for building a corpus of in-force Commonwealth tax legislation, with source and provenance records."
+repository-code: "https://github.com/ryanduguid/au-tax-legislation-corpus"
+license: MIT
+keywords:
+  - ai-agents
+  - australia
+  - australian-law
+  - australian-tax
+  - australian-taxation
+  - commonwealth-tax
+  - corpus
+  - legal-data
+  - legislation-corpus
+  - python
+  - rag
+  - tax-law
