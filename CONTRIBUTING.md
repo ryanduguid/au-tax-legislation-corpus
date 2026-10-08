@@ -16,7 +16,7 @@ The code here builds a corpus rather than carrying one. The pipeline downloads i
 
 ## Local verification
 
-Python 3.11 or newer, standard library only.
+Python 3.14 or newer, standard library only.
 
 ```bash
 python -m compileall -q .

@@ -26,7 +26,7 @@ jobs:
       attestations: write # Record provenance and SBOM attestations for release assets.
       contents: write # Create the draft release, upload assets and publish it.
       id-token: write # Obtain the OIDC identity required to sign attestations.
-    uses: ryanduguid/release-policy/.github/workflows/release-archive.yml@87767ec809dc7f77bcd45808219adaf67841ae7b # source-archive construction owner
+    uses: ryanduguid/release-policy/.github/workflows/release-archive.yml@f068fb4f1d8f90e07429ded7cfb85bdbcc2960fe # source-archive construction owner
     with:
       # Every mandatory check a push to main actually reports, which the policy
       # requires to have succeeded for the exact release commit before anything
@@ -43,11 +43,8 @@ jobs:
         .github/workflows/no-ai-attribution.yml: Attribution policy / Attribution policy runner
         .github/workflows/ci.yml: lint
         .github/workflows/ci.yml: package
-        .github/workflows/ci.yml: test (ubuntu-latest, 3.11, tests)
-        .github/workflows/ci.yml: test (ubuntu-latest, 3.12, tests)
-        .github/workflows/ci.yml: test (ubuntu-latest, 3.13, tests)
         .github/workflows/ci.yml: test (ubuntu-latest, 3.14, tests)
-        .github/workflows/ci.yml: test (windows-latest, 3.12, tests/radar tests/corpus/test_live_evidence_bundle_export.py)
+        .github/workflows/ci.yml: test (windows-latest, 3.14, tests/radar tests/corpus/test_live_evidence_bundle_export.py)
         .github/workflows/ci.yml: tests-gates
         .github/workflows/codeql.yml: Analyze (actions)
         .github/workflows/codeql.yml: Analyze (python)

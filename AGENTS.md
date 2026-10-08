@@ -33,8 +33,8 @@ Register captures and publication candidates as different contracts.
 
 ## CI gates
 
-`ci.yml` runs the full locked pytest suite on Ubuntu for Python 3.11-3.14, then the
-package build and the linters. Its Windows 3.12 matrix runs
+`ci.yml` runs the full locked pytest suite on Ubuntu for Python 3.14, then the
+package build and the linters. Its Windows 3.14 matrix runs
 `tests/radar` and `tests/corpus/test_live_evidence_bundle_export.py` so the supported
 live-evidence export boundary is exercised. Other corpus modules remain excluded because
 of pre-existing Windows failures around 8.3 short paths, junctions and reparse points;
@@ -49,7 +49,7 @@ uv run --locked --extra dev pytest tests/radar tests/corpus/test_live_evidence_b
 uv run --locked --extra dev --python 3.14 python -m build
 uv run --locked --extra dev ruff check .
 uv run --locked --extra dev mypy
-uv audit --locked
+uv audit --locked --no-config --python-version 3.14
 ```
 
 ## Package build and installed-wheel smoke
