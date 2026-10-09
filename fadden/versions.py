@@ -29,6 +29,42 @@ else:
 
 API = "https://api.prod.legislation.gov.au/v1"
 SCRATCH = os.path.dirname(os.path.abspath(__file__))
+VERSION_BATCH_SIZE = 8
+RESOLUTION_DELAY = 1.5
+
+
+def _versions_url(title_ids):
+    condition = " or ".join("titleId eq '%s'" % rid for rid in title_ids)
+    if len(title_ids) > 1:
+        condition = "(%s)" % condition
+    condition += " and isCurrent eq true"
+    return "%s/versions?$top=%d&$filter=%s&$select=titleId,start,compilationNumber,registerId" % (
+        API, len(title_ids) + 1 if len(title_ids) > 1 else 1, urllib.parse.quote(condition))
+
+
+def _batch_rows(payload, title_ids):
+    """Validate every row; return None when a valid group needs singleton recovery."""
+    error = "invalid version batch; refusing to write acts_resolved.json"
+    if (not isinstance(payload, dict) or not isinstance(payload.get("value"), list)
+            or "@odata.nextLink" in payload or "@nextLink" in payload
+            or len(payload["value"]) > len(title_ids) + 1):
+        raise RuntimeError(error)
+    by_id, duplicate = {}, False
+    for row in payload["value"]:
+        if not isinstance(row, dict):
+            raise RuntimeError(error)
+        rid = row.get("titleId")
+        if not isinstance(rid, str) or rid not in title_ids:
+            raise RuntimeError(error)
+        try:
+            version_rows({"value": [row]}, rid)
+            version_date(row.get("start"))
+            compilation_id(row)
+        except ValueError as cause:
+            raise RuntimeError(error) from cause
+        duplicate |= rid in by_id
+        by_id[rid] = row
+    return None if duplicate or len(by_id) != len(title_ids) else by_id
 
 
 def main():
@@ -60,38 +96,50 @@ def main():
                            "titleId eq 'C2004A05138' and isCurrent eq true")))
     print("\nprobe isCurrent filter:", json.dumps(probe.get("value") if probe else None)[:200])
     if not probe or not probe.get("value"):
-        # No fallback exists: an earlier revision advertised an "ordered scan
-        # per Act" here that was never implemented. If the isCurrent filter is
-        # unusable, every per-Act lookup below comes back empty, each title
-        # lands in `failed`, and the stage raises instead of writing a partial
-        # acts_resolved.json. The probe result is a diagnostic, not a switch.
-        print("!! isCurrent filter unusable; every per-Act lookup will fail "
-              "and this stage will refuse to write acts_resolved.json")
+        # The probe is diagnostic; resolution failures below prevent a partial manifest.
+        print("!! isCurrent filter probe returned no rows; "
+              "current-version resolution will still be attempted")
 
     resolved, failed = [], []
-    for i, t in enumerate(principal, 1):
-        rid = register_id(t["id"])
-        f = "titleId eq '%s' and isCurrent eq true" % rid
-        d = fetch_json("%s/versions?$top=1&$filter=%s&$select=titleId,start,compilationNumber,registerId"
-                       % (API, urllib.parse.quote(f)))
-        try:
-            v = version_rows(d, rid)
+    index, batching = 0, True
+    while index < len(principal):
+        group = principal[index:index + (VERSION_BATCH_SIZE if batching else 1)]
+        title_ids = [register_id(t["id"]) for t in group]
+        d = fetch_json(_versions_url(title_ids))
+        time.sleep(RESOLUTION_DELAY)
+        if len(group) > 1 and d is None:
+            # No decoded rows to admit; use the established singleton path for this run.
+            print("!! version batch unavailable; switching to single-title lookups")
+            batching = False
+            continue
+        rows_by_id = _batch_rows(d, title_ids) if len(group) > 1 else {}
+        if rows_by_id is None:
+            print("!! ambiguous version batch; retrying %d title(s) individually" % len(group))
+        for i, t in enumerate(group, index + 1):
+            rid = t["id"]
+            if rows_by_id is None:
+                payload = fetch_json(_versions_url([rid]))
+                time.sleep(RESOLUTION_DELAY)
+            else:
+                payload = {"value": [rows_by_id[rid]]} if len(group) > 1 else d
+            try:
+                v = version_rows(payload, rid)
+                if v:
+                    start = version_date(v[0].get("start"))
+                    document_id = compilation_id(v[0])
+            except ValueError:
+                v = []
             if v:
-                start = version_date(v[0].get("start"))
-                document_id = compilation_id(v[0])
-        except ValueError:
-            v = []
-        if v:
-            rec = dict(t)
-            rec["versionStart"] = start
-            rec["compilationNumber"] = v[0].get("compilationNumber")
-            rec["compilationRegisterId"] = document_id
-            resolved.append(rec)
-        else:
-            failed.append(t)
-        if i % 25 == 0:
-            print("  resolved %d/%d (failed %d)" % (i, len(principal), len(failed)))
-        time.sleep(1.5)
+                rec = dict(t)
+                rec["versionStart"] = start
+                rec["compilationNumber"] = v[0].get("compilationNumber")
+                rec["compilationRegisterId"] = document_id
+                resolved.append(rec)
+            else:
+                failed.append(t)
+            if i % 25 == 0:
+                print("  resolved %d/%d (failed %d)" % (i, len(principal), len(failed)))
+        index += len(group)
 
     print("\nresolved: %d   failed: %d" % (len(resolved), len(failed)))
     for t in failed[:10]:

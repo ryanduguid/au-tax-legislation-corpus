@@ -3474,9 +3474,10 @@ class DiscoveryLabelTests(unittest.TestCase):
                 json.dumps(self.TITLES), encoding="utf-8")
 
             def response(url):
-                title_id = urllib.parse.unquote(url).split("titleId eq '", 1)[1].split("'", 1)[0]
-                return {"value": [{"titleId": title_id, "start": "2099-01-01T00:00:00Z",
-                                   "compilationNumber": "1", "registerId": "C2099C00001"}]}
+                title_ids = re.findall(r"titleId eq '([^']+)'", urllib.parse.unquote(url))
+                return {"value": [{"titleId": rid, "start": "2099-01-01T00:00:00Z",
+                                   "compilationNumber": "1", "registerId": "C2099C00001"}
+                                  for rid in title_ids]}
 
             stdout = io.StringIO()
             with mock.patch.object(versions, "SCRATCH", str(scratch)), \
