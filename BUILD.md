@@ -215,9 +215,29 @@ https://www.legislation.gov.au/robots.txt. All 946 titles take about 2 hours
 40 minutes. It skips any EPUB already present whose sidecar `.meta.json`
 records the same version, so re-runs cost only the new titles.
 
-`discover.py` and `versions.py` hit the API roughly 1,100 times at 1.5 to 3
-second intervals, about 40 minutes combined. `extract.py`, `finalize.py` and
-`rates.py` are local: about 3 minutes for all 3 over 946 titles.
+`discover.py` waits 3 seconds after each keyword/collection query and 2 seconds
+between full pages. Its request count depends on the matching titles.
+
+`versions.py` makes one diagnostic request, then resolves up to 8 principal
+titles per request, with a 1.5-second pause after each resolution request.
+Multi-title requests ask for one extra row to detect multiple current versions;
+single-title requests retain `$top=1`. Every returned row must pass the existing
+identity, date and document checks. A valid batch with missing or duplicate titles
+is discarded and its entire group is resolved individually, then batching resumes.
+Malformed, foreign, paginated or over-limit responses fail without replacing the
+manifest. An unavailable batch switches the remainder to single-title lookups.
+
+For 946 principal titles, a run with no ambiguous groups needs 119 resolution
+requests plus the diagnostic, with 178.5 seconds of fixed pauses. Each ambiguous
+group adds one request and pause per title in that group. For example, 7 ambiguous
+groups containing 50 titles require 169 resolution requests and 253.5 seconds of
+pauses, saving 1,165.5 seconds compared with single-title resolution. If every group
+is ambiguous, the 119 batch attempts and 946 singleton retries make 1,065 resolution
+requests, costing more than serial resolution. These figures are arithmetic, not
+measured full-build times; network latency and retries add time.
+
+`extract.py`, `finalize.py` and `rates.py` are local: about 3 minutes for all 3
+over 946 titles.
 
 `check_current.py` is 946 API calls at 1.5 seconds, so allow half an hour. It
 prints a progress line every 25 titles.
