@@ -7,7 +7,7 @@ authors:
     given-names: Ryan
 abstract: "Code for building a corpus of in-force Commonwealth tax legislation, with source and provenance records."
 repository-code: "https://github.com/ryanduguid/au-tax-legislation-corpus"
-license: MIT
+license: Apache-2.0
 keywords:
   - ai-agents
   - australia
