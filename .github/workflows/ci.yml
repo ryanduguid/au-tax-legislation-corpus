@@ -145,7 +145,7 @@ jobs:
         with:
           version: "0.12.0"
           enable-cache: true
-      - run: uv run --locked --extra dev --python 3.14 python -m build
+      - run: uv run --locked --extra dev --python 3.14 python -m build  # NOSONAR: unprivileged job; uv installs the hash-locked set
       # The sample fixtures ship as package data; a wheel that cannot find
       # them reintroduces the install-root bug where a plain 'pip install'
       # produced a CLI that could never locate its own demo inputs.
@@ -188,8 +188,8 @@ jobs:
       # Both cover the whole repository: fadden is 8,402 lines that neither
       # tool used to see. Paths and packages come from pyproject, so there is
       # one list to keep in step rather than two.
-      - run: uv run --locked --extra dev ruff check .
-      - run: uv run --locked --extra dev mypy
+      - run: uv run --locked --extra dev ruff check .  # NOSONAR: unprivileged job; uv installs the hash-locked set
+      - run: uv run --locked --extra dev mypy  # NOSONAR: unprivileged job; uv installs the hash-locked set
       # The lockfile pins 19 packages that ship in the release archive family;
       # nothing checked them against advisories until now.
       - run: uv audit --locked

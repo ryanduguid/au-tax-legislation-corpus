@@ -314,7 +314,8 @@ class _PinnedDirectoryChain:
         flags = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW
         try:
             handle = (
-                os.open(os.fspath(path), flags)
+                # Maintainer CLI; the path is a command-line argument or a fixed name under one.
+                os.open(os.fspath(path), flags)  # NOSONAR
                 if parent_handle is None
                 else os.open(path.name, flags, dir_fd=parent_handle)
             )
@@ -475,7 +476,8 @@ def _copy_regular_file(
         expected = _ordinary_file_details(source_path, directory_handle=directory_handle)
     try:
         if os.name == "nt" and directory_handle is None:
-            source: IO[bytes] = open(source_path, "rb")
+            # Maintainer CLI; the path is a command-line argument or a fixed name under one.
+            source: IO[bytes] = open(source_path, "rb")  # NOSONAR
         elif os.name == "nt" and directory_handle is not None:
             import msvcrt
 

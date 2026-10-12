@@ -381,7 +381,8 @@ def _load_manifest(path: Path) -> list[dict[str, Any]]:
     if details.st_size > MAX_MANIFEST_BYTES:
         raise CaptureRegisterError("manifest exceeds the 8 MiB size limit.")
     try:
-        with open(path, "rb") as source:
+        # Maintainer CLI; the path is a command-line argument or a fixed name under one.
+        with open(path, "rb") as source:  # NOSONAR
             opened_details = os.fstat(source.fileno())
             if not _same_regular_file_identity(details, opened_details):
                 raise CaptureRegisterError("manifest changed during capture.")
@@ -1427,7 +1428,8 @@ def capture_register_run(
         # thing a concurrent writer can lose there is an empty reservation. Python
         # exposes no portable no-replace directory rename to close that window.
         try:
-            os.rename(staging, output)
+            # Maintainer CLI; the path is a command-line argument or a fixed name under one.
+            os.rename(staging, output)  # NOSONAR
         except OSError as exc:
             raise CaptureRegisterError("capture output could not be promoted.") from exc
     finally:
