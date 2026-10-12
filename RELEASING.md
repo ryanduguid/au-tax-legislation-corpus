@@ -96,7 +96,13 @@ with the signer flag.
 Releases cut after the archive-policy migration are signed by the policy's
 internal publication workflow. For the next release, update `tag` if the
 intended version changes and bind verification to the exact source and policy
-commit:
+commit. The commands use the current policy pin, `a601f1d`. Earlier releases
+verify with the digest their release workflow pinned: `v0.1.5` and `v0.1.6`
+with `99a6314ca2cd4ea21b465614b73d108fd8fe2077`, and `v0.1.7` to `v0.2.1` with
+`87767ec809dc7f77bcd45808219adaf67841ae7b`. Releases from `a601f1d` also carry
+the signed provenance bundle
+`au-tax-legislation-corpus-builder-<version>.intoto.jsonl`, which the loop skips
+because it holds the attestation itself:
 
 ```bash
 tag=v0.2.1
@@ -110,18 +116,19 @@ rm -rf "verify-$tag" && mkdir "verify-$tag"
 gh release download "$tag" -R "$repo" -D "verify-$tag"
 cd "verify-$tag"
 for file in *; do
+  case "$file" in *.intoto.jsonl) continue ;; esac
   gh attestation verify "$file" -R "$repo" \
     --source-digest "$release_commit" \
     --source-ref "refs/tags/$tag" \
     --signer-workflow ryanduguid/release-policy/.github/workflows/publish-archives.yml \
-    --signer-digest 99a6314ca2cd4ea21b465614b73d108fd8fe2077
+    --signer-digest a601f1d8b143f92b0517f709216993660d21f480
 done
 gh attestation verify "au-tax-legislation-corpus-builder-${tag#v}.zip" -R "$repo" \
   --predicate-type https://spdx.dev/Document/v2.3 \
   --source-digest "$release_commit" \
   --source-ref "refs/tags/$tag" \
   --signer-workflow ryanduguid/release-policy/.github/workflows/publish-archives.yml \
-  --signer-digest 99a6314ca2cd4ea21b465614b73d108fd8fe2077
+  --signer-digest a601f1d8b143f92b0517f709216993660d21f480
 ```
 
 ## Preserved squash-boundary release

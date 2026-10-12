@@ -26,7 +26,7 @@ jobs:
       attestations: write # Record provenance and SBOM attestations for release assets.
       contents: write # Create the draft release, upload assets and publish it.
       id-token: write # Obtain the OIDC identity required to sign attestations.
-    uses: ryanduguid/release-policy/.github/workflows/release-archive.yml@87767ec809dc7f77bcd45808219adaf67841ae7b # source-archive construction owner
+    uses: ryanduguid/release-policy/.github/workflows/release-archive.yml@a601f1d8b143f92b0517f709216993660d21f480 # source-archive construction owner
     with:
       # Every mandatory check a push to main actually reports, which the policy
       # requires to have succeeded for the exact release commit before anything
