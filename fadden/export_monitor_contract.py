@@ -467,10 +467,12 @@ class _OutputDirectoryLock:
             try:
                 os.write(descriptor, token)
             except BaseException:
+                # Close before removing: Windows refuses to delete an open file,
+                # which left the lock behind and replaced the write error.
+                os.close(descriptor)
                 _remove(self.path)
                 raise
-            finally:
-                os.close(descriptor)
+            os.close(descriptor)
             self._token = token
             return self
 
@@ -514,7 +516,9 @@ def _publish(staged: dict[str, Path], destinations: dict[str, Path]) -> None:
                 for name, previous in reversed(list(backups.items())):
                     try:
                         if previous is None:
-                            if name in promoted:
+                            # An absent destination joins promoted in the same step
+                            # that records its empty backup.
+                            if name in promoted:  # pragma: no branch
                                 _remove(destinations[name])
                         elif previous.exists():
                             os.replace(previous, destinations[name])

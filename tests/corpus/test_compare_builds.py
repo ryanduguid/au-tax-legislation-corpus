@@ -148,6 +148,37 @@ class CompareBuildsTests(unittest.TestCase):
         (self.new / "markdown" / INSTRUMENT).mkdir()
         self.assertEqual(compare_builds.titles(str(self.new)), {ACT})
 
+    def test_blank_lines_between_rows_are_skipped(self) -> None:
+        directory = self.old / "markdown" / ACT
+        directory.mkdir(parents=True)
+        (directory / "sections.jsonl").write_text(
+            "\n" + json.dumps(row(ACT, 1, "1", "one")) + "\n  \n", encoding="utf-8")
+        self.assertEqual([r["text"] for r in compare_builds.load_rows(str(self.old), ACT)], ["one"])
+
+    def test_an_empty_title_has_no_compilation(self) -> None:
+        report = compare_builds.compare_title([], [row(ACT, 1, "1", "one")])
+        self.assertIsNone(report["old_compilation"])
+        self.assertEqual([p["section"] for p in report["added"]], ["1"])
+
+    def test_text_report_lists_added_and_removed_sections_and_skips_unchanged_titles(self) -> None:
+        write_build(self.old, {ACT: [row(ACT, 1, "1", "one"), row(ACT, 2, "2", "gone")],
+                               INSTRUMENT: [row(INSTRUMENT, 1, "1", "same")]})
+        write_build(self.new, {ACT: [row(ACT, 1, "1", "one"),
+                                     row(ACT, 2, None, "new", heading="Table", container="Part 2")],
+                               INSTRUMENT: [row(INSTRUMENT, 1, "1", "same")]})
+        code, out, err = self.run_main()
+        self.assertEqual((code, err), (0, ""))
+        self.assertIn("  added: Part 2, Table", out)
+        self.assertIn("  removed: s 2", out)
+        self.assertNotIn(f"{INSTRUMENT}:", out)
+        self.assertIn("2 titles compared, 1 with section changes;", out)
+
+    def test_the_script_layout_imports_its_sibling_helpers(self) -> None:
+        from tests.corpus.test_regressions import STAGE, load_module
+
+        script = load_module("compare_builds_script_layout", STAGE / "compare_builds.py")
+        self.assertEqual(script.register_id.__module__, "corpus_paths")
+
 
 if __name__ == "__main__":
     unittest.main()

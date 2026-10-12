@@ -277,7 +277,8 @@ class _HttpsRegisterSession:
                 body=body,
                 attempts=attempt,
             )
-        raise AssertionError("bounded Register attempt loop did not return")
+        # The final attempt always returns, so the loop never runs out.
+        raise AssertionError("bounded Register attempt loop did not return")  # pragma: no cover
 
 
 def _json_bytes(value: Any) -> bytes:
@@ -553,7 +554,8 @@ def _start_date(value: Any) -> str:
     text = _version_timestamp(value, "Register version start")
     try:
         parsed = _instant_for_validation(text)
-    except ValueError as exc:
+    # _version_timestamp above already parsed the same text successfully.
+    except ValueError as exc:  # pragma: no cover
         raise CaptureRegisterError("Register version start is invalid.") from exc
     return parsed.date().isoformat()
 
@@ -1072,7 +1074,8 @@ def _validate_staged_graph_inner(staging: Path) -> None:
         ):
             raise CaptureRegisterError("staged capture request roles are invalid")
         for request in requests:
-            if not isinstance(request, dict):
+            # The role check above already refused any request that is not an object.
+            if not isinstance(request, dict):  # pragma: no cover
                 raise CaptureRegisterError("staged capture request is invalid")
             _require_exact_fields(request, request_fields)
             role = request["role"]
@@ -1133,7 +1136,8 @@ def _validate_staged_graph_inner(staging: Path) -> None:
         raise CaptureRegisterError("staged capture evidence inventory is invalid")
     for path in evidence_files:
         match = EVIDENCE_NAME.fullmatch(path.name)
-        if match is None:
+        # The inventory check above admits only names built from declared digests.
+        if match is None:  # pragma: no cover
             raise CaptureRegisterError("staged capture evidence filename is invalid")
         content = _read_staged_file(path)
         digest, expected_length = declared_evidence[f"evidence/{path.name}"]

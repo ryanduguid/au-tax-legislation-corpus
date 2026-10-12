@@ -89,7 +89,8 @@ def main():
         if v is None:
             errors.append(a)
         elif v and v[0].get("titleId") not in (None, a["register_id"]):
-            errors.append(a)
+            # version_rows above already refuses a row for another title.
+            errors.append(a)  # pragma: no cover
         elif not v:
             # Distinguish sunset or repealed from a failed lookup.
             any_v = versions("titleId eq '%s'" % rid, rid)

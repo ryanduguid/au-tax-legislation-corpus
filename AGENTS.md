@@ -48,6 +48,7 @@ uv run --locked --extra dev pytest tests
 uv run --locked --extra dev pytest tests/radar tests/corpus/test_live_evidence_bundle_export.py
 uv run --locked --extra dev coverage run --branch --source=tax_radar_au,fadden -m pytest tests
 uv run --locked --extra dev coverage xml -o coverage-codecov.xml
+uv run --locked --extra dev coverage report
 uv run --locked --extra dev --python 3.14 python -m build
 uv run --locked --extra dev ruff check .
 uv run --locked --extra dev mypy

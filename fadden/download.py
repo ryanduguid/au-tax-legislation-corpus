@@ -377,7 +377,8 @@ def fetch(url, dst, tries=3):
                 m = decode_envelope(part)
                 if m and m.get("_invalid"):
                     invalid_envelope = True
-                elif m:
+                # decode_envelope returns a non-empty dict whenever it is not invalid.
+                elif m:  # pragma: no branch
                     meta = m
             if not invalid_envelope and valid_zip(part):
                 size = os.path.getsize(part)
