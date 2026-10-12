@@ -1,6 +1,7 @@
 # au-tax-legislation-corpus: trace a change to its source
 
 [![tests](https://github.com/ryanduguid/au-tax-legislation-corpus/actions/workflows/ci.yml/badge.svg)](https://github.com/ryanduguid/au-tax-legislation-corpus/actions/workflows/ci.yml)
+[![Codecov](https://codecov.io/gh/ryanduguid/au-tax-legislation-corpus/graph/badge.svg)](https://codecov.io/gh/ryanduguid/au-tax-legislation-corpus)
 [![Snyk](https://github.com/ryanduguid/au-tax-legislation-corpus/actions/workflows/snyk.yml/badge.svg?branch=main)](https://github.com/ryanduguid/au-tax-legislation-corpus/actions/workflows/snyk.yml)
 [![release](https://img.shields.io/github/v/release/ryanduguid/au-tax-legislation-corpus?color=5C2D91&labelColor=04001F)](https://github.com/ryanduguid/au-tax-legislation-corpus/releases/latest)
 [![licence: MIT](https://img.shields.io/badge/licence-MIT-5C2D91.svg?labelColor=04001F)](LICENSE)
