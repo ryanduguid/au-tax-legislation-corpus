@@ -4,6 +4,7 @@
 [![release](https://img.shields.io/github/v/release/ryanduguid/au-tax-legislation-corpus?color=5C2D91&labelColor=04001F)](https://github.com/ryanduguid/au-tax-legislation-corpus/releases/latest)
 [![licence: MIT](https://img.shields.io/badge/licence-MIT-5C2D91.svg?labelColor=04001F)](LICENSE)
 [![Codacy code quality](https://app.codacy.com/project/badge/Grade/a474c8d33a4a4bd6bd97993f5c4113bd?branch=main)](https://app.codacy.com/gh/ryanduguid/au-tax-legislation-corpus/dashboard)
+[![SonarCloud](https://img.shields.io/sonar/quality_gate/ryanduguid_au-tax-legislation-corpus?server=https%3A%2F%2Fsonarcloud.io&label=SonarCloud&labelColor=000000)](https://sonarcloud.io/summary/new_code?id=ryanduguid_au-tax-legislation-corpus)
 ![python: 3.11+](https://img.shields.io/badge/python-3.11%2B-5C2D91.svg?labelColor=04001F)
 
 Synthetic example. This is a finding aid derived from the Register's EPUB reading view, not authorised legislation, tax advice or a conclusion about legal effect.
