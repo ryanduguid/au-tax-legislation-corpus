@@ -284,30 +284,30 @@ class OwnedStagingBoundaryTests(_TemporaryRoot):
                     staging_details=details,
                 )
 
+    def close_with_failures(self, failing: tuple[str, ...], message: str) -> list[str]:
+        attempts: list[str] = []
+
+        def close_handle(_handle: int, label: str) -> None:
+            attempts.append(label)
+            if label in failing:
+                raise LiveEvidenceBundleError(f"{label} cleanup failed.")
+
+        details = os.lstat(self.root)
+        owned = export_module._OwnedStaging(self.root, self.root, _PREFIX, details, details, 1, 2, {})
+        with mock.patch.object(export_module, "_close_windows_handle", side_effect=close_handle):
+            with self.assertRaisesRegex(LiveEvidenceBundleError, message):
+                owned.close()
+        return attempts
+
     def test_close_tries_both_handles_and_reports_staging_first(self) -> None:
-        both = ["live evidence staging", "live evidence output parent"]
+        both = ("live evidence staging", "live evidence output parent")
         for failing, message in (
             (both[:1], "^live evidence staging cleanup"),
             (both[1:], "^live evidence output parent cleanup"),
             (both, "^live evidence staging cleanup"),
         ):
-            attempts: list[str] = []
-
-            def close_handle(_handle: int, label: str, failing: list[str] = failing) -> None:
-                attempts.append(label)
-                if label in failing:
-                    raise LiveEvidenceBundleError(f"{label} cleanup failed.")
-
-            details = os.lstat(self.root)
-            owned = export_module._OwnedStaging(
-                self.root, self.root, _PREFIX, details, details, 1, 2, {}
-            )
-            with self.subTest(failing=failing), mock.patch.object(
-                export_module, "_close_windows_handle", side_effect=close_handle
-            ):
-                with self.assertRaisesRegex(LiveEvidenceBundleError, message):
-                    owned.close()
-                self.assertEqual(attempts, both)
+            with self.subTest(failing=failing):
+                self.assertEqual(self.close_with_failures(failing, message), list(both))
 
     def test_cleanup_refuses_staging_outside_the_boundary(self) -> None:
         outside = self.directory("elsewhere") / f"{_PREFIX}x.tmp"
