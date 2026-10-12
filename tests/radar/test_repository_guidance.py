@@ -93,7 +93,9 @@ def _workflow_run_gates(workflow: str) -> list[tuple[bool, str]]:
         value = match.group(1)
         block = re.fullmatch(r"(?P<style>[|>])[+-]?", value)
         if block is None:
-            gates.append((False, value))
+            # A space before # starts a YAML comment in a plain scalar, such as
+            # a NOSONAR justification; it is not part of the command.
+            gates.append((False, re.sub(r"\s+#.*$", "", value)))
             index += 1
             continue
 
@@ -340,6 +342,7 @@ def test_workflow_parser_detects_new_non_python_and_multiline_run_gates() -> Non
     workflow = """\
 steps:
   - run: pwsh -File scripts/check-policy.ps1
+  - run: uv run --locked pytest tests  # NOSONAR: justification
   - run: |
       npm ci
       npm test
@@ -350,6 +353,7 @@ steps:
 
     assert _workflow_run_gates(workflow) == [
         (False, "pwsh -File scripts/check-policy.ps1"),
+        (False, "uv run --locked pytest tests"),
         (True, "npm ci\nnpm test"),
         (True, "cargo fmt --check && cargo test"),
     ]
