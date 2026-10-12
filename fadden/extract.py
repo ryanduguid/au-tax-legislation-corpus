@@ -332,8 +332,9 @@ class Doc(HTMLParser):
             if self._group != tag or self._in_row:
                 raise ValueError("table row group is unbalanced")
             self._finish_group()
-        elif tag == "table":
-            if not self._tables or self._in_row or self._group not in (None, "implicit"):
+        elif tag == "table" and self._tables:
+            # A stray closing tag outside every table holds no cells to shift.
+            if self._in_row or self._group not in (None, "implicit"):
                 raise ValueError("table is unbalanced")
             self._finish_group()
             exp = [r for r in self._table if any(c.strip() for c in r)]
@@ -348,16 +349,12 @@ class Doc(HTMLParser):
             nested = bool(self._tables and self._tables[-1][5])
             if rows and not nested:
                 self.blocks.append({"k": "table", "rows": rows})
-            if self._tables:
-                (self._table, self._table_raw, self._row, self._row_raw,
-                 self._cell, self._in_td, self._buf,
-                 self._colspan, self._rowspan, self._spans,
-                 self._group, self._in_row) = self._tables.pop()
-                if rows and nested:
-                    self._cell.append("<br>".join(md_table(rows)))
-            else:
-                self._table = []
-                self._table_raw = []
+            (self._table, self._table_raw, self._row, self._row_raw,
+             self._cell, self._in_td, self._buf,
+             self._colspan, self._rowspan, self._spans,
+             self._group, self._in_row) = self._tables.pop()
+            if rows and nested:
+                self._cell.append("<br>".join(md_table(rows)))
 
     def _charge_cells(self, count):
         if count > MAX_TABLE_CELLS - self._expanded_cells:
