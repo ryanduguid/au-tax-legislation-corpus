@@ -34,9 +34,12 @@ Register captures and publication candidates as different contracts.
 ## CI gates
 
 `ci.yml` runs the full locked pytest suite on Ubuntu for Python 3.11-3.15, then the
-package build and the linters. Its Windows 3.12 matrix runs
-`tests/radar` and `tests/corpus/test_live_evidence_bundle_export.py` so the supported
-live-evidence export boundary is exercised. Other corpus modules remain excluded because
+package build and the linters. Its Windows 3.12 matrix runs `tests/radar`,
+`tests/corpus/test_live_evidence_bundle_export.py` and
+`tests/corpus/test_live_evidence_publication_paths.py` under branch coverage so the
+supported live-evidence export boundary is exercised. Codecov merges that report with the
+Ubuntu 3.13 report. Only the Ubuntu report is held to the `fail_under` floor, because the
+Windows leg runs a subset. Other corpus modules remain excluded because
 of pre-existing Windows failures around 8.3 short paths, junctions and reparse points;
 do not describe a local Windows full-suite failure in those paths as a radar regression
 without proving it.
@@ -45,10 +48,12 @@ The fenced list records the unique single-line commands. The multiline package-s
 is explained and matched semantically below without duplicating its shell body.
 ```bash
 uv run --locked --extra dev pytest tests
-uv run --locked --extra dev pytest tests/radar tests/corpus/test_live_evidence_bundle_export.py
+uv run --locked --extra dev pytest tests/radar tests/corpus/test_live_evidence_bundle_export.py tests/corpus/test_live_evidence_publication_paths.py
 uv run --locked --extra dev coverage run --branch --source=tax_radar_au,fadden -m pytest tests
 uv run --locked --extra dev coverage xml -o coverage-codecov.xml
 uv run --locked --extra dev coverage report
+uv run --locked --extra dev coverage run --branch --source=tax_radar_au,fadden -m pytest tests/radar tests/corpus/test_live_evidence_bundle_export.py tests/corpus/test_live_evidence_publication_paths.py
+uv run --locked --extra dev coverage xml --fail-under=0 -o coverage-windows.xml
 uv run --locked --extra dev --python 3.14 python -m build
 uv run --locked --extra dev ruff check .
 uv run --locked --extra dev mypy

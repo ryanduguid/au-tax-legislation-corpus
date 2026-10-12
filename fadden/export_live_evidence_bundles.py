@@ -1333,7 +1333,8 @@ def _publish_candidates(
         except OSError as exc:
             raise LiveEvidenceBundleError("live evidence output could not be promoted.") from exc
     finally:
-        if owned is not None:
+        # A normal exit always pinned the staging; only an exception leaves owned None.
+        if owned is not None:  # pragma: no branch
             try:
                 _cleanup_owned_staging(owned)
             finally:
