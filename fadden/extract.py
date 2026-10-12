@@ -312,8 +312,10 @@ class Doc(HTMLParser):
                 raise ValueError("table row is unbalanced")
             width = max(len(self._row), max(self._spans, default=-1) + 1)
             growth = width - len(self._row)
-            self._check_buffer_growth(growth)
-            self._buffered_cells += growth
+            # Even an empty source row retains two lists until table closure.
+            allocation = max(1, width) - len(self._row)
+            self._check_buffer_growth(allocation)
+            self._buffered_cells += allocation
             self._row.extend([""] * growth)
             self._table.append(list(self._row))
             self._table_raw.append(list(self._row_raw))
