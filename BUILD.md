@@ -389,10 +389,10 @@ and rate metadata are escaped as literal Markdown.
   volume's own first block, which is the compilation cover page that every
   markdown file and every JSONL row states was omitted. `Header` and `Footer`
   are skipped classes but not boundaries: Word repeats the running header above
-  the cover page. A volume showing neither boundary keeps the gate shut and is
-  dropped as it was before, which is the older documented loss in preference to
-  publishing a cover page under a notice saying it was removed; all 11
-  heading-less volumes across the 946 EPUBs open at a contents page. And leave
+  the cover page. In the normal pass, a volume with non-skipped content and no
+  identifiable boundary fails extraction when the document has mapped headings.
+  Empty and skipped-only volumes are exempt from that refusal. In the documented
+  946-EPUB inventory, all 11 heading-less volumes open at a contents page. Leave
   the bare-text endnote trigger armed only once a mapped heading has been seen.
   The cover page lists 'Endnotes' as one of the volumes, so arming it at the
   top of a heading-less volume routes that volume's whole body into
