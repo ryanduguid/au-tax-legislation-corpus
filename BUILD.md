@@ -264,9 +264,15 @@ and ZIP64 directories are refused. Stored and deflated members are decoded
 in bounded chunks. Their actual length, CRC and stream end must match the
 directory record, so a forged size cannot bypass the limits. Other compression
 methods and encrypted members are refused. Table spans above 1,024 columns, rows
-above 4,096 columns and EPUBs above 1,000,000 expanded or padded cells fail
-extraction. The extractor rejects these inputs rather than changing their
-column alignment. Front matter uses typed, quoted scalar values; corpus index
+above 4,096 columns and EPUBs above 1,000,000 expanded, buffered or padded cells fail
+extraction. Rows with no logical cells consume one buffered allocation unit without adding
+output cells. Table nesting is limited to 64 open tables, including the root;
+depth 65 fails before another table frame is allocated. This is a provisional
+resource limit. Real Register template depth and total peak memory remain unverified.
+An over-depth title follows the existing parse-failure path: later titles proceed,
+the stage exits nonzero and the prior Markdown manifest is preserved.
+The extractor rejects these inputs without changing their column alignment.
+Front matter uses typed, quoted scalar values; corpus index
 and rate metadata are escaped as literal Markdown.
 
 - **`curl` does not truncate `-o` on transport failure.** A shared temp file
@@ -383,10 +389,10 @@ and rate metadata are escaped as literal Markdown.
   volume's own first block, which is the compilation cover page that every
   markdown file and every JSONL row states was omitted. `Header` and `Footer`
   are skipped classes but not boundaries: Word repeats the running header above
-  the cover page. A volume showing neither boundary keeps the gate shut and is
-  dropped as it was before, which is the older documented loss in preference to
-  publishing a cover page under a notice saying it was removed; all 11
-  heading-less volumes across the 946 EPUBs open at a contents page. And leave
+  the cover page. In the normal pass, a volume with non-skipped content and no
+  identifiable boundary fails extraction when the document has mapped headings.
+  Empty and skipped-only volumes are exempt from that refusal. In the documented
+  946-EPUB inventory, all 11 heading-less volumes open at a contents page. Leave
   the bare-text endnote trigger armed only once a mapped heading has been seen.
   The cover page lists 'Endnotes' as one of the volumes, so arming it at the
   top of a heading-less volume routes that volume's whole body into
