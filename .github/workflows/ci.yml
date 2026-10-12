@@ -56,12 +56,12 @@ jobs:
           UV_PYTHON: ${{ matrix.python }}
       - name: run tests with whole-package branch coverage
         if: matrix.os == 'ubuntu-latest' && matrix.python == '3.13'
-        run: uv run --locked --extra dev coverage run --branch --source=tax_radar_au,fadden -m pytest tests
+        run: uv run --locked --extra dev coverage run --branch --source=tax_radar_au,fadden -m pytest tests  # NOSONAR: the environment is synced from uv.lock, whose dependencies install from wheels
         env:
           UV_PYTHON: ${{ matrix.python }}
       - name: write whole-package coverage for Codecov
         if: matrix.os == 'ubuntu-latest' && matrix.python == '3.13'
-        run: uv run --locked --extra dev coverage xml -o coverage-codecov.xml
+        run: uv run --locked --extra dev coverage xml -o coverage-codecov.xml  # NOSONAR: the environment is synced from uv.lock, whose dependencies install from wheels
         env:
           UV_PYTHON: ${{ matrix.python }}
       - name: keep the coverage report for the Codecov upload
