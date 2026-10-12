@@ -144,7 +144,8 @@ def main(argv: Sequence[str] | None = None) -> int:
     if on is None or on.isoformat() != args.date:
         parser.error(f"date must be YYYY-MM-DD, not {args.date!r}")
     try:
-        with open(args.manifest, encoding="utf-8") as f:
+        # Maintainer CLI; the path is a command-line argument or a fixed name under one.
+        with open(args.manifest, encoding="utf-8") as f:  # NOSONAR
             titles = json.load(f)
         rows = [(title, classify(title, on)) for title in titles]
     except (OSError, ValueError, TypeError, AttributeError) as error:
