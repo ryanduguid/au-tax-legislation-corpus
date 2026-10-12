@@ -324,7 +324,7 @@ class ExtractPipelineTests(unittest.TestCase):
             manifest = json.loads(path.read_text(encoding="utf-8"))
             missing = dict(manifest[0], id="F2025L00280", epub="F2025L00280.epub")
             path.write_text(json.dumps([missing, *manifest]), encoding="utf-8")
-            extract = load_module("extract_missing_epub", build / "extract.py")
+            extract = self._load("extract_missing_epub", build)
             output = io.StringIO()
             with contextlib.redirect_stdout(output):
                 with self.assertRaisesRegex(RuntimeError, "refusing to write manifest_md"):
@@ -352,9 +352,15 @@ class ExtractPipelineTests(unittest.TestCase):
         (build / "manifest_raw.json").write_text(json.dumps(manifest), encoding="utf-8")
         return build, epub
 
+    @staticmethod
+    def _load(name, build):
+        """Run the checkout's source, measured by coverage, as if deployed in build/."""
+        extract = load_module(name, STAGE / "extract.py")
+        extract.__file__ = str(build / "extract.py")
+        return extract
+
     def _run(self, build, retrieved):
-        extract = load_module("extract_pipeline_%s" % (retrieved or "mtime"),
-                              build / "extract.py")
+        extract = self._load("extract_pipeline_%s" % (retrieved or "mtime"), build)
         with contextlib.redirect_stdout(io.StringIO()):
             extract.main(retrieved)
 
@@ -426,7 +432,7 @@ class ExtractPipelineTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             tmp_path = Path(tmp)
             build, _epub = self._fixture(tmp_path)
-            extract = load_module("extract_bad_date", build / "extract.py")
+            extract = self._load("extract_bad_date", build)
             with contextlib.redirect_stdout(io.StringIO()):
                 with self.assertRaises(ValueError):
                     extract.main("--help")
@@ -3281,7 +3287,7 @@ class RateExportContractTests(unittest.TestCase):
         "text": "The example tax rate is 10% of the base amount.",
     }
 
-    def export(self, rows, unlisted=()):
+    def export(self, rows, unlisted=(), trailing=""):
         """Run the exporter over fabricated sections and return its outputs."""
         rates = load_module("rates_export_regression", STAGE / "rates.py")
         with tempfile.TemporaryDirectory() as temporary:
@@ -3293,7 +3299,8 @@ class RateExportContractTests(unittest.TestCase):
                 folder = root / "markdown" / register_id
                 folder.mkdir(parents=True)
                 (folder / "sections.jsonl").write_text(
-                    "".join(json.dumps(row) + "\n" for row in group), encoding="utf-8")
+                    "".join(json.dumps(row) + "\n" for row in group) + trailing,
+                    encoding="utf-8")
             (root / "sources.json").write_text(json.dumps(
                 {"titles": [{"register_id": rid} for rid in grouped]}), encoding="utf-8")
             for register_id in unlisted:
@@ -3363,6 +3370,45 @@ class RateExportContractTests(unittest.TestCase):
         self.assertEqual(moved, "R00002")
         self.assertIn("ordinal within this snapshot, not a persistent", markdown)
         self.assertIn("cite the register id, section and snapshot", markdown)
+
+    TABLE = "| Band | Rate |\n|---|---|\n| $0 to $18,200 | 0% |"
+
+    def test_tables_long_sections_and_blank_lines_reach_the_index(self):
+        tables = [dict(self.ROW, section=str(n), heading="Income tax rates",
+                       text="Rates for the year.\n%s\nBelow the table." % self.TABLE)
+                  for n in range(41)]
+        provisions = [dict(self.ROW, section="P%d" % n, act="Income Tax Rates Act",
+                           text="The income tax rate is %d%% of the base amount." % (n % 99))
+                      for n in range(121)]
+        instrument = dict(self.ROW, register_id="F2099L00001", collection="LegislativeInstrument",
+                          heading="Instrument rates", text=self.TABLE)
+        records, markdown = self.export(tables + provisions + [instrument], trailing="\n")
+
+        self.assertEqual(len([r for r in records if r["kind"] == "table"]), 42)
+        self.assertEqual(len([r for r in records if r["topic"] == "income tax rates"
+                              and r["kind"] == "table"]), 41)
+        self.assertIn("### Rate tables", markdown)
+        self.assertIn("_1 further tables in rates.jsonl._", markdown)
+        self.assertIn("_1 further provisions in rates.jsonl._", markdown)
+        self.assertIn("**Zulu Tax Example Act** _(instrument)_ s 1: Instrument rates", markdown)
+
+    def test_sentences_without_a_qualifying_number_are_skipped(self):
+        records, _ = self.export([dict(self.ROW, text=(
+            "The example tax rate is 10% of the base amount\n\n\n"
+            "Short one\n\nNothing numeric is said in this sentence at all.\n"
+            "| $1 |\n| 2% |\n\n"
+            "Pay $100 to the person named in the notice."))])
+        self.assertEqual([r["content"] for r in records],
+                         ["The example tax rate is 10% of the base amount"])
+
+    def test_scanner_edges(self):
+        rates = load_module("rates_scanner_edges", STAGE / "rates.py")
+        self.assertEqual(rates.money_values("$ abc and $5"), ["$5"])
+        self.assertTrue(rates.is_ownership_test("It must pass the continuity of ownership test."))
+        self.assertEqual(rates.topic_for("A New Tax System (Goods and Services Tax) Act 1999",
+                                         "Taxable supplies"), "gst and indirect")
+        self.assertEqual(list(rates.table_blocks("| a |\ntext\n| b |\n| c |")),
+                         [["| a |"], ["| b |", "| c |"]])
 
 
 class CheckCurrentStatusTests(unittest.TestCase):

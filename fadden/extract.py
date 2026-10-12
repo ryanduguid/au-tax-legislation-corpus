@@ -697,7 +697,7 @@ def to_markdown(blocks, meta, force_bare=False):
                 continue
             if not re.match(r'^TOC\d', (b["cls"].split() or [""])[0], re.I):
                 continue
-            t = re.sub(r'\s*\.{2,}\s*\d*$', '', " ".join(b["text"].split())).strip()
+            t = re.sub(r'(?<!\.)\s*\.{2,}+\s*\d*$', ''," ".join(b["text"].split())).strip()
             if 2 < len(t) < 120:
                 toc_titles.add(t.lower())
 

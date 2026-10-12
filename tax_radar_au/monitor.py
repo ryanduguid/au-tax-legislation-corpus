@@ -988,7 +988,8 @@ def validate_review(*, queue_path: Path, decision_path: Path) -> dict[str, Any]:
     observed_value = _parse_timestamp(observed_at, field="impact queue observed_at")
     try:
         review_predates_observation = reviewed_value < observed_value
-    except TypeError as exc:
+    # _iso_timestamp has already refused both values without a UTC offset.
+    except TypeError as exc:  # pragma: no cover
         raise MonitorError(
             "Review and observation timestamps must use compatible timezone qualifiers."
         ) from exc

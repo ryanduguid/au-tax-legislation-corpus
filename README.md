@@ -1,10 +1,16 @@
 # au-tax-legislation-corpus: trace a change to its source
 
-[![tests](https://github.com/ryanduguid/au-tax-legislation-corpus/actions/workflows/ci.yml/badge.svg)](https://github.com/ryanduguid/au-tax-legislation-corpus/actions/workflows/ci.yml)
-[![release](https://img.shields.io/github/v/release/ryanduguid/au-tax-legislation-corpus?color=5C2D91&labelColor=04001F)](https://github.com/ryanduguid/au-tax-legislation-corpus/releases/latest)
-[![licence: MIT](https://img.shields.io/badge/licence-MIT-5C2D91.svg?labelColor=04001F)](LICENSE)
-[![Codacy code quality](https://app.codacy.com/project/badge/Grade/a474c8d33a4a4bd6bd97993f5c4113bd?branch=main)](https://app.codacy.com/gh/ryanduguid/au-tax-legislation-corpus/dashboard)
-![python: 3.11+](https://img.shields.io/badge/python-3.11%2B-5C2D91.svg?labelColor=04001F)
+[![tests](https://img.shields.io/github/actions/workflow/status/ryanduguid/au-tax-legislation-corpus/ci.yml?branch=main&label=tests&labelColor=000000&style=flat-square)](https://github.com/ryanduguid/au-tax-legislation-corpus/actions/workflows/ci.yml)
+[![Codecov](https://img.shields.io/codecov/c/github/ryanduguid/au-tax-legislation-corpus?label=coverage&labelColor=000000&style=flat-square)](https://codecov.io/gh/ryanduguid/au-tax-legislation-corpus)
+[![Snyk](https://img.shields.io/github/actions/workflow/status/ryanduguid/au-tax-legislation-corpus/snyk.yml?branch=main&label=Snyk&labelColor=000000&style=flat-square)](https://github.com/ryanduguid/au-tax-legislation-corpus/actions/workflows/snyk.yml)
+[![SonarCloud](https://img.shields.io/sonar/quality_gate/ryanduguid_au-tax-legislation-corpus?server=https%3A%2F%2Fsonarcloud.io&label=SonarCloud&labelColor=000000&style=flat-square)](https://sonarcloud.io/summary/new_code?id=ryanduguid_au-tax-legislation-corpus)
+[![Codacy code quality](https://img.shields.io/codacy/grade/a474c8d33a4a4bd6bd97993f5c4113bd?label=Codacy&labelColor=000000&style=flat-square)](https://app.codacy.com/gh/ryanduguid/au-tax-legislation-corpus/dashboard)<br>
+[![OpenSSF Scorecard](https://img.shields.io/ossf-scorecard/github.com/ryanduguid/au-tax-legislation-corpus?label=Scorecard&labelColor=000000&style=flat-square)](https://scorecard.dev/viewer/?uri=github.com/ryanduguid/au-tax-legislation-corpus)
+[![SLSA 3](https://img.shields.io/badge/SLSA-level%203-990024?labelColor=000000&style=flat-square)](https://github.com/ryanduguid/au-tax-legislation-corpus/attestations)
+[![VirusTotal](https://img.shields.io/badge/VirusTotal-scanned-990024?labelColor=000000&style=flat-square&logo=virustotal&logoColor=FFFFF0)](https://github.com/ryanduguid/au-tax-legislation-corpus/releases/latest)<br>
+[![release](https://img.shields.io/github/v/release/ryanduguid/au-tax-legislation-corpus?color=66023C&labelColor=000000&style=flat-square)](https://github.com/ryanduguid/au-tax-legislation-corpus/releases/latest)
+![python: 3.11+](https://img.shields.io/badge/python-3.11%2B-66023C?labelColor=000000&style=flat-square)
+[![licence: Apache-2.0](https://img.shields.io/badge/licence-Apache--2.0-66023C?labelColor=000000&style=flat-square)](LICENSE)
 
 Synthetic example. This is a finding aid derived from the Register's EPUB reading view, not authorised legislation, tax advice or a conclusion about legal effect.
 
@@ -60,6 +66,6 @@ Live Register capture, synthetic observations and publication candidates have di
 
 The primary source is the [Federal Register of Legislation](https://www.legislation.gov.au/). The repository contains code, not the corpus; generated output retains its own source and licence records.
 
-Code: [MIT](LICENSE). Read the [redistribution limits](docs/scope.md#what-this-deliberately-does-not-ship) before handling generated material.
+Code: [Apache-2.0](LICENSE); keep the attribution in [NOTICE](NOTICE) if you redistribute it or build on it. Read the [redistribution limits](docs/scope.md#what-this-deliberately-does-not-ship) before handling generated material.
 
 </details>
