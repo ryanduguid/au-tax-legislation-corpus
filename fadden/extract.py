@@ -141,6 +141,10 @@ class Doc(HTMLParser):
         super().__init__(convert_charrefs=True)
         self.img_sizes = img_sizes or {}
         self._colspan = 1
+        self._rowspan = 1
+        self._spans: dict[int, int | None] = {}
+        self._group: str | None = None
+        self._in_row = False
         self.blocks = []
         self._cls = None
         self._buf = []
@@ -158,6 +162,7 @@ class Doc(HTMLParser):
         self._tables = []
         self._expanded_cells = 0
         self._rendered_cells = 0
+        self._buffered_cells = 0
 
     def handle_starttag(self, tag, attrs):
         a = dict(attrs)
@@ -172,6 +177,8 @@ class Doc(HTMLParser):
         elif tag == "span" and "CharSectno" in (a.get("class") or ""):
             self._sectno = True
         elif tag in ("td", "th"):
+            if not self._in_row or self._in_td:
+                raise ValueError("table cell outside a row or inside another cell")
             self._in_td = True
             self._cell = []
             self._buf = []
@@ -184,11 +191,39 @@ class Doc(HTMLParser):
                 self._colspan = 1
             if self._colspan > MAX_COLSPAN:
                 raise ValueError("table colspan exceeds the supported budget")
+            span = a.get("rowspan") or "1"
+            if len(span) > 32:
+                raise ValueError("table rowspan exceeds the supported budget")
+            try:
+                self._rowspan = int(span)
+                if self._rowspan < 0:
+                    self._rowspan = 1
+            except ValueError:
+                self._rowspan = 1
+        elif tag == "tr":
+            if not self._tables or self._in_row:
+                raise ValueError("table row outside a table or inside another row")
+            if self._group is None:
+                self._group = "implicit"
+            self._charge_cells(sum(n is None for n in self._spans.values()))
+            self._in_row = True
+        elif tag in ("thead", "tbody", "tfoot"):
+            if not self._tables or self._in_row or self._group not in (None, "implicit"):
+                raise ValueError("table row group is unbalanced")
+            self._finish_group()
+            self._group = tag
+        elif tag in ("caption", "colgroup") and self._tables:
+            if self._in_row or self._group not in (None, "implicit"):
+                raise ValueError("table row group is unbalanced")
+            self._finish_group()
         elif tag == "table":
+            if self._tables and not self._in_td:
+                raise ValueError("nested table outside a cell")
             self._flush()
             self._tables.append((self._table, self._table_raw, self._row,
                                  self._row_raw, self._cell, self._in_td,
-                                 self._buf, self._colspan))
+                                 self._buf, self._colspan, self._rowspan,
+                                 self._spans, self._group, self._in_row))
             self._table = []
             self._table_raw = []
             self._row = []
@@ -197,6 +232,10 @@ class Doc(HTMLParser):
             self._in_td = False
             self._buf = []
             self._colspan = 1
+            self._rowspan = 1
+            self._spans = {}
+            self._group = None
+            self._in_row = False
         elif tag == "br":
             self._buf.append(" ")
         elif tag == "img":
@@ -232,52 +271,112 @@ class Doc(HTMLParser):
 
     def handle_startendtag(self, tag, attrs):
         self.handle_starttag(tag, attrs)
+        if tag in ("td", "th", "tr", "table", "thead", "tbody", "tfoot"):
+            self.handle_endtag(tag)
 
     def handle_endtag(self, tag):
         if (tag == "p" or tag == "li" or tag in HTAGS) and self._in_p:
             self._flush()
-        elif tag in ("td", "th") and self._in_td:
+        elif tag in ("td", "th"):
+            if not self._in_td:
+                raise ValueError("table cell is unbalanced")
             self._flush()
-            if len(self._row) + self._colspan > MAX_TABLE_COLUMNS:
+            column = len(self._row)
+            while column in self._spans:
+                column += 1
+            end = column + self._colspan
+            if end > MAX_TABLE_COLUMNS:
                 raise ValueError("table row exceeds the supported column budget")
-            self._expanded_cells += self._colspan
-            if self._expanded_cells > MAX_TABLE_CELLS:
-                raise ValueError("document exceeds the supported table cell budget")
+            if any(c in self._spans for c in range(column, end)):
+                raise ValueError("table cell spans overlap")
+            growth = end - len(self._row)
+            self._check_buffer_growth(growth)
+            self._charge_cells(self._colspan * max(1, self._rowspan))
+            self._buffered_cells += growth
             cell = " ".join(x for x in self._cell if x).strip()
             self._row_raw.append(cell)
+            self._row.extend([""] * (column - len(self._row)))
             self._row.append(cell)
             # A spanned cell occupies several logical columns; without the
             # filler every later cell in the row shifts left.
             self._row.extend([""] * (self._colspan - 1))
+            if self._rowspan != 1:
+                for c in range(column, end):
+                    self._spans[c] = self._rowspan or None
             self._colspan = 1
+            self._rowspan = 1
             self._cell = []
             self._in_td = False
         elif tag == "tr":
+            if not self._in_row or self._in_td:
+                raise ValueError("table row is unbalanced")
+            width = max(len(self._row), max(self._spans, default=-1) + 1)
+            growth = width - len(self._row)
+            self._check_buffer_growth(growth)
+            self._buffered_cells += growth
+            self._row.extend([""] * growth)
             self._table.append(list(self._row))
             self._table_raw.append(list(self._row_raw))
             self._row = []
             self._row_raw = []
+            self._spans = {c: None if n is None else n - 1
+                           for c, n in self._spans.items() if n is None or n > 1}
+            self._in_row = False
+        elif tag in ("thead", "tbody", "tfoot"):
+            if self._group != tag or self._in_row:
+                raise ValueError("table row group is unbalanced")
+            self._finish_group()
         elif tag == "table":
+            if not self._tables or self._in_row or self._group not in (None, "implicit"):
+                raise ValueError("table is unbalanced")
+            self._finish_group()
             exp = [r for r in self._table if any(c.strip() for c in r)]
             # The source colspan defines the logical column, even when
             # row widths differ. Never infer a different alignment from width.
             rows = exp
             if rows:
-                self._rendered_cells += len(rows) * max(map(len, rows))
-                if self._rendered_cells > MAX_TABLE_CELLS:
+                rendered = len(rows) * max(map(len, rows))
+                if rendered > MAX_TABLE_CELLS - self._rendered_cells:
                     raise ValueError("document exceeds the supported padded table budget")
+                self._rendered_cells += rendered
             nested = bool(self._tables and self._tables[-1][5])
             if rows and not nested:
                 self.blocks.append({"k": "table", "rows": rows})
             if self._tables:
                 (self._table, self._table_raw, self._row, self._row_raw,
                  self._cell, self._in_td, self._buf,
-                 self._colspan) = self._tables.pop()
+                 self._colspan, self._rowspan, self._spans,
+                 self._group, self._in_row) = self._tables.pop()
                 if rows and nested:
                     self._cell.append("<br>".join(md_table(rows)))
             else:
                 self._table = []
                 self._table_raw = []
+
+    def _charge_cells(self, count):
+        if count > MAX_TABLE_CELLS - self._expanded_cells:
+            raise ValueError("document exceeds the supported table cell budget")
+        self._expanded_cells += count
+
+    def _check_buffer_growth(self, count):
+        # Inherited gaps can allocate more blanks than span coverage charges.
+        # Bound those buffers before allocation, including still-open tables.
+        if count > MAX_TABLE_CELLS - self._buffered_cells:
+            raise ValueError("document exceeds the supported buffered table cell budget")
+
+    def _finish_group(self):
+        # Positive rectangles were charged at their anchors. Zero spans also
+        # occupy any implied trailing rows, without allocating output rows.
+        implied = max((n for n in self._spans.values() if n is not None), default=0)
+        zeros = sum(n is None for n in self._spans.values())
+        self._charge_cells(implied * zeros)
+        self._spans = {}
+        self._group = None
+
+    def close(self):
+        super().close()
+        if self._tables:
+            raise ValueError("table is unbalanced at end of document")
 
     def handle_data(self, data):
         self._buf.append(data)
@@ -309,13 +408,14 @@ def epub_blocks(path):
 
         sizes = {os.path.basename(i.filename): i.file_size for i in archive.infolist()}
         out = []
-        table_counts = (0, 0)
+        table_counts = (0, 0, 0)
         for n in sorted(names, key=key):
             d = Doc(sizes)
-            d._expanded_cells, d._rendered_cells = table_counts
+            d._expanded_cells, d._rendered_cells, d._buffered_cells = table_counts
             d.feed(read_epub_member(archive, n).decode("utf-8", "replace"))
+            d.close()
             d._flush()
-            table_counts = d._expanded_cells, d._rendered_cells
+            table_counts = d._expanded_cells, d._rendered_cells, d._buffered_cells
             out.append({"k": "file"})      # volume boundary
             out += d.blocks
     return out

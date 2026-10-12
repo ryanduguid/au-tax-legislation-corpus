@@ -10,9 +10,9 @@ from pathlib import Path
 from unittest import mock
 
 from fadden import extract
+
 from tests.corpus import test_regressions as fixtures
 from tests.corpus.test_regressions import STAGE, load_module
-
 
 LEADING = (
     '<table><thead><tr><th>Category</th><th>Rate</th></tr></thead>'
@@ -138,6 +138,25 @@ class RowspanCoordinateTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, "column budget"):
                 rows_for(html)
 
+    def test_inherited_blanks_are_bounded_before_the_table_closes(self):
+        parser = extract.Doc()
+        with mock.patch.object(extract, "MAX_TABLE_CELLS", 20):
+            parser.feed('<table><tr><td colspan="4">A</td><td rowspan="0">B</td></tr>')
+            with self.assertRaisesRegex(ValueError, "cell budget"):
+                parser.feed('<tr><td>C</td></tr>' * 6)
+        buffered = sum(map(len, parser._table)) + len(parser._row)
+        self.assertLessEqual(buffered, 20)
+
+    def test_inherited_leading_blanks_are_bounded_before_cell_allocation(self):
+        parser = extract.Doc()
+        with mock.patch.object(extract, "MAX_TABLE_CELLS", 20):
+            parser.feed('<table><tr><td>A</td><td>B</td><td>C</td><td>D</td>'
+                        '<td rowspan="0">E</td></tr>')
+            with self.assertRaisesRegex(ValueError, "cell budget"):
+                parser.feed('<tr><td rowspan="0">F</td></tr>' * 6)
+        buffered = sum(map(len, parser._table)) + len(parser._row)
+        self.assertLessEqual(buffered, 20)
+
     def test_an_inherited_trailing_slot_remains_blank(self):
         html = ('<table><tr><td>A</td><td rowspan="2">5%</td></tr>'
                 '<tr><td>B</td></tr></table>')
@@ -153,6 +172,43 @@ class RowspanCoordinateTests(unittest.TestCase):
         with mock.patch.object(extract, "MAX_TABLE_CELLS", 5):
             with self.assertRaisesRegex(ValueError, "cell budget"):
                 extract.epub_blocks(io.BytesIO(epub_bytes(table, table)))
+
+    def test_positive_lifetimes_expire_after_their_last_covered_row(self):
+        html = ('<table><tr><td rowspan="2">A</td><td>5%</td></tr>'
+                '<tr><td>10%</td></tr><tr><td>B</td><td>15%</td></tr></table>')
+        self.assertEqual(rows_for(html), [["A", "5%"], ["", "10%"], ["B", "15%"]])
+
+    def test_a_caption_ends_the_implicit_zero_span_group(self):
+        html = ('<table><tr><td rowspan="0">A</td><td>5%</td></tr>'
+                '<caption>Later rows</caption><tr><td>B</td><td>10%</td></tr></table>')
+        self.assertEqual(rows_for(html), [["A", "5%"], ["B", "10%"]])
+
+    def test_span_coverage_is_charged_once_and_refusal_preserves_the_counter(self):
+        parser = extract.Doc()
+        parser.feed('<table><tbody><tr><td rowspan="0">A</td>'
+                    '<td rowspan="3">B</td></tr></tbody></table>')
+        parser.close()
+        self.assertEqual(parser._expanded_cells, 6)
+        parser = extract.Doc()
+        with mock.patch.object(extract, "MAX_TABLE_CELLS", 5):
+            parser.feed('<table><tr><td rowspan="4">A</td><td rowspan="2">B')
+            with self.assertRaisesRegex(ValueError, "cell budget"):
+                parser.feed('</td></tr></table>')
+        self.assertEqual(parser._expanded_cells, 4)
+        self.assertEqual(parser._row, ["A"])
+
+    def test_unbalanced_table_structures_refuse_instead_of_shifting_cells(self):
+        cases = [
+            '<table><td>A</td></table>',
+            '<table><tr><td>A<td>B</td></tr></table>',
+            '<table><tr><td>A</td><tr><td>B</td></tr></table>',
+            '<table><tbody><thead></thead></tbody></table>',
+            '<table><tbody><tr><td>A</td></tr></table>',
+            '<table><tr><td>A</td></tr>',
+        ]
+        for html in cases:
+            with self.subTest(html=html), self.assertRaisesRegex(ValueError, "table"):
+                rows_for(html)
 
 
 class RowspanPipelineTests(unittest.TestCase):
