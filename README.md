@@ -2,6 +2,7 @@
 
 [![tests](https://github.com/ryanduguid/au-tax-legislation-corpus/actions/workflows/ci.yml/badge.svg)](https://github.com/ryanduguid/au-tax-legislation-corpus/actions/workflows/ci.yml)
 [![Codecov](https://codecov.io/gh/ryanduguid/au-tax-legislation-corpus/graph/badge.svg)](https://codecov.io/gh/ryanduguid/au-tax-legislation-corpus)
+[![Snyk](https://github.com/ryanduguid/au-tax-legislation-corpus/actions/workflows/snyk.yml/badge.svg?branch=main)](https://github.com/ryanduguid/au-tax-legislation-corpus/actions/workflows/snyk.yml)
 [![release](https://img.shields.io/github/v/release/ryanduguid/au-tax-legislation-corpus?color=66023C&labelColor=000000)](https://github.com/ryanduguid/au-tax-legislation-corpus/releases/latest)
 [![licence: MIT](https://img.shields.io/badge/licence-MIT-66023C.svg?labelColor=000000)](LICENSE)
 [![Codacy code quality](https://app.codacy.com/project/badge/Grade/a474c8d33a4a4bd6bd97993f5c4113bd?branch=main)](https://app.codacy.com/gh/ryanduguid/au-tax-legislation-corpus/dashboard)
