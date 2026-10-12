@@ -397,5 +397,78 @@ class ReviewRegressionTests(unittest.TestCase):
         self.assertEqual(len(names), 3)
 
 
+class ParserEdgeTests(unittest.TestCase):
+    def test_nested_blocks_repeated_anchors_and_empty_blocks(self) -> None:
+        extra = ('<p class="indentlevel0"><a name="P4"></a><a name="P4"></a>4. Repeated anchor.</p>'
+                 "<ul><li><p>5. nested</p> list item</li></ul><p></p>")
+        parsed = rulings.parse_document(page(body_extra=extra), DOCID)
+        self.assertEqual([(p["paragraph"], p["text"]) for p in parsed["paragraphs"][3:]],
+                         [("4", "4. Repeated anchor. 5. nested list item")])
+
+    def test_a_page_that_is_not_utf8_is_refused(self) -> None:
+        with self.assertRaisesRegex(rulings.RulingsError, "response is not UTF-8"):
+            rulings.parse_document(b"\xff\xfe<html></html>", DOCID)
+
+    def test_an_edited_version_closing_its_article_ends_the_region(self) -> None:
+        trailing = b'<div class="container-fluid"><a href="#main-content">Back to top</a></div>\n'
+        page_bytes = EV_PAGE.replace(trailing, b'<P><A NAME="anchor-only"></A></P>')
+        parsed = rulings.parse_document(page_bytes, EV_ID)
+        self.assertEqual([p["paragraph"] for p in parsed["paragraphs"]], ["1", "2"])
+
+    def test_an_edited_version_without_paragraphs_is_refused(self) -> None:
+        page_bytes = re.sub(rb"<P>(?!<STRONG>)[^<]*</P>", b"", EV_PAGE)
+        with self.assertRaisesRegex(rulings.RulingsError, "no paragraphs found after the edited"):
+            rulings.parse_document(page_bytes, EV_ID)
+
+    def test_a_name_with_a_registration_number_is_a_finding(self) -> None:
+        self.assertEqual(rulings.pii_findings(["Agent Jane Citizen 12345678"]),
+                         ["name-with-registration-number"])
+
+    def test_the_script_layout_imports_its_sibling_modules(self) -> None:
+        from tests.corpus.test_regressions import STAGE, load_module
+
+        script = load_module("rulings_script_layout", STAGE / "rulings.py")
+        self.assertEqual(script.http_fetch.__name__, "http_fetch")
+
+
+class RunEdgeTests(unittest.TestCase):
+    def setUp(self) -> None:
+        temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(temporary.cleanup)
+        self.tmp = Path(temporary.name)
+
+    def test_requests_after_the_first_are_spaced(self) -> None:
+        other = "TXR/TR20991/NAT/ATO/00002"
+        pages = {DOCID: page(), other: page(docid=other)}
+        with mock.patch.object(rulings.time, "sleep") as sleep, \
+                mock.patch("sys.stdout", io.StringIO()):
+            code = rulings.run([DOCID, other], self.tmp / "out",
+                               fetcher=lambda docid: (pages[docid], "https://example.test/"),
+                               spacing=2.5)
+        self.assertEqual(code, 0)
+        sleep.assert_called_once_with(2.5)
+
+    def test_two_targets_naming_one_document_are_refused_before_writing(self) -> None:
+        with self.assertRaisesRegex(rulings.RulingsError, "collides with an earlier target"):
+            rulings.run([DOCID, DOCID + "/"], self.tmp / "out",
+                        fetcher=lambda _docid: (page(), "https://example.test/"), spacing=0)
+        self.assertFalse((self.tmp / "out").exists())
+
+    def test_main_runs_the_validated_targets(self) -> None:
+        targets = self.tmp / "targets.json"
+        targets.write_text(json.dumps([DOCID]), encoding="utf-8")
+        with mock.patch.object(rulings, "run", return_value=0) as run:
+            self.assertEqual(rulings.main([str(targets), "--out", str(self.tmp / "out")]), 0)
+        run.assert_called_once_with([DOCID], self.tmp / "out")
+
+    def test_main_reports_an_invalid_target_list(self) -> None:
+        targets = self.tmp / "targets.json"
+        targets.write_text(json.dumps({"docid": DOCID}), encoding="utf-8")
+        with mock.patch("sys.stderr", io.StringIO()) as stderr:
+            self.assertEqual(rulings.main([str(targets), "--out", str(self.tmp / "out")]), 1)
+        self.assertEqual(stderr.getvalue(),
+                         "rulings: targets must be a JSON array of docid strings\n")
+
+
 if __name__ == "__main__":
     unittest.main()

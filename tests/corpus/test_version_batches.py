@@ -348,3 +348,8 @@ class VersionBatchTests(unittest.TestCase):
         self.assertEqual(result[0]["collection"], "Replacement")
         self.assertEqual(len(events), 3)
         self.assertIn("distinct principal titles:   8", stdout)
+
+    def test_a_title_with_no_versions_fails_the_stage(self):
+        _, _, stdout = self.run_stage(titles(1), fetch=lambda _url: {"value": []},
+                                      failure=RuntimeError)
+        self.assertIn("FAILED C2099A00001", stdout)

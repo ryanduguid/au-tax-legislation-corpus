@@ -24,7 +24,7 @@ Issues = "https://github.com/ryanduguid/au-tax-legislation-corpus/issues"
 
 [project.optional-dependencies]
 dev = [
-    "ruff>=0.11", "mypy>=1.14", "build>=1.2", "pytest>=8"]
+    "ruff>=0.11", "mypy>=1.14", "build>=1.2", "pytest>=8", "coverage==7.16.2"]
 
 [project.scripts]
 tax-radar-au = "tax_radar_au.cli:main"
@@ -55,6 +55,12 @@ src = ["tax_radar_au", "fadden", "tools", "tests"]
 # Keep Decimal("10.00") money literals; E501 stays off, so long emitted-format
 # string literals in the corpus stages are untouched.
 select = ["E4", "E7", "E9", "F", "I"]
+
+[tool.coverage.report]
+# The ubuntu coverage leg cannot run the Windows-only live-evidence publication
+# transaction (ctypes.WinDLL, msvcrt), so the floor sits below 100.
+fail_under = 96
+exclude_also = ['if __name__ == "__main__":']
 
 [tool.mypy]
 python_version = "3.11"

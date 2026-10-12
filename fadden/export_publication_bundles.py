@@ -578,7 +578,8 @@ def export_publication_bundles(
         primary_error = exc
         raise
     finally:
-        if created_staging:
+        # Only a failure can leave this False; a normal exit always created staging.
+        if created_staging:  # pragma: no branch
             try:
                 _remove_owned_staging(staging, parent=output.parent, prefix=prefix)
             except BaseException as cleanup_error:

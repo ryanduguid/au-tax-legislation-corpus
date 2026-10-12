@@ -31,7 +31,7 @@ jobs:
             # junctions and reparse points. All pre-existing, none the radar's.
             # Keep other corpus modules excluded; exercise the supported
             # Windows-only live-evidence export boundary as well as radar.
-            tests: "tests/radar tests/corpus/test_live_evidence_bundle_export.py"
+            tests: "tests/radar tests/corpus/test_live_evidence_bundle_export.py tests/corpus/test_live_evidence_publication_paths.py"
     timeout-minutes: 30
     runs-on: ${{ matrix.os }}
     steps:
@@ -50,9 +50,82 @@ jobs:
       # No -q here: pyproject's addopts already sets it, and a second -q makes
       # it -qq, which drops the pass/fail count from the log. Without the count
       # a test file that stops being collected leaves every leg green.
-      - run: uv run --locked --extra dev pytest ${{ matrix.tests }}
+      - if: matrix.os == 'ubuntu-latest' && matrix.python != '3.13'
+        run: uv run --locked --extra dev pytest ${{ matrix.tests }}
         env:
           UV_PYTHON: ${{ matrix.python }}
+      - name: run tests with whole-package branch coverage
+        if: matrix.os == 'ubuntu-latest' && matrix.python == '3.13'
+        run: uv run --locked --extra dev coverage run --branch --source=tax_radar_au,fadden -m pytest tests  # NOSONAR: the environment is synced from uv.lock, whose dependencies install from wheels
+        env:
+          UV_PYTHON: ${{ matrix.python }}
+      - name: write whole-package coverage for Codecov
+        if: matrix.os == 'ubuntu-latest' && matrix.python == '3.13'
+        run: uv run --locked --extra dev coverage xml -o coverage-codecov.xml  # NOSONAR: the environment is synced from uv.lock, whose dependencies install from wheels
+        env:
+          UV_PYTHON: ${{ matrix.python }}
+      - name: keep the coverage report for the Codecov upload
+        if: matrix.os == 'ubuntu-latest' && matrix.python == '3.13'
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: coverage-codecov
+          path: coverage-codecov.xml
+          retention-days: 1
+      # After the upload, so Codecov still receives a report that misses the floor.
+      - name: hold whole-package coverage at the configured floor
+        if: matrix.os == 'ubuntu-latest' && matrix.python == '3.13'
+        run: uv run --locked --extra dev coverage report  # NOSONAR: the environment is synced from uv.lock, whose dependencies install from wheels
+        env:
+          UV_PYTHON: ${{ matrix.python }}
+      # The Windows leg runs a subset, so it writes its report without the
+      # whole-package floor. Codecov merges it with the ubuntu report, which
+      # cannot run the Windows-only live-evidence publication transaction.
+      - name: run the Windows tests with branch coverage
+        if: matrix.os == 'windows-latest'
+        run: uv run --locked --extra dev coverage run --branch --source=tax_radar_au,fadden -m pytest ${{ matrix.tests }}  # NOSONAR: the environment is synced from uv.lock, whose dependencies install from wheels
+        env:
+          UV_PYTHON: ${{ matrix.python }}
+      - name: write Windows coverage for Codecov
+        if: matrix.os == 'windows-latest'
+        run: uv run --locked --extra dev coverage xml --fail-under=0 -o coverage-windows.xml  # NOSONAR: the environment is synced from uv.lock, whose dependencies install from wheels
+        env:
+          UV_PYTHON: ${{ matrix.python }}
+      - name: keep the Windows coverage report for the Codecov upload
+        if: matrix.os == 'windows-latest'
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: coverage-windows
+          path: coverage-windows.xml
+          retention-days: 1
+
+  # The upload runs apart from the tests so the OIDC token is never available
+  # while test code runs. It is exempt from tests-gates: a Codecov outage must
+  # not block merges.
+  codecov:
+    name: upload coverage to Codecov
+    needs: test
+    if: github.event_name == 'push' || github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      id-token: write # Authenticate the Codecov upload with OIDC; no stored token.
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: coverage-codecov
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: coverage-windows
+      - uses: codecov/codecov-action@303a32d7a59b442fa8d48b6a1cc6825c09c847a5 # v7.1.1
+        with:
+          use_oidc: true
+          files: coverage-codecov.xml,coverage-windows.xml
+          disable_search: true
+          fail_ci_if_error: true
 
   package:
     permissions:
@@ -142,4 +215,4 @@ jobs:
       - name: Require every job to be listed, kept and successful
         env:
           RESULTS: ${{ toJSON(needs) }}
-        run: python3 .github/ci/check_gates.py .github/workflows/ci.yml tests-gates
+        run: python3 .github/ci/check_gates.py .github/workflows/ci.yml tests-gates --exempt codecov
