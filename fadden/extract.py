@@ -37,6 +37,8 @@ else:
 MAX_COLSPAN = 1024
 MAX_TABLE_COLUMNS = 4096
 MAX_TABLE_CELLS = 1_000_000
+# Provisional resource policy; deeper-template compatibility is unverified.
+MAX_TABLE_DEPTH = 64
 
 
 def yaml_scalar(value):
@@ -219,6 +221,8 @@ class Doc(HTMLParser):
         elif tag == "table":
             if self._tables and not self._in_td:
                 raise ValueError("nested table outside a cell")
+            if len(self._tables) >= MAX_TABLE_DEPTH:
+                raise ValueError("table nesting exceeds the supported depth budget")
             self._flush()
             self._tables.append((self._table, self._table_raw, self._row,
                                  self._row_raw, self._cell, self._in_td,

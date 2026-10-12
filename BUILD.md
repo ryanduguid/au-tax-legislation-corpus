@@ -264,9 +264,15 @@ and ZIP64 directories are refused. Stored and deflated members are decoded
 in bounded chunks. Their actual length, CRC and stream end must match the
 directory record, so a forged size cannot bypass the limits. Other compression
 methods and encrypted members are refused. Table spans above 1,024 columns, rows
-above 4,096 columns and EPUBs above 1,000,000 expanded or padded cells fail
-extraction. The extractor rejects these inputs rather than changing their
-column alignment. Front matter uses typed, quoted scalar values; corpus index
+above 4,096 columns and EPUBs above 1,000,000 expanded, buffered or padded cells fail
+extraction. Rows with no logical cells consume one buffered allocation unit without adding
+output cells. Table nesting is limited to 64 open tables, including the root;
+depth 65 fails before another table frame is allocated. This is a provisional
+resource limit. Real Register template depth and total peak memory remain unverified.
+An over-depth title follows the existing parse-failure path: later titles proceed,
+the stage exits nonzero and the prior Markdown manifest is preserved.
+The extractor rejects these inputs without changing their column alignment.
+Front matter uses typed, quoted scalar values; corpus index
 and rate metadata are escaped as literal Markdown.
 
 - **`curl` does not truncate `-o` on transport failure.** A shared temp file

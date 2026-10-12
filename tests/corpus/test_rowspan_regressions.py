@@ -29,6 +29,10 @@ def rows_for(html):
     return next(block["rows"] for block in parser.blocks if block["k"] == "table")
 
 
+def nested_html(depth, text="A"):
+    return '<table><tr><td>' * depth + text + '</td></tr></table>' * depth
+
+
 def epub_bytes(*tables):
     stream = io.BytesIO()
     with zipfile.ZipFile(stream, "w") as archive:
@@ -166,6 +170,8 @@ class RowspanCoordinateTests(unittest.TestCase):
                     parser.feed(row * 6)
                 self.assertEqual(len(parser._table), 5)
                 self.assertEqual(len(parser._table_raw), 5)
+                self.assertEqual(parser._buffered_cells, 5)
+                self.assertEqual(parser._expanded_cells, 0)
 
     def test_empty_row_budget_is_shared_across_nested_tables_and_epub_members(self):
         with mock.patch.object(extract, 'MAX_TABLE_CELLS', 5):
@@ -177,6 +183,41 @@ class RowspanCoordinateTests(unittest.TestCase):
 
     def test_empty_rows_do_not_manufacture_output_cells(self):
         self.assertEqual(rows_for('<table><tr/><tr><td>A</td></tr><tr/></table>'), [['A']])
+
+    def test_a_small_depth_ceiling_accepts_its_boundary_and_refuses_the_next_frame(self):
+        with mock.patch.object(extract, 'MAX_TABLE_DEPTH', 3, create=True):
+            self.assertEqual(rows_for(nested_html(3))[0][0].count('A'), 1)
+            with self.assertRaisesRegex(ValueError, 'depth budget'):
+                rows_for(nested_html(4))
+
+    def test_the_provisional_default_depth_ceiling_is_64(self):
+        self.assertEqual(rows_for(nested_html(64))[0][0].count('A'), 1)
+        with self.assertRaisesRegex(ValueError, 'depth budget'):
+            rows_for(nested_html(65))
+        self.assertEqual(extract.MAX_TABLE_DEPTH, 64)
+
+    def test_depth_refusal_precedes_parent_buffer_and_stack_mutation(self):
+        with mock.patch.object(extract, 'MAX_TABLE_DEPTH', 3, create=True):
+            parser = extract.Doc()
+            parser.feed('<table><tr><td>' * 3 + 'pending')
+            with self.assertRaisesRegex(ValueError, 'depth budget'):
+                parser.feed('<table>')
+            self.assertEqual(len(parser._tables), 3)
+            self.assertEqual(parser._buf, ['pending'])
+            self.assertEqual(parser._cell, [])
+            self.assertEqual((parser._expanded_cells, parser._buffered_cells,
+                              parser._rendered_cells), (0, 0, 0))
+
+    def test_depth_is_simultaneous_across_sequential_tables_and_epub_members(self):
+        with mock.patch.object(extract, 'MAX_TABLE_DEPTH', 2, create=True):
+            parser = extract.Doc()
+            parser.feed(nested_html(2) * 3)
+            parser.close()
+            tables = [block for block in parser.blocks if block['k'] == 'table']
+            self.assertEqual(len(tables), 3)
+            self.assertTrue(all(table['rows'][0][0].count('A') == 1 for table in tables))
+            blocks = extract.epub_blocks(io.BytesIO(epub_bytes(nested_html(2), nested_html(2))))
+            self.assertEqual(sum(block['k'] == 'table' for block in blocks), 2)
 
     def test_an_inherited_trailing_slot_remains_blank(self):
         html = ('<table><tr><td>A</td><td rowspan="2">5%</td></tr>'
@@ -233,6 +274,30 @@ class RowspanCoordinateTests(unittest.TestCase):
 
 
 class RowspanPipelineTests(unittest.TestCase):
+    def test_depth_failure_continues_and_preserves_a_successful_manifest(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            fixture = fixtures.ExtractPipelineTests()
+            build, epub = fixture._fixture(root)
+            epub.write_bytes(epub_bytes(LEADING))
+            fixture._run(build, '2026-10-12')
+            destination = build / 'manifest_md.json'
+            previous = destination.read_bytes()
+            manifest = json.loads((build / 'manifest_raw.json').read_text(encoding='utf-8'))
+            failed = dict(manifest[0], id='F2025L00280', epub='F2025L00280.epub')
+            (root / 'epub' / failed['epub']).write_bytes(epub_bytes(nested_html(65)))
+            (build / 'manifest_raw.json').write_text(json.dumps([failed, *manifest]), encoding='utf-8')
+            module = load_module('depth_failure', build / 'extract.py')
+            output = io.StringIO()
+            with contextlib.redirect_stdout(output):
+                with self.assertRaisesRegex(RuntimeError, 'refusing to write manifest_md'):
+                    module.main('2026-10-12')
+            self.assertIn('FAIL F2025L00280', output.getvalue())
+            self.assertIn('depth budget', output.getvalue())
+            self.assertIn(fixture.REGISTER_ID, output.getvalue())
+            self.assertTrue((root / 'markdown' / fixture.REGISTER_ID / 'sections.jsonl').is_file())
+            self.assertEqual(destination.read_bytes(), previous)
+
     def test_columns_and_provenance_reach_sections_and_indexed_rates(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
