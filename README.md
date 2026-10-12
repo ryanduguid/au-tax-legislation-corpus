@@ -10,7 +10,7 @@
 [![VirusTotal](https://img.shields.io/badge/VirusTotal-scanned-990024?labelColor=000000&style=flat-square&logo=virustotal&logoColor=FFFFF0)](https://github.com/ryanduguid/au-tax-legislation-corpus/releases/latest)<br>
 [![release](https://img.shields.io/github/v/release/ryanduguid/au-tax-legislation-corpus?color=66023C&labelColor=000000&style=flat-square)](https://github.com/ryanduguid/au-tax-legislation-corpus/releases/latest)
 ![python: 3.11+](https://img.shields.io/badge/python-3.11%2B-66023C?labelColor=000000&style=flat-square)
-[![licence: MIT](https://img.shields.io/badge/licence-MIT-66023C?labelColor=000000&style=flat-square)](LICENSE)
+[![licence: Apache-2.0](https://img.shields.io/badge/licence-Apache--2.0-66023C?labelColor=000000&style=flat-square)](LICENSE)
 
 Synthetic example. This is a finding aid derived from the Register's EPUB reading view, not authorised legislation, tax advice or a conclusion about legal effect.
 
@@ -66,6 +66,6 @@ Live Register capture, synthetic observations and publication candidates have di
 
 The primary source is the [Federal Register of Legislation](https://www.legislation.gov.au/). The repository contains code, not the corpus; generated output retains its own source and licence records.
 
-Code: [MIT](LICENSE). Read the [redistribution limits](docs/scope.md#what-this-deliberately-does-not-ship) before handling generated material.
+Code: [Apache-2.0](LICENSE); keep the attribution in [NOTICE](NOTICE) if you redistribute it or build on it. Read the [redistribution limits](docs/scope.md#what-this-deliberately-does-not-ship) before handling generated material.
 
 </details>

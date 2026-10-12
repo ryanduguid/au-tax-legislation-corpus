@@ -50,7 +50,8 @@ def _producer_version() -> str:
 def _promote_no_replace(staging: Path, output: Path) -> None:
     """Publish an absent directory using the platform's no-replace operation."""
     if os.name == "nt":
-        os.rename(staging, output)
+        # Maintainer CLI; the path is a command-line argument or a fixed name under one.
+        os.rename(staging, output)  # NOSONAR
         return
     if sys.platform != "linux":
         raise OSError(errno.ENOTSUP, "no-replace directory publication is unavailable")

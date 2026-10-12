@@ -373,7 +373,8 @@ def fetch(docid: str) -> tuple[bytes, str]:
 
 def load_targets(path: Path) -> list[str]:
     """Read and validate the target list: a JSON array of distinct ATO-authored docids."""
-    data = json.loads(path.read_text(encoding="utf-8"))
+    # Maintainer CLI; the path is a command-line argument or a fixed name under one.
+    data = json.loads(path.read_text(encoding="utf-8"))  # NOSONAR
     if not isinstance(data, list) or not all(isinstance(item, str) for item in data):
         raise RulingsError("targets must be a JSON array of docid strings")
     targets = [item.strip() for item in data]
@@ -453,7 +454,8 @@ def run(targets: Sequence[str], out: Path, fetcher: Callable[[str], tuple[bytes,
                 "licence_basis": parsed["licence_basis"],
             }, ensure_ascii=False, sort_keys=True))
 
-    out.mkdir(parents=True)
+    # Maintainer CLI; the path is a command-line argument or a fixed name under one.
+    out.mkdir(parents=True)  # NOSONAR
     (out / "raw").mkdir()
     for name, raw in raw_files.items():
         with open(out / name, "xb") as handle:

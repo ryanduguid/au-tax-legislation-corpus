@@ -1,6 +1,6 @@
 # Tax Radar AU
 
-[![tests](https://github.com/ryanduguid/au-tax-legislation-corpus/actions/workflows/ci.yml/badge.svg)](https://github.com/ryanduguid/au-tax-legislation-corpus/actions/workflows/ci.yml) [![License: MIT](https://img.shields.io/badge/License-MIT-66023C.svg?labelColor=000000)](LICENSE) [![Python 3.11+](https://img.shields.io/badge/python-3.11%2B-66023C.svg?logo=python&logoColor=white&labelColor=000000)](https://www.python.org/downloads/)
+[![tests](https://github.com/ryanduguid/au-tax-legislation-corpus/actions/workflows/ci.yml/badge.svg)](https://github.com/ryanduguid/au-tax-legislation-corpus/actions/workflows/ci.yml) [![License: Apache-2.0](https://img.shields.io/badge/License-Apache--2.0-66023C.svg?labelColor=000000)](LICENSE) [![Python 3.11+](https://img.shields.io/badge/python-3.11%2B-66023C.svg?logo=python&logoColor=white&labelColor=000000)](https://www.python.org/downloads/)
 
 This is a provenance-first change-review queue. It does not answer tax questions and it does not update skills automatically.
 
@@ -143,4 +143,4 @@ python -m build
 ```
 
 
-MIT licensed.
+Apache-2.0 licensed. If you redistribute this work or build on it, keep the attribution in [NOTICE](NOTICE).
