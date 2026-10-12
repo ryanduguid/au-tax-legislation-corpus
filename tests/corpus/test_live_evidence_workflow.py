@@ -209,7 +209,9 @@ class LiveEvidenceWorkflowPolicyTests(unittest.TestCase):
                 "      id-token: write"
             ],
         )
-        self.assertEqual(len(re.findall(r"(?m)^\s*permissions:$", workflow)), 1)
+        # The workflow default is read-only; only the publish job widens it.
+        self.assertEqual(self._top_level_block("permissions"), "permissions:\n  contents: read")
+        self.assertEqual(len(re.findall(r"(?m)^\s*permissions:$", workflow)), 2)
         self.assertEqual(
             self._yaml_scalar_lines(workflow, "runs-on", 4),
             ["    runs-on: windows-latest"],
