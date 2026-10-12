@@ -2,13 +2,13 @@
 
 [![tests](https://github.com/ryanduguid/au-tax-legislation-corpus/actions/workflows/ci.yml/badge.svg)](https://github.com/ryanduguid/au-tax-legislation-corpus/actions/workflows/ci.yml)
 [![Codecov](https://codecov.io/gh/ryanduguid/au-tax-legislation-corpus/graph/badge.svg)](https://codecov.io/gh/ryanduguid/au-tax-legislation-corpus)
-[![release](https://img.shields.io/github/v/release/ryanduguid/au-tax-legislation-corpus?color=5C2D91&labelColor=04001F)](https://github.com/ryanduguid/au-tax-legislation-corpus/releases/latest)
-[![licence: MIT](https://img.shields.io/badge/licence-MIT-5C2D91.svg?labelColor=04001F)](LICENSE)
+[![release](https://img.shields.io/github/v/release/ryanduguid/au-tax-legislation-corpus?color=66023C&labelColor=000000)](https://github.com/ryanduguid/au-tax-legislation-corpus/releases/latest)
+[![licence: MIT](https://img.shields.io/badge/licence-MIT-66023C.svg?labelColor=000000)](LICENSE)
 [![Codacy code quality](https://app.codacy.com/project/badge/Grade/a474c8d33a4a4bd6bd97993f5c4113bd?branch=main)](https://app.codacy.com/gh/ryanduguid/au-tax-legislation-corpus/dashboard)
 [![SonarCloud](https://img.shields.io/sonar/quality_gate/ryanduguid_au-tax-legislation-corpus?server=https%3A%2F%2Fsonarcloud.io&label=SonarCloud&labelColor=000000)](https://sonarcloud.io/summary/new_code?id=ryanduguid_au-tax-legislation-corpus)
 [![VirusTotal](https://img.shields.io/badge/VirusTotal-release%20files%20scanned-66023C?labelColor=000000&logo=virustotal&logoColor=FFFFF0)](https://github.com/ryanduguid/au-tax-legislation-corpus/releases/latest)
 [![OpenSSF Scorecard](https://api.scorecard.dev/projects/github.com/ryanduguid/au-tax-legislation-corpus/badge)](https://scorecard.dev/viewer/?uri=github.com/ryanduguid/au-tax-legislation-corpus)
-![python: 3.11+](https://img.shields.io/badge/python-3.11%2B-5C2D91.svg?labelColor=04001F)
+![python: 3.11+](https://img.shields.io/badge/python-3.11%2B-66023C.svg?labelColor=000000)
 
 Synthetic example. This is a finding aid derived from the Register's EPUB reading view, not authorised legislation, tax advice or a conclusion about legal effect.
 
