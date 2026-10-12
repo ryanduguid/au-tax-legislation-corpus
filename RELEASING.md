@@ -96,7 +96,7 @@ with the signer flag.
 Releases cut after the archive-policy migration are signed by the policy's
 internal publication workflow. For the next release, update `tag` if the
 intended version changes and bind verification to the exact source and policy
-commit. The commands use the current policy pin, `a601f1d`. Earlier releases
+commit: set `signer_digest` to the policy commit that signed the release. Earlier releases
 verify with the digest their release workflow pinned: `v0.1.5` and `v0.1.6`
 with `99a6314ca2cd4ea21b465614b73d108fd8fe2077`, and `v0.1.7` to `v0.2.1` with
 `87767ec809dc7f77bcd45808219adaf67841ae7b`. Releases from `a601f1d` also carry
@@ -106,6 +106,9 @@ because it holds the attestation itself:
 
 ```bash
 tag=v0.2.1
+# The policy commit that signed this release, from the list above: 87767ec for
+# v0.1.7 to v0.2.1, a601f1d8b143f92b0517f709216993660d21f480 from the next release.
+signer_digest=87767ec809dc7f77bcd45808219adaf67841ae7b
 repo=ryanduguid/au-tax-legislation-corpus
 release_commit="$(git ls-remote "https://github.com/$repo.git" "refs/tags/$tag^{}" | cut -f1)"
 test -n "$release_commit"
@@ -121,14 +124,14 @@ for file in *; do
     --source-digest "$release_commit" \
     --source-ref "refs/tags/$tag" \
     --signer-workflow ryanduguid/release-policy/.github/workflows/publish-archives.yml \
-    --signer-digest a601f1d8b143f92b0517f709216993660d21f480
+    --signer-digest "$signer_digest"
 done
 gh attestation verify "au-tax-legislation-corpus-builder-${tag#v}.zip" -R "$repo" \
   --predicate-type https://spdx.dev/Document/v2.3 \
   --source-digest "$release_commit" \
   --source-ref "refs/tags/$tag" \
   --signer-workflow ryanduguid/release-policy/.github/workflows/publish-archives.yml \
-  --signer-digest a601f1d8b143f92b0517f709216993660d21f480
+  --signer-digest "$signer_digest"
 ```
 
 ## Preserved squash-boundary release
