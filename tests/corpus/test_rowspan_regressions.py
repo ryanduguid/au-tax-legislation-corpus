@@ -157,6 +157,27 @@ class RowspanCoordinateTests(unittest.TestCase):
         buffered = sum(map(len, parser._table)) + len(parser._row)
         self.assertLessEqual(buffered, 20)
 
+    def test_empty_source_rows_are_bounded_before_allocation(self):
+        for row in ('<tr/>', '<tr></tr>'):
+            with self.subTest(row=row), mock.patch.object(extract, 'MAX_TABLE_CELLS', 5):
+                parser = extract.Doc()
+                parser.feed('<table>')
+                with self.assertRaisesRegex(ValueError, 'cell budget'):
+                    parser.feed(row * 6)
+                self.assertEqual(len(parser._table), 5)
+                self.assertEqual(len(parser._table_raw), 5)
+
+    def test_empty_row_budget_is_shared_across_nested_tables_and_epub_members(self):
+        with mock.patch.object(extract, 'MAX_TABLE_CELLS', 5):
+            with self.assertRaisesRegex(ValueError, 'cell budget'):
+                rows_for('<table><tr><td><table>' + '<tr/>' * 6 + '</table></td></tr></table>')
+            table = '<table>' + '<tr/>' * 3 + '</table>'
+            with self.assertRaisesRegex(ValueError, 'cell budget'):
+                extract.epub_blocks(io.BytesIO(epub_bytes(table, table)))
+
+    def test_empty_rows_do_not_manufacture_output_cells(self):
+        self.assertEqual(rows_for('<table><tr/><tr><td>A</td></tr><tr/></table>'), [['A']])
+
     def test_an_inherited_trailing_slot_remains_blank(self):
         html = ('<table><tr><td>A</td><td rowspan="2">5%</td></tr>'
                 '<tr><td>B</td></tr></table>')
