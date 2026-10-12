@@ -8,8 +8,8 @@ version = "0.2.1"
 description = "Commonwealth tax legislation corpus builder and the provenance-first change-review queue that consumes it"
 readme = "README.md"
 requires-python = ">=3.11"
-license = "MIT"
-license-files = ["LICENSE"]
+license = "Apache-2.0"
+license-files = ["LICENSE", "NOTICE"]
 authors = [{ name = "Ryan Duguid" }]
 keywords = ["australia", "tax", "legislation", "provenance", "ai-agents"]
 classifiers = [

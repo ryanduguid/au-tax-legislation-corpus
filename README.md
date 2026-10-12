@@ -2,7 +2,7 @@
 
 [![tests](https://github.com/ryanduguid/au-tax-legislation-corpus/actions/workflows/ci.yml/badge.svg)](https://github.com/ryanduguid/au-tax-legislation-corpus/actions/workflows/ci.yml)
 [![release](https://img.shields.io/github/v/release/ryanduguid/au-tax-legislation-corpus?color=5C2D91&labelColor=04001F)](https://github.com/ryanduguid/au-tax-legislation-corpus/releases/latest)
-[![licence: MIT](https://img.shields.io/badge/licence-MIT-5C2D91.svg?labelColor=04001F)](LICENSE)
+[![licence: Apache-2.0](https://img.shields.io/badge/licence-Apache--2.0-5C2D91.svg?labelColor=04001F)](LICENSE)
 [![Codacy code quality](https://app.codacy.com/project/badge/Grade/a474c8d33a4a4bd6bd97993f5c4113bd?branch=main)](https://app.codacy.com/gh/ryanduguid/au-tax-legislation-corpus/dashboard)
 ![python: 3.11+](https://img.shields.io/badge/python-3.11%2B-5C2D91.svg?labelColor=04001F)
 
@@ -60,6 +60,6 @@ Live Register capture, synthetic observations and publication candidates have di
 
 The primary source is the [Federal Register of Legislation](https://www.legislation.gov.au/). The repository contains code, not the corpus; generated output retains its own source and licence records.
 
-Code: [MIT](LICENSE). Read the [redistribution limits](docs/scope.md#what-this-deliberately-does-not-ship) before handling generated material.
+Code: [Apache-2.0](LICENSE); keep the attribution in [NOTICE](NOTICE) if you redistribute it or build on it. Read the [redistribution limits](docs/scope.md#what-this-deliberately-does-not-ship) before handling generated material.
 
 </details>
