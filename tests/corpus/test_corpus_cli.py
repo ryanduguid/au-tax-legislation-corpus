@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import argparse
 import contextlib
 import importlib
 import io
@@ -66,6 +67,31 @@ class FaddenCliTests(unittest.TestCase):
                 self.assertEqual(main([stage, "--", *forwarded]), 0)
                 importer.assert_called_once_with(f"fadden.{stage}")
                 module.main.assert_called_once_with(forwarded)
+
+    def _dispatch(self, *argv: str) -> mock.Mock:
+        with mock.patch("importlib.import_module") as importer:
+            module = mock.Mock()
+            module.main.return_value = None
+            importer.return_value = module
+            self.assertEqual(main(list(argv)), 0)
+        return module.main
+
+    def test_finalize_dispatch_passes_today(self) -> None:
+        with mock.patch("fadden.__main__.datetime") as clock:
+            clock.date.today.return_value.isoformat.return_value = "2026-10-13"
+            stage_main = self._dispatch("finalize")
+        stage_main.assert_called_once_with("2026-10-13")
+
+    def test_a_stage_without_parameters_is_called_bare(self) -> None:
+        self._dispatch("discover").assert_called_once_with()
+
+    def test_a_separator_left_by_argparse_is_stripped(self) -> None:
+        # Whether argparse keeps "--" in a REMAINDER list depends on the
+        # interpreter version, so the parsed result is fixed here.
+        parsed = argparse.Namespace(stage="extract", stage_args=["--", "2026-08-22"])
+        with mock.patch.object(argparse.ArgumentParser, "parse_args", return_value=parsed):
+            stage_main = self._dispatch("extract")
+        stage_main.assert_called_once_with("2026-08-22")
 
     def test_stage_roster_is_the_documented_pipeline(self) -> None:
         self.assertEqual(

@@ -321,7 +321,8 @@ class _PinnedDirectoryChain:
         except OSError as exc:
             raise LiveEvidenceBundleError(f"{label} could not be pinned.") from exc
         posix_details = os.fstat(handle)
-        if not stat.S_ISDIR(posix_details.st_mode):
+        # O_DIRECTORY above already refused anything that is not a directory.
+        if not stat.S_ISDIR(posix_details.st_mode):  # pragma: no cover
             os.close(handle)
             raise LiveEvidenceBundleError(f"{label} must be an ordinary directory.")
         self._handles.append(handle)
@@ -699,7 +700,8 @@ def _candidate_identity(register_id: str, document_id: str) -> str:
         _register_id(document_id, "candidate document identifier"),
     )
     identity = f"bundle-frl-{pair[0].lower()}-{pair[1].lower()}-r1"
-    if _candidate_identity_pair(identity) != pair:
+    # Strict Register identifiers always survive the lower-case round trip.
+    if _candidate_identity_pair(identity) != pair:  # pragma: no cover
         raise LiveEvidenceBundleError("candidate identity invariant failed.")
     return identity
 
@@ -1421,7 +1423,8 @@ def _build_validated_snapshot(capture: Path) -> tuple[str, list[tuple[str, dict[
         pair = _candidate_identity_pair(candidate[0])
         previous_pair = candidate_pairs.get(candidate[0])
         if previous_pair is not None:
-            if previous_pair != pair:
+            # The identity encodes its pair injectively, so a repeat is the same pair.
+            if previous_pair != pair:  # pragma: no cover
                 raise LiveEvidenceBundleError("distinct candidate pairs collide.")
             raise LiveEvidenceBundleError("candidate identity is duplicated.")
         candidate_pairs[candidate[0]] = pair

@@ -71,6 +71,12 @@ jobs:
           name: coverage-codecov
           path: coverage-codecov.xml
           retention-days: 1
+      # After the upload, so Codecov still receives a report that misses the floor.
+      - name: hold whole-package coverage at the configured floor
+        if: matrix.os == 'ubuntu-latest' && matrix.python == '3.13'
+        run: uv run --locked --extra dev coverage report  # NOSONAR: the environment is synced from uv.lock, whose dependencies install from wheels
+        env:
+          UV_PYTHON: ${{ matrix.python }}
 
   # The upload runs apart from the tests so the OIDC token is never available
   # while test code runs. It is exempt from tests-gates: a Codecov outage must

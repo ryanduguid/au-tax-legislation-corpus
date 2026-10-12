@@ -132,7 +132,8 @@ def write_receipt(text: str, path: Path, *, inputs: tuple[Path, ...]) -> Path:
             raise error from cleanup_error
         raise
     finally:
-        if published:
+        # A normal exit always sets published; only an exception leaves it False.
+        if published:  # pragma: no branch
             try:
                 staged.unlink()
             except FileNotFoundError:
