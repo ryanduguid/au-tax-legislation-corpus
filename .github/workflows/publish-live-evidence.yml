@@ -9,6 +9,10 @@ on:
         type: boolean
         default: false
 
+# The job below grants itself what it needs; nothing else gets more than read.
+permissions:
+  contents: read
+
 concurrency:
   group: publish-live-evidence-v2
   cancel-in-progress: false
