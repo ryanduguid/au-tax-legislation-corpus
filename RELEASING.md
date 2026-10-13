@@ -105,10 +105,10 @@ the signed provenance bundle
 because it holds the attestation itself:
 
 ```bash
-tag=v0.2.1
+tag=v0.3.0
 # The policy commit that signed this release, from the list above: 87767ec for
-# v0.1.7 to v0.2.1, a601f1d8b143f92b0517f709216993660d21f480 from the next release.
-signer_digest=87767ec809dc7f77bcd45808219adaf67841ae7b
+# v0.1.7 to v0.2.1, a601f1d8b143f92b0517f709216993660d21f480 from v0.3.0.
+signer_digest=a601f1d8b143f92b0517f709216993660d21f480
 repo=ryanduguid/au-tax-legislation-corpus
 release_commit="$(git ls-remote "https://github.com/$repo.git" "refs/tags/$tag^{}" | cut -f1)"
 test -n "$release_commit"
