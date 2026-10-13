@@ -1,3 +1,16 @@
+# v0.3.0
+
+This candidate contains the corpus builder source. It excludes generated legislation and live evidence.
+
+- Breaking: the builder and radar require Python 3.14 or later; 0.2.1 remains the last release for Python 3.11 to 3.13 (#166).
+- Licence: Apache-2.0 replaces MIT for the code, with a `NOTICE` file whose attribution anyone redistributing the code or a derivative must keep (#179). Releases before 0.3.0 stay under MIT.
+- A `compare_builds` stage lists the sections added, removed and changed between two local builds, title by title, and the titles present in only one of them (#170).
+- Stage 2 resolves up to eight principal titles in each paced request, keeps record order, and falls back to single-title requests when batching is unavailable. A malformed response or unresolved title leaves `acts_resolved.json` unchanged (#175).
+- EPUB tables keep source-cell columns under `rowspan`, overlapping row groups are refused, and the parser checks expanded, buffered and padded allocations against its limits (#178).
+- The dot-leader pattern in title extraction no longer backtracks (#192).
+- The release also carries its signed provenance bundle, `au-tax-legislation-corpus-builder-0.3.0.intoto.jsonl` (#191).
+- This release contains builder source only, without a corpus or live evidence.
+
 # v0.2.1
 
 This candidate contains the corpus builder source. It excludes generated legislation and live evidence.
