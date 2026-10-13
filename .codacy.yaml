@@ -1,0 +1,26 @@
+# Opengrep's subprocess, eval and permission audit rules fire on test fixtures
+# and fuzz harnesses that run argument-list commands and set file modes on
+# purpose. Bandit's test exclusion lives in bandit.yml, which Codacy reads for
+# that tool.
+#
+# Lizard and Prospector measure function and file size and complexity. Tests
+# are long by design, one case per assertion block, and uv.lock files are
+# generated, so neither is measured; production code still is.
+engines:
+  opengrep:
+    exclude_paths:
+      - "tests/**"
+      - "**/tests/**"
+      - "fuzz/**"
+  lizard:
+    exclude_paths:
+      - "tests/**"
+      - "**/tests/**"
+      - "fuzz/**"
+      - "uv.lock"
+      - "**/uv.lock"
+  prospector:
+    exclude_paths:
+      - "tests/**"
+      - "**/tests/**"
+      - "fuzz/**"
