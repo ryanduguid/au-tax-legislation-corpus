@@ -7,7 +7,7 @@ name = "tax-radar-au"
 version = "0.2.1"
 description = "Commonwealth tax legislation corpus builder and the provenance-first change-review queue that consumes it"
 readme = "README.md"
-requires-python = ">=3.11"
+requires-python = ">=3.14"
 license = "Apache-2.0"
 license-files = ["LICENSE", "NOTICE"]
 authors = [{ name = "Ryan Duguid" }]
@@ -46,6 +46,7 @@ testpaths = ["tests"]
 addopts = "-q"
 
 [tool.ruff]
+target-version = "py314"
 line-length = 100
 src = ["tax_radar_au", "fadden", "tools", "tests"]
 
@@ -63,7 +64,7 @@ fail_under = 96
 exclude_also = ['if __name__ == "__main__":']
 
 [tool.mypy]
-python_version = "3.11"
+python_version = "3.14"
 packages = ["tax_radar_au", "fadden"]
 ignore_missing_imports = true
 pretty = true
