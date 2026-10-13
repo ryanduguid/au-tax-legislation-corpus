@@ -2,6 +2,7 @@
 
 [![tests](https://img.shields.io/github/actions/workflow/status/ryanduguid/au-tax-legislation-corpus/ci.yml?branch=main&label=tests&labelColor=000000&style=flat-square)](https://github.com/ryanduguid/au-tax-legislation-corpus/actions/workflows/ci.yml)
 [![Codecov](https://img.shields.io/codecov/c/github/ryanduguid/au-tax-legislation-corpus?label=coverage&labelColor=000000&style=flat-square)](https://codecov.io/gh/ryanduguid/au-tax-legislation-corpus)
+[![CodeQL](https://img.shields.io/github/actions/workflow/status/ryanduguid/au-tax-legislation-corpus/codeql.yml?branch=main&label=CodeQL&labelColor=000000&style=flat-square)](https://github.com/ryanduguid/au-tax-legislation-corpus/actions/workflows/codeql.yml)
 [![Snyk](https://img.shields.io/github/actions/workflow/status/ryanduguid/au-tax-legislation-corpus/snyk.yml?branch=main&label=Snyk&labelColor=000000&style=flat-square)](https://github.com/ryanduguid/au-tax-legislation-corpus/actions/workflows/snyk.yml)
 [![SonarCloud](https://img.shields.io/sonar/quality_gate/ryanduguid_au-tax-legislation-corpus?server=https%3A%2F%2Fsonarcloud.io&label=SonarCloud&labelColor=000000&style=flat-square)](https://sonarcloud.io/summary/new_code?id=ryanduguid_au-tax-legislation-corpus)
 [![Codacy code quality](https://img.shields.io/codacy/grade/a474c8d33a4a4bd6bd97993f5c4113bd?label=Codacy&labelColor=000000&style=flat-square)](https://app.codacy.com/gh/ryanduguid/au-tax-legislation-corpus/dashboard)<br>
