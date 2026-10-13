@@ -1,0 +1,12 @@
+# Codacy runs Bandit with this file.
+#
+# Test folders and fuzz harnesses use plain assert, fixed fake credentials and
+# argument-list subprocess calls, so they are excluded. B404 (importing
+# subprocess) and B603 (subprocess without a shell) are audit notices that
+# every argument-list call raises; B602 and B605, which flag a shell, stay on.
+exclude_dirs:
+  - tests
+  - fuzz
+skips:
+  - B404
+  - B603
