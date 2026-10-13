@@ -45,7 +45,8 @@ jobs:
         .github/workflows/ci.yml: package
         .github/workflows/ci.yml: test (ubuntu-latest, 3.14, tests)
         .github/workflows/ci.yml: test (ubuntu-latest, 3.15, tests)
-        .github/workflows/ci.yml: test (windows-latest, 3.14, tests/radar tests/corpus/test_live_evidence_bundle_export.py tests/corpus/test_live_evidence_publication_paths.py)
+        # Match the shortened Windows name GitHub reports; the policy uses exact lookup.
+        .github/workflows/ci.yml: test (windows-latest, 3.14, tests/radar tests/corpus/test_live_evidence_bundle_export.py tests/co...
         .github/workflows/ci.yml: tests-gates
         .github/workflows/codeql.yml: Analyze (actions)
         .github/workflows/codeql.yml: Analyze (python)

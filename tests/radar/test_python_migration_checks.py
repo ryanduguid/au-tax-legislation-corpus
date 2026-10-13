@@ -41,9 +41,10 @@ class PythonMigrationChecks(unittest.TestCase):
     def test_release_selectors_match_every_retained_test_and_package_job(self) -> None:
         release = (ROOT / ".github/workflows/release.yml").read_text(encoding="utf-8")
         selected = re.findall(r"(?m)^        \.github/workflows/ci.yml: (.+)$", release)
-        windows = "tests/radar tests/corpus/test_live_evidence_bundle_export.py tests/corpus/test_live_evidence_publication_paths.py"
+        # The policy matches the shortened name reported by GitHub, not the full matrix value.
+        windows = "test (windows-latest, 3.14, tests/radar tests/corpus/test_live_evidence_bundle_export.py tests/co..."
         self.assertEqual(selected, [
             "lint", "package", "test (ubuntu-latest, 3.14, tests)",
-            "test (ubuntu-latest, 3.15, tests)", f"test (windows-latest, 3.14, {windows})",
+            "test (ubuntu-latest, 3.15, tests)", windows,
             "tests-gates",
         ])
