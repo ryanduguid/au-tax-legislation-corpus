@@ -156,9 +156,9 @@ jobs:
       - name: install the wheel and run the demo from outside the checkout
         run: |
           python -m venv /tmp/venv
-          # --no-index, or pip is free to resolve the name from PyPI and
-          # test a release nobody built in this job.
-          /tmp/venv/bin/pip install --no-index --find-links dist tax-radar-au
+          # The wheel file and --no-index, or pip is free to resolve the name
+          # from PyPI and test a release nobody built in this job.
+          /tmp/venv/bin/pip install --no-index dist/tax_radar_au-*.whl
           cd /tmp
           resolve() { /tmp/venv/bin/python -c "from tax_radar_au.util import sample_path; print(sample_path('$1', '$2'))"; }
           /tmp/venv/bin/tax-radar-au compare \
