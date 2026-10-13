@@ -295,7 +295,7 @@ def _guidance_smoke_contract(commands: list[str]) -> tuple[tuple[str, ...], ...]
         "python -m venv <venv>",
         commands[4]
         .replace('& "$smokeDir\\venv\\Scripts\\python.exe"', "<python>")
-        .replace("$wheelDir", "dist"),
+        .replace('(Get-Item "$wheelDir\\tax_radar_au-*.whl").FullName', "dist/tax_radar_au-*.whl"),
         "outside-checkout",
         *commands[10:12],
     ]

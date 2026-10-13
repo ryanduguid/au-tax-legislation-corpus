@@ -70,7 +70,7 @@ uv run --locked --extra dev --python 3.14 python -m build
 $wheelDir = (Resolve-Path dist).Path
 $smokeDir = Join-Path ([System.IO.Path]::GetTempPath()) ("tax-radar-wheel-smoke-" + [guid]::NewGuid().ToString("N"))
 python -m venv "$smokeDir\venv"
-& "$smokeDir\venv\Scripts\python.exe" -m pip install --no-index --find-links $wheelDir tax-radar-au
+& "$smokeDir\venv\Scripts\python.exe" -m pip install --no-index (Get-Item "$wheelDir\tax_radar_au-*.whl").FullName
 Push-Location $smokeDir
 $baseline = & "$smokeDir\venv\Scripts\python.exe" -c "from tax_radar_au.util import sample_path; print(sample_path('baseline', 'sample-sources.json'))"
 $observation = & "$smokeDir\venv\Scripts\python.exe" -c "from tax_radar_au.util import sample_path; print(sample_path('observations', 'sample-register-observation.json'))"
