@@ -5,7 +5,7 @@ This benchmark measures the production `to_markdown` path against 2 fabricated v
 Run it from the repository root:
 
 ```bash
-uv run --locked --extra dev --with pyperf==2.10.0 --python 3.12 python benchmarks/benchmark_extract.py --rigorous
+uv run --locked --extra dev --with pyperf==2.10.0 --python 3.14 python benchmarks/benchmark_extract.py --rigorous
 ```
 
 This is measurement-only. No duration or variance threshold is part of tests or CI. A threshold should be proposed only after repeated runs on a stable runner establish normal dispersion and the pull request records the raw results.

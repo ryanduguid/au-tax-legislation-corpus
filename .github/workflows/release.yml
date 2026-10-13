@@ -43,11 +43,10 @@ jobs:
         .github/workflows/no-ai-attribution.yml: Attribution policy / Attribution policy runner
         .github/workflows/ci.yml: lint
         .github/workflows/ci.yml: package
-        .github/workflows/ci.yml: test (ubuntu-latest, 3.11, tests)
-        .github/workflows/ci.yml: test (ubuntu-latest, 3.12, tests)
-        .github/workflows/ci.yml: test (ubuntu-latest, 3.13, tests)
         .github/workflows/ci.yml: test (ubuntu-latest, 3.14, tests)
-        .github/workflows/ci.yml: test (windows-latest, 3.12, tests/radar tests/corpus/test_live_evidence_bundle_export.py)
+        .github/workflows/ci.yml: test (ubuntu-latest, 3.15, tests)
+        # Match the shortened Windows name GitHub reports; the policy uses exact lookup.
+        .github/workflows/ci.yml: test (windows-latest, 3.14, tests/radar tests/corpus/test_live_evidence_bundle_export.py tests/co...
         .github/workflows/ci.yml: tests-gates
         .github/workflows/codeql.yml: Analyze (actions)
         .github/workflows/codeql.yml: Analyze (python)
