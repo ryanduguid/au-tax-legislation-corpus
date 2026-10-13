@@ -50,7 +50,8 @@ class SourceSnapshot:
                 raise ValueError("source byte limit must be non-negative")
             # A non-blocking open returns at once even for a FIFO, and fstat then
             # checks the object actually opened, not whatever the path named earlier.
-            with open(path, "rb", opener=_open_nonblocking) as stream:
+            # Maintainer CLI; the path is a command-line argument or a fixed name under one.
+            with open(path, "rb", opener=_open_nonblocking) as stream:  # NOSONAR
                 info = os.fstat(stream.fileno())
                 if not stat.S_ISREG(info.st_mode):
                     raise MonitorError(f"{label} must be a regular file: {path}.")

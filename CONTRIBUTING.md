@@ -43,6 +43,8 @@ contract tests still run.
 
 ## Pull requests
 
+Add or update tests with every change to behaviour: new functionality needs a test that fails without it, and a fixed defect needs a regression test. CI holds both packages to their coverage floor.
+
 State which stage of the pipeline your change touches and what the output looks like before and after. If the change alters counts recorded in a manifest, say which titles moved and why.
 
 For a potential security vulnerability, follow [SECURITY.md](SECURITY.md) rather than opening an issue.

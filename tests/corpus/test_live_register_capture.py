@@ -216,6 +216,39 @@ class FakeClock:
 
 
 class LiveRegisterCaptureTests(unittest.TestCase):
+    def test_source_qualified_foreign_identifiers_fail_before_acquisition(self) -> None:
+        for identifier in ("ato:C2004A00467", "frl:C2004A00467", "[2026] FCA 1"):
+            with self.subTest(identifier=identifier), tempfile.TemporaryDirectory() as directory:
+                root = Path(directory)
+                manifest = root / "manifest.json"
+                manifest.write_bytes(json_bytes([manifest_row(id=identifier)]))
+                session = MemorySession({})
+                output = root / "new-parent" / "capture"
+                with self.assertRaises(CaptureRegisterError):
+                    capture_register_run(manifest, output, session=session)
+                self.assertEqual(session.urls, [])
+                self.assertFalse(output.parent.exists())
+
+    def test_same_native_id_cannot_substitute_a_different_source_or_view(self) -> None:
+        original = str(manifest_row()["sourceUrl"])
+        urls = (
+            original.replace("www.legislation.gov.au", "www.ato.gov.au"),
+            original + "?source=ato",
+            original + "#section",
+            original.replace("C2004A00467", "C2004A00468"),
+        )
+        for url in urls:
+            with self.subTest(url=url), tempfile.TemporaryDirectory() as directory:
+                root = Path(directory)
+                manifest = root / "manifest.json"
+                manifest.write_bytes(json_bytes([manifest_row(sourceUrl=url)]))
+                session = MemorySession({})
+                output = root / "new-parent" / "capture"
+                with self.assertRaises(CaptureRegisterError):
+                    capture_register_run(manifest, output, session=session)
+                self.assertEqual(session.urls, [])
+                self.assertFalse(output.parent.exists())
+
     def test_single_unchanged_title_writes_complete_immutable_graph(self) -> None:
         """A missing query, evidence byte or cross-file binding must fail this case."""
         manifest = [

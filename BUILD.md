@@ -215,9 +215,29 @@ https://www.legislation.gov.au/robots.txt. All 946 titles take about 2 hours
 40 minutes. It skips any EPUB already present whose sidecar `.meta.json`
 records the same version, so re-runs cost only the new titles.
 
-`discover.py` and `versions.py` hit the API roughly 1,100 times at 1.5 to 3
-second intervals, about 40 minutes combined. `extract.py`, `finalize.py` and
-`rates.py` are local: about 3 minutes for all 3 over 946 titles.
+`discover.py` waits 3 seconds after each keyword/collection query and 2 seconds
+between full pages. Its request count depends on the matching titles.
+
+`versions.py` makes one diagnostic request, then resolves up to 8 principal
+titles per request, with a 1.5-second pause after each resolution request.
+Multi-title requests ask for one extra row to detect multiple current versions;
+single-title requests retain `$top=1`. Every returned row must pass the existing
+identity, date and document checks. A valid batch with missing or duplicate titles
+is discarded and its entire group is resolved individually, then batching resumes.
+Malformed, foreign, paginated or over-limit responses fail without replacing the
+manifest. An unavailable batch switches the remainder to single-title lookups.
+
+For 946 principal titles, a run with no ambiguous groups needs 119 resolution
+requests plus the diagnostic, with 178.5 seconds of fixed pauses. Each ambiguous
+group adds one request and pause per title in that group. For example, 7 ambiguous
+groups containing 50 titles require 169 resolution requests and 253.5 seconds of
+pauses, saving 1,165.5 seconds compared with single-title resolution. If every group
+is ambiguous, the 119 batch attempts and 946 singleton retries make 1,065 resolution
+requests, costing more than serial resolution. These figures are arithmetic, not
+measured full-build times; network latency and retries add time.
+
+`extract.py`, `finalize.py` and `rates.py` are local: about 3 minutes for all 3
+over 946 titles.
 
 `check_current.py` is 946 API calls at 1.5 seconds, so allow half an hour. It
 prints a progress line every 25 titles.
@@ -244,9 +264,15 @@ and ZIP64 directories are refused. Stored and deflated members are decoded
 in bounded chunks. Their actual length, CRC and stream end must match the
 directory record, so a forged size cannot bypass the limits. Other compression
 methods and encrypted members are refused. Table spans above 1,024 columns, rows
-above 4,096 columns and EPUBs above 1,000,000 expanded or padded cells fail
-extraction. The extractor rejects these inputs rather than changing their
-column alignment. Front matter uses typed, quoted scalar values; corpus index
+above 4,096 columns and EPUBs above 1,000,000 expanded, buffered or padded cells fail
+extraction. Rows with no logical cells consume one buffered allocation unit without adding
+output cells. Table nesting is limited to 64 open tables, including the root;
+depth 65 fails before another table frame is allocated. This is a provisional
+resource limit. Real Register template depth and total peak memory remain unverified.
+An over-depth title follows the existing parse-failure path: later titles proceed,
+the stage exits nonzero and the prior Markdown manifest is preserved.
+The extractor rejects these inputs without changing their column alignment.
+Front matter uses typed, quoted scalar values; corpus index
 and rate metadata are escaped as literal Markdown.
 
 - **`curl` does not truncate `-o` on transport failure.** A shared temp file
@@ -363,10 +389,10 @@ and rate metadata are escaped as literal Markdown.
   volume's own first block, which is the compilation cover page that every
   markdown file and every JSONL row states was omitted. `Header` and `Footer`
   are skipped classes but not boundaries: Word repeats the running header above
-  the cover page. A volume showing neither boundary keeps the gate shut and is
-  dropped as it was before, which is the older documented loss in preference to
-  publishing a cover page under a notice saying it was removed; all 11
-  heading-less volumes across the 946 EPUBs open at a contents page. And leave
+  the cover page. In the normal pass, a volume with non-skipped content and no
+  identifiable boundary fails extraction when the document has mapped headings.
+  Empty and skipped-only volumes are exempt from that refusal. In the documented
+  946-EPUB inventory, all 11 heading-less volumes open at a contents page. Leave
   the bare-text endnote trigger armed only once a mapped heading has been seen.
   The cover page lists 'Endnotes' as one of the volumes, so arming it at the
   top of a heading-less volume routes that volume's whole body into
@@ -421,6 +447,7 @@ python -m fadden finalize      # write the corpus-level index and licence files 
 python -m fadden rates         # derive the rates-and-thresholds index -> ./corpus/rates/rates.jsonl, RATES.md
 python -m fadden check_current # read-only staleness check against the Register
 python -m fadden as_at 2026-07-15 # classify each title's captured compilation against a date (docs/scope.md)
+python -m fadden compare_builds OLD_ROOT NEW_ROOT # list the sections added, removed and changed between two builds
 python -m fadden capture_register -- fadden/manifest_md.json --out build/register-capture-20260829
 python -m fadden export_live_evidence_bundles -- build/register-capture-20260829 --out build/live-evidence-20260829
 ```

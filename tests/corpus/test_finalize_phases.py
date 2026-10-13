@@ -287,6 +287,42 @@ class FinalizePhaseTests(unittest.TestCase):
                 (self.scratch / name).read_bytes(),
             )
 
+    def test_an_unlisted_collection_gets_its_own_index_section(self) -> None:
+        gazette = {
+            "id": "C2026G00004", "name": "Gazette Notice", "collection": "Gazette",
+            "epub": "C2026G00004.epub", "bytes": 10, "markdown": "C2026G00004/C2026G00004.md",
+            "words": 3,
+        }
+        folder = self.root / "markdown" / gazette["id"]
+        folder.mkdir(parents=True)
+        (folder / "sections.jsonl").write_text(
+            "\n" + json.dumps({"section": "1", "kind": "section", "text": "notice"}) + "\n\n",
+            encoding="utf-8")
+
+        inventory = self.finalize.assemble_corpus_inventory([gazette], [gazette], self.root)
+        index = self.finalize.build_index_document(inventory, "2026-08-04")
+
+        self.assertEqual(inventory.total_rows, 1)
+        self.assertIn("## Other collections (1)", index)
+        self.assertIn("| [Gazette Notice](markdown/C2026G00004/C2026G00004.md) | Gazette | "
+                      "C2026G00004 | 1 |", index)
+        self.assertNotIn("Titles with no EPUB available", index)
+
+    def test_a_rerun_from_the_deployed_build_directory_copies_nothing_onto_itself(self) -> None:
+        deployed = self.root / "build"
+        deployed.mkdir()
+        for name in SUPPORT:
+            (deployed / name).write_bytes((self.scratch / name).read_bytes())
+        self.finalize.SCRATCH = str(deployed)
+        self.finalize.ROOT = str(self.root)
+        with contextlib.redirect_stdout(io.StringIO()):
+            self.finalize.finish_corpus_publication(self.inventory(), "2026-08-04", (2, 200))
+
+        for name in SUPPORT:
+            self.assertEqual((deployed / name).read_bytes(), (self.scratch / name).read_bytes())
+        self.assertEqual((self.root / "http_fetch.py").read_bytes(),
+                         (self.scratch / "http_fetch.py").read_bytes())
+
     def test_main_keeps_output_stdout_and_support_script_bytes_exact(self) -> None:
         self.finalize.SCRATCH = str(self.scratch)
         self.finalize.ROOT = str(self.root)

@@ -314,14 +314,16 @@ class _PinnedDirectoryChain:
         flags = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW
         try:
             handle = (
-                os.open(os.fspath(path), flags)
+                # Maintainer CLI; the path is a command-line argument or a fixed name under one.
+                os.open(os.fspath(path), flags)  # NOSONAR
                 if parent_handle is None
                 else os.open(path.name, flags, dir_fd=parent_handle)
             )
         except OSError as exc:
             raise LiveEvidenceBundleError(f"{label} could not be pinned.") from exc
         posix_details = os.fstat(handle)
-        if not stat.S_ISDIR(posix_details.st_mode):
+        # O_DIRECTORY above already refused anything that is not a directory.
+        if not stat.S_ISDIR(posix_details.st_mode):  # pragma: no cover
             os.close(handle)
             raise LiveEvidenceBundleError(f"{label} must be an ordinary directory.")
         self._handles.append(handle)
@@ -474,7 +476,8 @@ def _copy_regular_file(
         expected = _ordinary_file_details(source_path, directory_handle=directory_handle)
     try:
         if os.name == "nt" and directory_handle is None:
-            source: IO[bytes] = open(source_path, "rb")
+            # Maintainer CLI; the path is a command-line argument or a fixed name under one.
+            source: IO[bytes] = open(source_path, "rb")  # NOSONAR
         elif os.name == "nt" and directory_handle is not None:
             import msvcrt
 
@@ -699,7 +702,8 @@ def _candidate_identity(register_id: str, document_id: str) -> str:
         _register_id(document_id, "candidate document identifier"),
     )
     identity = f"bundle-frl-{pair[0].lower()}-{pair[1].lower()}-r1"
-    if _candidate_identity_pair(identity) != pair:
+    # Strict Register identifiers always survive the lower-case round trip.
+    if _candidate_identity_pair(identity) != pair:  # pragma: no cover
         raise LiveEvidenceBundleError("candidate identity invariant failed.")
     return identity
 
@@ -1331,7 +1335,8 @@ def _publish_candidates(
         except OSError as exc:
             raise LiveEvidenceBundleError("live evidence output could not be promoted.") from exc
     finally:
-        if owned is not None:
+        # A normal exit always pinned the staging; only an exception leaves owned None.
+        if owned is not None:  # pragma: no branch
             try:
                 _cleanup_owned_staging(owned)
             finally:
@@ -1421,7 +1426,8 @@ def _build_validated_snapshot(capture: Path) -> tuple[str, list[tuple[str, dict[
         pair = _candidate_identity_pair(candidate[0])
         previous_pair = candidate_pairs.get(candidate[0])
         if previous_pair is not None:
-            if previous_pair != pair:
+            # The identity encodes its pair injectively, so a repeat is the same pair.
+            if previous_pair != pair:  # pragma: no cover
                 raise LiveEvidenceBundleError("distinct candidate pairs collide.")
             raise LiveEvidenceBundleError("candidate identity is duplicated.")
         candidate_pairs[candidate[0]] = pair
