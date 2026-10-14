@@ -61,7 +61,8 @@ def row(rid: str, ordinal: int, section: str | None, text: str, *, heading: str 
 def sample_titles() -> dict[str, tuple[str, list[dict[str, Any]]]]:
     return {
         ACT: ("Sample Levy Act 2099", [
-            row(ACT, 1, "1", "This Act is the Sample Levy Act 2099.", heading="1 Short title"),
+            row(ACT, 1, "1", "This Act is the Sample Levy Act 2099. Divisions 2 and 3 apply, "
+                "and Subdivision 2-A sets the rules.", heading="1 Short title"),
             row(ACT, 2, "2" + NBH + "1", "A widget attracts the sample levy. See section 3"
                 + NBH + "1 and section 5 of the Other Sample Act 2099.",
                 heading="2" + NBH + "1 Widgets"),
@@ -73,7 +74,8 @@ def sample_titles() -> dict[str, tuple[str, list[dict[str, Any]]]]:
                 heading="1 Schedule item", container="Schedule 1"),
         ]),
         OTHER: ("Other Sample Act 2099", [
-            row(OTHER, 1, "5", "Refer to section 2" + NBH + "1 of the Sample Levy Act 2099.",
+            row(OTHER, 1, "5", "Refer to section 2" + NBH + "1 of the Sample Levy Act 2099. "
+                "See Subdivision 2-A of the Sample Levy Act 2099.",
                 heading="5 Cross reference"),
             row(OTHER, 2, "6", "widget means a small device.", heading="6 Interpretation"),
         ]),
@@ -82,6 +84,26 @@ def sample_titles() -> dict[str, tuple[str, list[dict[str, Any]]]]:
                 heading="1 Application"),
         ]),
     }
+
+
+# Structure headings the fabricated Markdown carries before a row, by ordinal.
+ACT_STRUCTURE = {
+    1: ["## Part 1\u2014Preliminary"],
+    2: ["## Part 2\u2014Levy", "### Division 2\u2014Widgets",
+        "#### Subdivision 2" + NBH + "A\u2014Basic rules"],
+    3: ["### Division 3\u2014Research", "#### Subdivision B\u2014Lettered"],
+    4: ["### Division 6.1\u2014Decimal"],
+    5: ["## Schedule 1\u2014Items"],
+}
+
+
+def markdown(name: str, rows: list[dict[str, Any]],
+             structure: dict[int, list[str]]) -> str:
+    lines = ["# " + name]
+    for ordinal, entry in enumerate(rows, 1):
+        lines += structure.get(ordinal, [])
+        lines += ["##### " + entry["heading"], entry["text"]]
+    return "\n\n".join(lines) + "\n"
 
 
 def write_corpus(root: Path, titles: dict[str, tuple[str, list[dict[str, Any]]]] | None = None,
@@ -93,6 +115,8 @@ def write_corpus(root: Path, titles: dict[str, tuple[str, list[dict[str, Any]]]]
         directory.mkdir(parents=True)
         (directory / "sections.jsonl").write_text(
             "".join(json.dumps(r, ensure_ascii=False) + "\n" for r in rows), encoding="utf-8")
+        (directory / f"{rid}.md").write_text(
+            markdown(name, rows, ACT_STRUCTURE if rid == ACT else {}), encoding="utf-8")
         listed.append({
             "register_id": rid, "name": name, "collection": "Act",
             "compilation_number": "1", "compilation_date": "2099-07-01",
@@ -218,6 +242,11 @@ class BuildTests(SearchTestCase):
         path.unlink()
         self.assert_refused("cannot read sections.jsonl")
 
+    def test_a_title_without_its_markdown_is_refused(self) -> None:
+        write_corpus(self.root)
+        (self.root / "markdown" / OTHER / f"{OTHER}.md").unlink()
+        self.assert_refused(f"cannot read {OTHER}.md")
+
     def test_a_failed_promotion_leaves_no_staging_file(self) -> None:
         write_corpus(self.root)
         with mock.patch("fadden.search.os.link", side_effect=OSError("no links here")):
@@ -310,6 +339,9 @@ class DefinitionTests(SearchTestCase):
 
 
 class ReferenceTests(SearchTestCase):
+    def cited(self, text: str) -> list[tuple[str, str, str | None]]:
+        return [(kind, key, act) for kind, key, act, _ in search.citations(text)]
+
     def test_citations_name_the_section_and_any_other_instrument(self) -> None:
         text = ("section 8" + NBH + "1, paragraph 8-1(2)(a) of this Act, section 5 of the "
                 "Other Sample Act 2099, subsection 995-1(1) of the *ITAA 1997 but includes "
@@ -317,20 +349,99 @@ class ReferenceTests(SearchTestCase):
                 "section 2 of the A New Tax System (Goods and Services Tax) Act 1999, "
                 "section 3 of the Act (with changes), section 4 in Schedule 2 and "
                 "subsection (3).")
-        self.assertEqual([(s, a) for s, a, _ in search.citations(text)], [
+        self.assertEqual([(key, act) for _, key, act in self.cited(text)], [
             ("8-1", None), ("8-1", None), ("5", "Other Sample Act 2099"),
             ("995-1", "ITAA 1997"), ("12-35", "Taxation Administration Act 1953"),
             ("2", "A New Tax System (Goods and Services Tax) Act 1999"), ("3", "Act"),
             ("4", None)])
 
+    def test_a_list_gives_one_reference_per_item(self) -> None:
+        cases = {
+            "sections 8-1 and 8-5 apply": [("section", "8-1", None), ("section", "8-5", None)],
+            "sections 8" + NBH + "1, 8" + NBH + "5 and 8" + NBH + "10 of the ITAA 1997.": [
+                ("section", "8-1", "ITAA 1997"), ("section", "8-5", "ITAA 1997"),
+                ("section", "8-10", "ITAA 1997")],
+            "subsections 6-5(2), 6-10(4), or 6-15(1)": [
+                ("section", "6-5", None), ("section", "6-10", None), ("section", "6-15", None)],
+            "Section 23 and section 23AA": [("section", "23", None), ("section", "23AA", None)],
+            "Divisions 40, 43 or 83A of this Act": [
+                ("division", "40", None), ("division", "43", None), ("division", "83A", None)],
+            "Subdivisions 20-A and 20" + NBH + "B": [
+                ("subdivision", "20-A", None), ("subdivision", "20-B", None)],
+            "Division 40 and Subdivision 20-A": [
+                ("division", "40", None), ("subdivision", "20-A", None)],
+        }
+        for text, expected in cases.items():
+            with self.subTest(text=text):
+                self.assertEqual(self.cited(text), expected)
+
+    def test_text_that_only_looks_like_a_reference_is_not_read(self) -> None:
+        cases = {
+            "sections 8-1 to 8-10": [("section", "8-1", None)],
+            "section 8-1 and 2 other provisions": [("section", "8-1", None)],
+            "section 23 and 2-1 apply": [("section", "23", None)],
+            "subsections 8-1(1) and (2)": [("section", "8-1", None)],
+            "section 8-1, the Commissioner": [("section", "8-1", None)],
+            "Subdivision B of Division 3": [("division", "3", None)],
+            "Division 6.1 applies": [],
+            "Division 8-1, Subdivision 40 and section 20-A": [],
+            "this Division, the Subdivision and Part 3-1": [],
+            "the divisional manager 4 and subsectional 5": [],
+        }
+        for text, expected in cases.items():
+            with self.subTest(text=text):
+                self.assertEqual(self.cited(text), expected)
+
+    def test_structure_follows_the_markdown_headings(self) -> None:
+        connection = self.built()
+        places = connection.execute(
+            "SELECT division_key, subdivision_key FROM rows WHERE register_id = ? ORDER BY id",
+            (ACT,)).fetchall()
+        self.assertEqual([tuple(place) for place in places], [
+            (None, None), ("2", "2-A"), ("3", None), (None, None), (None, None)])
+        rows = [{"heading": "Introductory material"}, {"heading": "1  Short\ntitle"},
+                {"heading": "1 Short title"}]
+        self.assertEqual(list(search.structure(rows, "### Division 7A\u2014Loans\n"
+                                                     "##### 1 Short title\n")),
+                         [(None, None), ("7A", None), (None, None)])
+
     def test_refs_resolve_within_and_across_titles(self) -> None:
         connection = self.built()
         report = search.refs(connection, f"{ACT}:0002:2{NBH}1")
+        self.assertEqual((report["division"], report["subdivision"]), ("2", "2-A"))
         self.assertEqual([(c["register_id"], [r["row_id"] for r in c["rows"]])
                           for c in report["cites"]],
                          [(ACT, [f"{ACT}:0003:3{NBH}1"]), (OTHER, [f"{OTHER}:0001:5"])])
-        self.assertEqual([c["row_id"] for c in report["cited_by"]],
-                         [f"{ACT}:0003:3{NBH}1", f"{ACT}:0004:4", f"{OTHER}:0001:5"])
+        self.assertEqual(sorted({(c["row_id"], c["kind"]) for c in report["cited_by"]}), [
+            (f"{ACT}:0001:1", "division"), (f"{ACT}:0001:1", "subdivision"),
+            (f"{ACT}:0003:3{NBH}1", "section"), (f"{ACT}:0004:4", "section"),
+            (f"{OTHER}:0001:5", "section"), (f"{OTHER}:0001:5", "subdivision")])
+
+    def test_division_and_subdivision_references_resolve_to_their_rows(self) -> None:
+        connection = self.built()
+        cites = search.refs(connection, f"{ACT}:0001:1")["cites"]
+        self.assertEqual([(c["kind"], c["key"], [r["row_id"] for r in c["rows"]]) for c in cites], [
+            ("division", "2", [f"{ACT}:0002:2{NBH}1"]),
+            ("division", "3", [f"{ACT}:0003:3{NBH}1"]),
+            ("subdivision", "2-A", [f"{ACT}:0002:2{NBH}1"])])
+        across = search.refs(connection, f"{OTHER}:0001:5")["cites"]
+        self.assertEqual([(c["kind"], c["register_id"], len(c["rows"])) for c in across],
+                         [("section", ACT, 1), ("subdivision", ACT, 1)])
+
+    def test_text_output_shortens_a_long_target_list(self) -> None:
+        rows = [row(ACT, 1, "1", "Division 5 applies.", heading="1 Scope")] + [
+            row(ACT, n, f"5-{n}", "Text.", heading=f"5-{n} Item") for n in range(2, 9)]
+        write_corpus(self.root, {ACT: ("Sample Levy Act 2099", rows)})
+        (self.root / "markdown" / ACT / f"{ACT}.md").write_text(
+            markdown("Sample Levy Act 2099", rows, {2: ["### Division 5\u2014Items"]}),
+            encoding="utf-8")
+        search.build(str(self.root), str(self.out))
+        code, out, _err = self.run_main("refs", str(self.out), f"{ACT}:0001:1")
+        self.assertEqual(code, 0)
+        self.assertIn(f"cites division 5 (Division 5): {ACT}:0002:5-2, ", out)
+        self.assertIn("and 2 more", out)
+        code, out, _err = self.run_main("refs", str(self.out), f"{ACT}:0002:5-2")
+        self.assertIn(f"cited by {ACT}:0001:1 (1 Scope): Division 5", out)
 
     def test_unresolved_and_repeated_targets_are_reported_as_they_are(self) -> None:
         connection = self.built()
@@ -357,7 +468,7 @@ class CommandLineTests(SearchTestCase):
         write_corpus(self.root)
         code, out, _err = self.run_main("build", str(self.root), "--out", str(self.out))
         self.assertEqual((code, out), (0, "indexed 3 titles, 8 rows, 7 definitions and "
-                                          "9 section references\n"))
+                                          "13 section references\n"))
         for argv in (("query", str(self.out), "widget"),
                      ("define", str(self.out), "approved", "gadget"),
                      ("refs", str(self.out), f"{ACT}:0002:2{NBH}1")):

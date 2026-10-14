@@ -15,7 +15,7 @@
 - **ATO rulings (`rulings`)**: fetches up to 100 named ATO-authored Legal Database documents (rulings, determinations, practical compliance guidelines, decision impact statements and edited private advice) into paragraph JSONL with the ATO reuse notice. It never touches `./corpus/` and excludes any document that matches a personal-data pattern.
 - **As-at check (`as_at`)**: classifies each captured compilation against a date. `captured` is not a finding that the text was the law on that date.
 - **Build comparison (`compare_builds`)**: lists the sections added, removed and changed between two local builds, matched on container and section label. It compares the derived reading view, not the authorised text, and says nothing about an amendment's legal effect.
-- **Local search (`search`)**: indexes a finished corpus into one SQLite file (standard-library FTS5) after checking every row's provenance against `sources.json`, then answers full-text queries, defined-term lookups from definitions rows and section cross-references. Every hit carries its `row_id`, compilation and Register page; none of it is authorised text.
+- **Local search (`search`)**: indexes a finished corpus into one SQLite file (standard-library FTS5) after checking every row's provenance against `sources.json`, then answers full-text queries, defined-term lookups from definitions rows and section, Division and Subdivision cross-references. Every hit carries its `row_id`, compilation and Register page; none of it is authorised text.
 - **Evidence contracts**: live Register capture, synthetic observations and publication candidates are distinct. A successful capture or export authorises nothing for publication.
 
 ## Review queue (`tax_radar_au`)

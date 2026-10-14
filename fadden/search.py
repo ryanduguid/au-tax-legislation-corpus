@@ -30,13 +30,17 @@ includes``, ``<term> does not include`` or ``<term>: ...``. A term defined any
 other way, or in a row with another heading, is not found; an empty result is
 not a finding that the term has its ordinary meaning.
 
-``refs`` lists the sections a row cites and the rows that cite its section.
-A citation is ``section``, ``subsection``, ``paragraph`` or ``subparagraph``
-followed by a section number. With no ``of`` or ``in`` after it, or ``of this
-...``, it resolves to the citing title. When ``of`` or ``in`` names another
-instrument, it resolves only to a title whose name matches exactly; an
+``refs`` lists the sections, Divisions and Subdivisions a row cites, and the
+rows that cite its section, Division or Subdivision. A citation is ``section``,
+``subsection``, ``paragraph`` or ``subparagraph`` followed by a section number,
+``Division`` followed by a Division number, or ``Subdivision`` followed by a
+numbered Subdivision such as ``20-A``; a list joined by commas, ``and`` or
+``or`` gives one reference per item. With no ``of`` or ``in`` after it, or
+``of this ...``, it resolves to the citing title. When ``of`` or ``in`` names
+another instrument, it resolves only to a title whose name matches exactly; an
 abbreviation such as ``ITAA 1997``, ``the Act`` or an instrument outside the
-index stays unresolved, with the cited name kept.
+index stays unresolved, with the cited name kept. A row's Division and
+Subdivision come from ``structure``.
 
 All of it is a finding aid over the EPUB reading view, not the authorised text.
 
@@ -66,7 +70,7 @@ if TYPE_CHECKING or __package__:
 else:
     from corpus_paths import child, refuse_unlisted_titles, register_id
 
-SCHEMA = "1"
+SCHEMA = "2"
 NOTICE = ("Finding aid derived from the Register's EPUB reading view, not authorised "
           "legislation or tax advice. Read the authorised compilation on the Register "
           "before relying on a row.")
@@ -90,12 +94,24 @@ _SECTION = r"\d+[A-Z]{0,4}(?:[-\u2010\u2011]\d+[A-Z]{0,4})?"
 _YEAR = r"(?:18|19|20)\d{2}\b"
 _CITED = (r"(?:the\s+)?\*?([A-Z][A-Za-z]*(?:\s+[A-Z][A-Za-z]*){0,3}\s+" + _YEAR
           + r"|(?=[A-Z])[^.;:,\n]{0,150}?\b(?:Act|Regulations?|Rules)\b(?:\s+" + _YEAR + ")?)")
+# A section, a Division ("40", "83A") or a numbered Subdivision ("20-A"), with
+# any subsection and paragraph brackets after it.
+_LABEL = r"\d+[A-Z]{0,4}(?:[-\u2010\u2011](?:\d+[A-Z]{0,4}|[A-Z]{1,3}\b))?(?!\.\d)(?:\([0-9A-Za-z]{1,6}\))*"
+_LIST_SEPARATOR = r"(?:,?\s+(?:and|or)\s+|,\s+)"
 CITATION = re.compile(
-    r"\b(?i:(?:sub)?(?:section|paragraph|subparagraph))\s+"
-    r"(?P<section>" + _SECTION + r")(?:\([0-9A-Za-z]{1,6}\))*"
+    r"\b(?P<keyword>(?i:(?:sub)?(?:section|paragraph|subparagraph)|subdivision|division))s?\s+"
+    r"(?P<labels>" + _LABEL + "(?:" + _LIST_SEPARATOR + _LABEL + r")*)"
     r"(?:\s+(?:of|in)\s+(?:Schedule\s+\d+[A-Z]?\s+to\s+" + _CITED
     + r"|this\s+\w+|Schedule\s+\d+[A-Z]?\b|" + _CITED + r"))?")
+LIST_SEPARATOR = re.compile(_LIST_SEPARATOR)
 SECTION = re.compile(_SECTION)
+_SUBDIVISION = r"\d+[A-Z]{0,4}[-\u2010\u2011][A-Z]{1,3}\b"
+SUBDIVISION = re.compile(_SUBDIVISION)
+MARKDOWN_HEADING = re.compile(r"^#{1,6} (.+)$", re.M)
+# A heading that opens a level of structure. "Division 6.1" opens a Division
+# this index does not label, so it clears the Division rather than naming 6.
+LEVEL = re.compile(r"(Chapter|Part|Schedule|Division|Subdivision)\b(?:\s+("
+                   + _SUBDIVISION + "|" + _SECTION + r")(?![.\w]))?")
 HYPHENS = str.maketrans({"\u2010": "-", "\u2011": "-"})
 
 
@@ -158,30 +174,94 @@ def definitions(text: str) -> list[tuple[str, str]]:
     return [(term, "\n\n".join(body)) for term, body in found]
 
 
-def citations(text: str) -> Iterator[tuple[str, str | None, str]]:
-    """Yield (section, cited act or None, citation text) for each section reference.
+def citations(text: str) -> Iterator[tuple[str, str, str | None, str]]:
+    """Yield (kind, key, cited act or None, citation text) for each reference.
 
-    shortcut: a list such as "sections 8-1 and 8-5" is not matched; only the
-    singular forms are. Matching a list needs a grammar for "and", "to" and
-    ranges, so it waits for a demonstrated need.
+    *kind* is ``section``, ``division`` or ``subdivision``. A list ("sections
+    8-1, 8-5 and 8-10") yields one reference per item, all naming the
+    instrument after the last item. The list ends at an item numbered unlike
+    the first (hyphenated or not). A range ("sections 8-1 to 8-10") yields
+    only its first item. A Subdivision named by letter alone ("Subdivision B")
+    is not read: the same letter recurs in many Divisions of one title.
     """
     for match in CITATION.finditer(text):
-        act = next((name for name in match.groups()[1:] if name), None)
-        yield section_key(match["section"]), " ".join(act.split()) if act else None, \
-            " ".join(match.group(0).split())
+        keyword = match["keyword"].casefold()
+        kind = keyword if keyword in ("division", "subdivision") else "section"
+        act = next((name for name in match.groups()[2:] if name), None)
+        act = " ".join(act.split()) if act else None
+        citation = " ".join(match.group(0).split())
+        hyphenated = None
+        for label in LIST_SEPARATOR.split(match["labels"]):
+            key = section_key(label.split("(", 1)[0])
+            # "section 8-1 and 2 other provisions": a later item numbered unlike
+            # the first is prose, so the list ends before it.
+            if hyphenated is None:
+                hyphenated = "-" in key
+            elif hyphenated != ("-" in key):
+                break
+            if SUBDIVISION.fullmatch(key):
+                fits = kind == "subdivision" and "(" not in label
+            else:
+                fits = kind == "section" or (kind == "division" and not re.search("[-(]", key + label))
+            if fits:
+                yield kind, key, act, citation
 
 
-def _read_title(root: str, title: dict[str, Any]) -> tuple[str, str, list[dict[str, Any]]]:
-    rid = register_id(title.get("register_id"))
-    path = child(root, "markdown", rid, "sections.jsonl")
+def structure(rows: list[dict[str, Any]],
+              markdown: str) -> Iterator[tuple[str | None, str | None]]:
+    """Yield the (Division, Subdivision) each row of one title sits in.
+
+    A row's ``container`` names only its innermost heading, so the title's own
+    Markdown supplies the hierarchy. Its headings are walked in order: a
+    ``Chapter``, ``Part`` or ``Schedule`` heading clears both levels, a
+    ``Division`` heading sets the Division and clears the Subdivision, and a
+    ``Subdivision`` heading sets a numbered Subdivision such as ``20-A`` (a
+    lettered one clears it, since letters recur across Divisions). Each row
+    takes the place of the next heading equal to its own; a row with no such
+    heading, such as ``Introductory material``, gets neither.
+    """
+    places = []
+    division = subdivision = None
+    for text in MARKDOWN_HEADING.findall(markdown):
+        heading = " ".join(normalise(text).split())
+        found = LEVEL.match(heading)
+        if found:
+            level, label = found[1], section_key(found[2]) if found[2] else None
+            if level == "Division":
+                division, subdivision = label, None
+            elif level == "Subdivision":
+                subdivision = label if label and SUBDIVISION.fullmatch(label) else None
+            else:
+                division = subdivision = None
+        places.append((heading, division, subdivision))
+    position = 0
+    for row in rows:
+        heading = " ".join(normalise(row.get("heading") or "").split())
+        for index in range(position, len(places)):
+            if places[index][0] == heading:
+                position = index + 1
+                yield places[index][1], places[index][2]
+                break
+        else:
+            yield None, None
+
+
+def _read_bytes(root: str, rid: str, name: str) -> bytes:
     try:
-        data = Path(path).read_bytes()
+        return Path(child(root, "markdown", rid, name)).read_bytes()
     except OSError as error:
-        raise SearchIndexError(f"{rid}: cannot read sections.jsonl ({error.strerror})") from None
+        raise SearchIndexError(f"{rid}: cannot read {name} ({error.strerror})") from None
+
+
+def _read_title(root: str, title: dict[str, Any]) -> dict[str, Any]:
+    rid = register_id(title.get("register_id"))
+    data = _read_bytes(root, rid, "sections.jsonl")
+    markdown = _read_bytes(root, rid, rid + ".md")
     try:
         lines = data.decode("utf-8").splitlines()
+        markdown_text = markdown.decode("utf-8")
     except UnicodeDecodeError:
-        raise SearchIndexError(f"{rid}: sections.jsonl is not UTF-8") from None
+        raise SearchIndexError(f"{rid}: sections.jsonl or {rid}.md is not UTF-8") from None
     rows: list[dict[str, Any]] = []
     for number, line in enumerate(lines, 1):
         if not line.strip():
@@ -209,7 +289,9 @@ def _read_title(root: str, title: dict[str, Any]) -> tuple[str, str, list[dict[s
         raise SearchIndexError(
             f"{rid}: sections.jsonl holds {len(rows)} rows; sources.json records "
             f"{title.get('jsonl_rows')}")
-    return rid, hashlib.sha256(data).hexdigest(), rows
+    return {"title": title, "rid": rid, "rows": rows, "markdown": markdown_text,
+            "sections_sha256": hashlib.sha256(data).hexdigest(),
+            "markdown_sha256": hashlib.sha256(markdown).hexdigest()}
 
 
 _SCHEMA_SQL = """
@@ -218,12 +300,14 @@ CREATE TABLE titles (
   register_id TEXT PRIMARY KEY, name TEXT NOT NULL, collection TEXT,
   compilation_number TEXT, compilation_date TEXT, version_is_current INTEGER NOT NULL,
   retrieved TEXT, register_page TEXT, source_url TEXT, rows INTEGER NOT NULL,
-  sections_sha256 TEXT NOT NULL);
+  sections_sha256 TEXT NOT NULL, markdown_sha256 TEXT NOT NULL);
 CREATE TABLE rows (
   id INTEGER PRIMARY KEY, row_id TEXT NOT NULL UNIQUE,
   register_id TEXT NOT NULL REFERENCES titles, section TEXT, section_key TEXT,
-  heading TEXT, container TEXT, text TEXT NOT NULL);
+  division_key TEXT, subdivision_key TEXT, heading TEXT, container TEXT, text TEXT NOT NULL);
 CREATE INDEX rows_section ON rows (register_id, section_key);
+CREATE INDEX rows_division ON rows (register_id, division_key);
+CREATE INDEX rows_subdivision ON rows (register_id, subdivision_key);
 CREATE VIRTUAL TABLE rows_fts USING fts5 (
   heading, text, content='rows', content_rowid='id',
   tokenize='unicode61 remove_diacritics 2');
@@ -232,9 +316,9 @@ CREATE TABLE definitions (
   position INTEGER NOT NULL, text TEXT NOT NULL);
 CREATE INDEX definitions_key ON definitions (term_key);
 CREATE TABLE refs (
-  from_row_id TEXT NOT NULL REFERENCES rows (row_id), to_register_id TEXT,
-  to_section_key TEXT NOT NULL, cited_act TEXT, citation TEXT NOT NULL);
-CREATE INDEX refs_to ON refs (to_register_id, to_section_key);
+  from_row_id TEXT NOT NULL REFERENCES rows (row_id), kind TEXT NOT NULL,
+  to_register_id TEXT, to_key TEXT NOT NULL, cited_act TEXT, citation TEXT NOT NULL);
+CREATE INDEX refs_to ON refs (to_register_id, kind, to_key);
 CREATE INDEX refs_from ON refs (from_row_id);
 """
 
@@ -260,11 +344,12 @@ def build(root: str, out: str) -> dict[str, int]:
         refuse_unlisted_titles(root, {register_id(t.get("register_id")) for t in listed})
     except RuntimeError as error:
         raise SearchIndexError(str(error)) from None
-    read = [(title, *_read_title(root, title)) for title in listed]
+    read = [_read_title(root, title) for title in listed]
     names: dict[str, str | None] = {}
-    for title, rid, _digest, _rows in read:
+    for entry in read:
         # Two titles sharing a name leave a citation of that name unresolved.
-        names[title["name"]] = None if title["name"] in names else rid
+        name = entry["title"]["name"]
+        names[name] = None if name in names else entry["rid"]
 
     temporary = destination.with_name(f".{destination.name}.{uuid.uuid4().hex}.tmp")
     counts = {"titles": len(read), "rows": 0, "definitions": 0, "refs": 0}
@@ -272,15 +357,16 @@ def build(root: str, out: str) -> dict[str, int]:
     try:
         with connection:
             connection.executescript(_SCHEMA_SQL)
-            for title, rid, digest, rows in read:
+            for entry in read:
+                title, rid, rows = entry["title"], entry["rid"], entry["rows"]
                 connection.execute(
-                    "INSERT INTO titles VALUES (?,?,?,?,?,?,?,?,?,?,?)",
+                    "INSERT INTO titles VALUES (?,?,?,?,?,?,?,?,?,?,?,?)",
                     (rid, title["name"], title.get("collection"), title.get("compilation_number"),
                      title.get("compilation_date"), int(title.get("version_is_current", True)),
                      title.get("retrieved"), title.get("register_page"), title.get("source_url"),
-                     len(rows), digest))
-                for row in rows:
-                    _insert_row(connection, rid, row, names, counts)
+                     len(rows), entry["sections_sha256"], entry["markdown_sha256"]))
+                for row, place in zip(rows, structure(rows, entry["markdown"])):
+                    _insert_row(connection, rid, row, place, names, counts)
             connection.executemany("INSERT INTO meta VALUES (?, ?)", [
                 ("schema", SCHEMA),
                 ("corpus_retrieved", str(sources.get("retrieved"))),
@@ -298,12 +384,13 @@ def build(root: str, out: str) -> dict[str, int]:
 
 
 def _insert_row(connection: sqlite3.Connection, rid: str, row: dict[str, Any],
-                names: dict[str, str | None], counts: dict[str, int]) -> None:
+                place: tuple[str | None, str | None], names: dict[str, str | None],
+                counts: dict[str, int]) -> None:
     section = row.get("section")
     cursor = connection.execute(
-        "INSERT INTO rows (row_id, register_id, section, section_key, heading, container, text)"
-        " VALUES (?,?,?,?,?,?,?)",
-        (row["row_id"], rid, section, section_key(section) if section else None,
+        "INSERT INTO rows (row_id, register_id, section, section_key, division_key,"
+        " subdivision_key, heading, container, text) VALUES (?,?,?,?,?,?,?,?,?)",
+        (row["row_id"], rid, section, section_key(section) if section else None, *place,
          row.get("heading"), row.get("container"), row["text"]))
     # The full-text table reads its snippets from rows (the Register's text) but
     # indexes the NFKC form, so both spellings of a ligature or hyphen match.
@@ -316,10 +403,10 @@ def _insert_row(connection: sqlite3.Connection, rid: str, row: dict[str, Any],
             connection.execute("INSERT INTO definitions VALUES (?,?,?,?,?)",
                                (term, term_key(term), row["row_id"], position, body))
             counts["definitions"] += 1
-    for cited, act, text in citations(row["text"]):
+    for kind, cited, act, text in citations(row["text"]):
         target = rid if act is None else names.get(act)
-        connection.execute("INSERT INTO refs VALUES (?,?,?,?,?)",
-                           (row["row_id"], target, cited, act, text))
+        connection.execute("INSERT INTO refs VALUES (?,?,?,?,?,?)",
+                           (row["row_id"], kind, target, cited, act, text))
         counts["refs"] += 1
 
 
@@ -403,8 +490,12 @@ def define(connection: sqlite3.Connection, term: str, *,
         sql.format("d.term_key LIKE ? ESCAPE '\\'"), [prefix, *params])]
 
 
+_TARGET_COLUMN = {"section": "section_key", "division": "division_key",
+                  "subdivision": "subdivision_key"}
+
+
 def refs(connection: sqlite3.Connection, row_id: str) -> dict[str, Any]:
-    """Sections *row_id* cites, and rows in the index that cite its section."""
+    """What *row_id* cites, and rows that cite its section, Division or Subdivision."""
     row = connection.execute("SELECT * FROM rows WHERE row_id = ?", (row_id,)).fetchone()
     if row is None:
         raise SearchIndexError(f"{row_id} is not in the index")
@@ -413,18 +504,21 @@ def refs(connection: sqlite3.Connection, row_id: str) -> dict[str, Any]:
             "SELECT * FROM refs WHERE from_row_id = ? ORDER BY rowid", (row_id,)):
         targets = [] if ref["to_register_id"] is None else [
             dict(target) for target in connection.execute(
-                "SELECT row_id, heading, container FROM rows "
-                "WHERE register_id = ? AND section_key = ? ORDER BY id",
-                (ref["to_register_id"], ref["to_section_key"]))]
-        outbound.append({"citation": ref["citation"], "cited_act": ref["cited_act"],
+                "SELECT row_id, heading, container FROM rows WHERE register_id = ? AND "
+                f"{_TARGET_COLUMN[ref['kind']]} = ? ORDER BY id",
+                (ref["to_register_id"], ref["to_key"]))]
+        outbound.append({"kind": ref["kind"], "key": ref["to_key"],
+                         "citation": ref["citation"], "cited_act": ref["cited_act"],
                          "register_id": ref["to_register_id"], "rows": targets})
-    inbound = [] if row["section_key"] is None else [
-        dict(source) for source in connection.execute(
-            "SELECT DISTINCT r.row_id, r.heading, f.citation FROM refs f "
-            "JOIN rows r ON r.row_id = f.from_row_id "
-            "WHERE f.to_register_id = ? AND f.to_section_key = ? AND r.row_id != ? "
-            "ORDER BY r.id", (row["register_id"], row["section_key"], row_id))]
+    inbound = [dict(source) for source in connection.execute(
+        "SELECT DISTINCT r.row_id, r.heading, f.kind, f.citation FROM refs f "
+        "JOIN rows r ON r.row_id = f.from_row_id WHERE f.to_register_id = ? AND r.row_id != ? "
+        "AND ((f.kind = 'section' AND f.to_key = ?) OR (f.kind = 'division' AND f.to_key = ?) "
+        "OR (f.kind = 'subdivision' AND f.to_key = ?)) ORDER BY r.id",
+        (row["register_id"], row_id, row["section_key"], row["division_key"],
+         row["subdivision_key"]))]
     return {"row_id": row_id, "register_id": row["register_id"], "section": row["section"],
+            "division": row["division_key"], "subdivision": row["subdivision_key"],
             "heading": row["heading"], "cites": outbound, "cited_by": inbound}
 
 
@@ -521,9 +615,12 @@ def _run(connection: sqlite3.Connection, args: argparse.Namespace) -> int:
         return 0
     print(f"{report['row_id']}: {report['heading']}")
     for ref in report["cites"]:
-        where = ", ".join(target["row_id"] for target in ref["rows"]) or (
-            "not in this index" if ref["register_id"] is None else "no row with that section")
-        print(f"  cites {ref['citation']}: {where}")
+        shown = [target["row_id"] for target in ref["rows"][:5]]
+        if len(ref["rows"]) > 5:
+            shown.append(f"and {len(ref['rows']) - 5} more")
+        where = ", ".join(shown) or (
+            "not in this index" if ref["register_id"] is None else f"no row for that {ref['kind']}")
+        print(f"  cites {ref['kind']} {ref['key']} ({ref['citation']}): {where}")
     for source in report["cited_by"]:
         print(f"  cited by {source['row_id']} ({source['heading']}): {source['citation']}")
     print(_source_line(connection))

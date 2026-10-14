@@ -441,7 +441,7 @@ python -m fadden search refs search.sqlite C2004A05138:0035:8-1
   `authorised: false`, and exactly the `jsonl_rows` that `sources.json` records.
   Any failure stops the build and writes nothing. The destination must not
   exist. The index records the SHA-256 of `sources.json` and of every
-  `sections.jsonl` it read.
+  `sections.jsonl` and `<register_id>.md` it read.
 - `query` requires every word and ranks a row whose section number equals a
   query word first, then by BM25 with the heading weighted above the text.
   Text is NFKC-normalised for matching, so `8-1` matches the Register's `8<U+2011>1`.
@@ -453,16 +453,26 @@ python -m fadden search refs search.sqlite C2004A05138:0035:8-1
   or `<term>:`. It returns every title's definition of the term, or terms that
   begin with it when none matches exactly. An empty result is not a finding
   that the term has its ordinary meaning.
-- `refs` lists the sections a row cites and the rows that cite its section. A
-  bare citation, or one `of this Act`, resolves to the same title. A citation
-  naming another instrument resolves only by its exact title; abbreviations
-  such as `ITAA 1997` and `the Act` stay unresolved with the cited name kept.
-  Lists such as `sections 8-1 and 8-5`, and Division or Subdivision
-  references, are not read.
+- `refs` lists the sections, Divisions and numbered Subdivisions a row cites,
+  and the rows that cite its section, Division or Subdivision. A list such as
+  `sections 8-1, 8-5 and 8-10` gives one reference per item and ends at an
+  item numbered unlike the first, so `section 8-1 and 2 other provisions`
+  reads only `8-1`. A range such as `sections 8-1 to 8-10` reads only its
+  first item. A Subdivision named by letter alone (`Subdivision B`) is not
+  read, because the same letter recurs across Divisions of one title.
+- A row's Division and Subdivision come from the headings in the title's
+  `<register_id>.md`, because a row's `container` names only its innermost
+  heading. A row with no matching heading, such as `Introductory material`,
+  has neither. A Division number repeated across Parts or Schedules returns
+  every matching row.
+- A bare citation, or one `of this Act`, resolves to the same title. A
+  citation naming another instrument resolves only by its exact title;
+  abbreviations such as `ITAA 1997` and `the Act` stay unresolved with the
+  cited name kept.
 
 Measured on the 4 August 2026 build on 15 October 2026: 946 titles and 21,916
-rows indexed in about 4 seconds into a 72 MB file, with 8,426 definition
-paragraphs and 43,923 section references. Keep the index with the corpus it
+rows indexed in about 5 seconds into a 77 MB file, with 8,426 definition
+paragraphs and 62,224 section, Division and Subdivision references. Keep the index with the corpus it
 came from and out of git; rebuild it after any corpus rebuild.
 
 ## Running the pipeline
