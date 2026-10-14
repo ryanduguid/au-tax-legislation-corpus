@@ -421,6 +421,50 @@ and rate metadata are escaped as literal Markdown.
 
 `python -m fadden rulings TARGETS.json --out NEW_DIR` fetches up to 100 named ATO-authored Legal Database documents and writes paragraph JSONL with a reuse notice. It is separate from the legislation pipeline and does not touch `./corpus/`. Scope, reuse basis, fetch rules and the data dictionary are in [docs/rulings.md](docs/rulings.md).
 
+## Searching a built corpus
+
+`python -m fadden search` indexes a finished corpus root into one SQLite file and
+answers 3 questions from it. It uses the standard library's `sqlite3` and FTS5 and
+makes no request.
+
+```bash
+python -m fadden search build corpus --out search.sqlite
+python -m fadden search query search.sqlite general deductions --limit 5
+python -m fadden search query search.sqlite 8-1 --title C2004A05138
+python -m fadden search define search.sqlite assessable income
+python -m fadden search refs search.sqlite C2004A05138:0035:8-1
+```
+
+- `build` checks every row before writing: no `markdown/` title that
+  `sources.json` does not list, each row naming its own title with the `row_id`
+  its ordinal implies, the title's compilation number and date on every row,
+  `authorised: false`, and exactly the `jsonl_rows` that `sources.json` records.
+  Any failure stops the build and writes nothing. The destination must not
+  exist. The index records the SHA-256 of `sources.json` and of every
+  `sections.jsonl` it read.
+- `query` requires every word and ranks a row whose section number equals a
+  query word first, then by BM25 with the heading weighted above the text.
+  Text is NFKC-normalised for matching, so `8-1` matches the Register's `8<U+2011>1`.
+  Each hit prints its `row_id`, compilation, current status, retrieval date and
+  Register page; `--json` adds the row text and the file digests.
+- `define` reads only rows headed Definitions, Definition, Dictionary or
+  Interpretation, and only paragraphs that open with `<term> means`, `has the
+  meaning given by`, `has the same meaning as`, `includes`, `does not include`
+  or `<term>:`. It returns every title's definition of the term, or terms that
+  begin with it when none matches exactly. An empty result is not a finding
+  that the term has its ordinary meaning.
+- `refs` lists the sections a row cites and the rows that cite its section. A
+  bare citation, or one `of this Act`, resolves to the same title. A citation
+  naming another instrument resolves only by its exact title; abbreviations
+  such as `ITAA 1997` and `the Act` stay unresolved with the cited name kept.
+  Lists such as `sections 8-1 and 8-5`, and Division or Subdivision
+  references, are not read.
+
+Measured on the 4 August 2026 build on 15 October 2026: 946 titles and 21,916
+rows indexed in about 4 seconds into a 72 MB file, with 8,426 definition
+paragraphs and 43,923 section references. Keep the index with the corpus it
+came from and out of git; rebuild it after any corpus rebuild.
+
 ## Running the pipeline
 
 The builder deliberately does **not** read `ATO_KB_ROOT` or `ATO_DIST`.
@@ -448,6 +492,7 @@ python -m fadden rates         # derive the rates-and-thresholds index -> ./corp
 python -m fadden check_current # read-only staleness check against the Register
 python -m fadden as_at 2026-07-15 # classify each title's captured compilation against a date (docs/scope.md)
 python -m fadden compare_builds OLD_ROOT NEW_ROOT # list the sections added, removed and changed between two builds
+python -m fadden search build corpus --out search.sqlite # full-text, definitions and reference index (see "Searching a built corpus")
 python -m fadden capture_register -- fadden/manifest_md.json --out build/register-capture-20260829
 python -m fadden export_live_evidence_bundles -- build/register-capture-20260829 --out build/live-evidence-20260829
 ```
