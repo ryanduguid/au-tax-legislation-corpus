@@ -96,7 +96,8 @@ _CITED = (r"(?:the\s+)?\*?([A-Z][A-Za-z]*(?:\s+[A-Z][A-Za-z]*){0,3}\s+" + _YEAR
           + r"|(?=[A-Z])[^.;:,\n]{0,150}?\b(?:Act|Regulations?|Rules)\b(?:\s+" + _YEAR + ")?)")
 # A section, a Division ("40", "83A") or a numbered Subdivision ("20-A"), with
 # any subsection and paragraph brackets after it.
-_LABEL = r"\d+[A-Z]{0,4}(?:[-\u2010\u2011](?:\d+[A-Z]{0,4}|[A-Z]{1,3}\b))?(?!\.\d)(?:\([0-9A-Za-z]{1,6}\))*"
+# Require a complete label so decimal labels cannot backtrack to an integer prefix.
+_LABEL = r"\d+[A-Z]{0,4}(?:[-\u2010\u2011](?:\d+[A-Z]{0,4}|[A-Z]{1,3}\b))?(?![\w\u2010\u2011-]|\.\d)(?:\([0-9A-Za-z]{1,6}\))*"
 # ", ", ", and " or " and ": the two branches start differently, so a separator
 # matches one way only.
 _LIST_SEPARATOR = r"(?:,\s+(?:(?:and|or)\s+)?|\s+(?:and|or)\s+)"
