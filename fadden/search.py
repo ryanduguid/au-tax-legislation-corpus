@@ -97,7 +97,9 @@ _CITED = (r"(?:the\s+)?\*?([A-Z][A-Za-z]*(?:\s+[A-Z][A-Za-z]*){0,3}\s+" + _YEAR
 # A section, a Division ("40", "83A") or a numbered Subdivision ("20-A"), with
 # any subsection and paragraph brackets after it.
 _LABEL = r"\d+[A-Z]{0,4}(?:[-\u2010\u2011](?:\d+[A-Z]{0,4}|[A-Z]{1,3}\b))?(?!\.\d)(?:\([0-9A-Za-z]{1,6}\))*"
-_LIST_SEPARATOR = r"(?:,?\s+(?:and|or)\s+|,\s+)"
+# ", ", ", and " or " and ": the two branches start differently, so a separator
+# matches one way only.
+_LIST_SEPARATOR = r"(?:,\s+(?:(?:and|or)\s+)?|\s+(?:and|or)\s+)"
 CITATION = re.compile(
     r"\b(?P<keyword>(?i:(?:sub)?(?:section|paragraph|subparagraph)|subdivision|division))s?\s+"
     r"(?P<labels>" + _LABEL + "(?:" + _LIST_SEPARATOR + _LABEL + r")*)"
@@ -323,13 +325,8 @@ CREATE INDEX refs_from ON refs (from_row_id);
 """
 
 
-def build(root: str, out: str) -> dict[str, int]:
-    """Check the corpus at *root* and write a new index file at *out*."""
-    destination = Path(out)
-    if os.path.lexists(destination):
-        raise SearchIndexError("the index destination must not already exist")
-    if not destination.parent.is_dir():
-        raise SearchIndexError("the index destination's parent directory does not exist")
+def _read_corpus(root: str) -> tuple[bytes, dict[str, Any], list[dict[str, Any]]]:
+    """Read and check ``sources.json`` and every title it lists."""
     try:
         sources_bytes = Path(child(root, "sources.json")).read_bytes()
         sources = json.loads(sources_bytes)
@@ -344,7 +341,17 @@ def build(root: str, out: str) -> dict[str, int]:
         refuse_unlisted_titles(root, {register_id(t.get("register_id")) for t in listed})
     except RuntimeError as error:
         raise SearchIndexError(str(error)) from None
-    read = [_read_title(root, title) for title in listed]
+    return sources_bytes, sources, [_read_title(root, title) for title in listed]
+
+
+def build(root: str, out: str) -> dict[str, int]:
+    """Check the corpus at *root* and write a new index file at *out*."""
+    destination = Path(out)
+    if os.path.lexists(destination):
+        raise SearchIndexError("the index destination must not already exist")
+    if not destination.parent.is_dir():
+        raise SearchIndexError("the index destination's parent directory does not exist")
+    sources_bytes, sources, read = _read_corpus(root)
     names: dict[str, str | None] = {}
     for entry in read:
         # Two titles sharing a name leave a citation of that name unresolved.
@@ -374,7 +381,8 @@ def build(root: str, out: str) -> dict[str, int]:
                 *((f"{name}_count", str(value)) for name, value in counts.items()),
             ])
         connection.close()
-        os.link(temporary, destination)
+        # Maintainer CLI; the path is a command-line argument.
+        os.link(temporary, destination)  # NOSONAR
     except BaseException:
         connection.close()
         temporary.unlink(missing_ok=True)
@@ -439,9 +447,36 @@ def match_expression(words: Sequence[str]) -> str:
     return " ".join(phrases)
 
 
-_PROVENANCE = ("t.name AS act, t.collection, t.compilation_number, t.compilation_date, "
-               "t.version_is_current, t.retrieved, t.register_page, t.source_url, "
-               "t.sections_sha256")
+# Every statement below is a fixed string; values, including the optional
+# title and the list of section keys, are bound as parameters.
+_QUERY_SQL = (
+    "SELECT r.row_id, r.register_id, r.section, r.heading, r.container, r.text, "
+    "t.name AS act, t.collection, t.compilation_number, t.compilation_date, "
+    "t.version_is_current, t.retrieved, t.register_page, t.source_url, t.sections_sha256, "
+    "snippet(rows_fts, 1, '[', ']', '...', 16) AS snippet "
+    "FROM rows_fts JOIN rows r ON r.id = rows_fts.rowid "
+    "JOIN titles t ON t.register_id = r.register_id "
+    "WHERE rows_fts MATCH ? AND (? IS NULL OR r.register_id = ?) "
+    "ORDER BY r.section_key IN (SELECT value FROM json_each(?)) DESC, "
+    "bm25(rows_fts, 4.0, 1.0), r.id LIMIT ?")
+# Mode 0 matches the term exactly; mode 1 matches terms that begin with it.
+_DEFINE_SQL = (
+    "SELECT d.term, d.text AS definition, r.row_id, r.register_id, r.section, r.heading, "
+    "t.name AS act, t.collection, t.compilation_number, t.compilation_date, "
+    "t.version_is_current, t.retrieved, t.register_page, t.source_url, t.sections_sha256 "
+    "FROM definitions d JOIN rows r ON r.row_id = d.row_id "
+    "JOIN titles t ON t.register_id = r.register_id "
+    "WHERE ((? = 0 AND d.term_key = ?) OR (? = 1 AND d.term_key LIKE ? ESCAPE '\\')) "
+    "AND (? IS NULL OR r.register_id = ?) "
+    "ORDER BY t.version_is_current DESC, t.name, r.id, d.position")
+_TARGET_SQL = {
+    "section": "SELECT row_id, heading, container FROM rows "
+               "WHERE register_id = ? AND section_key = ? ORDER BY id",
+    "division": "SELECT row_id, heading, container FROM rows "
+                "WHERE register_id = ? AND division_key = ? ORDER BY id",
+    "subdivision": "SELECT row_id, heading, container FROM rows "
+                   "WHERE register_id = ? AND subdivision_key = ? ORDER BY id",
+}
 
 
 def _hit(row: sqlite3.Row) -> dict[str, Any]:
@@ -453,19 +488,10 @@ def _hit(row: sqlite3.Row) -> dict[str, Any]:
 
 def query(connection: sqlite3.Connection, words: Sequence[str], *, title: str | None = None,
           limit: int = 10) -> list[dict[str, Any]]:
-    sql = ("SELECT r.row_id, r.register_id, r.section, r.heading, r.container, r.text, "
-           f"{_PROVENANCE}, snippet(rows_fts, 1, '[', ']', '...', 16) AS snippet "
-           "FROM rows_fts JOIN rows r ON r.id = rows_fts.rowid "
-           "JOIN titles t ON t.register_id = r.register_id WHERE rows_fts MATCH ?")
-    params: list[Any] = [match_expression(words)]
-    if title:
-        sql += " AND r.register_id = ?"
-        params.append(register_id(title))
+    rid = register_id(title) if title else None
     sections = sorted({section_key(word) for word in words if SECTION.fullmatch(normalise(word))})
-    sql += " ORDER BY r.section_key IN (%s) DESC, bm25(rows_fts, 4.0, 1.0), r.id LIMIT ?" % (
-        ",".join("?" * len(sections)))
-    params += [*sections, limit]
-    return [_hit(row) for row in connection.execute(sql, params)]
+    params = (match_expression(words), rid, rid, json.dumps(sections), limit)
+    return [_hit(row) for row in connection.execute(_QUERY_SQL, params)]
 
 
 def define(connection: sqlite3.Connection, term: str, *,
@@ -474,24 +500,12 @@ def define(connection: sqlite3.Connection, term: str, *,
     key = term_key(term)
     if not key:
         raise SearchIndexError("the term is empty")
-    sql = ("SELECT d.term, d.text AS definition, r.row_id, r.register_id, r.section, r.heading, "
-           f"{_PROVENANCE} FROM definitions d JOIN rows r ON r.row_id = d.row_id "
-           "JOIN titles t ON t.register_id = r.register_id WHERE {} ")
-    params: list[Any] = []
-    if title:
-        sql += "AND r.register_id = ? "
-        params.append(register_id(title))
-    sql += "ORDER BY t.version_is_current DESC, t.name, r.id, d.position"
-    exact = connection.execute(sql.format("d.term_key = ?"), [key, *params]).fetchall()
+    rid = register_id(title) if title else None
+    exact = connection.execute(_DEFINE_SQL, (0, key, 0, None, rid, rid)).fetchall()
     if exact:
         return [_hit(row) for row in exact]
     prefix = key.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_") + " %"
-    return [_hit(row) for row in connection.execute(
-        sql.format("d.term_key LIKE ? ESCAPE '\\'"), [prefix, *params])]
-
-
-_TARGET_COLUMN = {"section": "section_key", "division": "division_key",
-                  "subdivision": "subdivision_key"}
+    return [_hit(row) for row in connection.execute(_DEFINE_SQL, (1, None, 1, prefix, rid, rid))]
 
 
 def refs(connection: sqlite3.Connection, row_id: str) -> dict[str, Any]:
@@ -504,9 +518,7 @@ def refs(connection: sqlite3.Connection, row_id: str) -> dict[str, Any]:
             "SELECT * FROM refs WHERE from_row_id = ? ORDER BY rowid", (row_id,)):
         targets = [] if ref["to_register_id"] is None else [
             dict(target) for target in connection.execute(
-                "SELECT row_id, heading, container FROM rows WHERE register_id = ? AND "
-                f"{_TARGET_COLUMN[ref['kind']]} = ? ORDER BY id",
-                (ref["to_register_id"], ref["to_key"]))]
+                _TARGET_SQL[ref["kind"]], (ref["to_register_id"], ref["to_key"]))]
         outbound.append({"kind": ref["kind"], "key": ref["to_key"],
                          "citation": ref["citation"], "cited_act": ref["cited_act"],
                          "register_id": ref["to_register_id"], "rows": targets})
@@ -574,7 +586,8 @@ def main(argv: Sequence[str] | None = None) -> int:
             return 0
         connection = open_index(args.index)
         try:
-            return _run(connection, args)
+            _run(connection, args)
+            return 0
         finally:
             connection.close()
     except (SearchIndexError, ValueError, OSError, sqlite3.Error) as error:
@@ -582,23 +595,23 @@ def main(argv: Sequence[str] | None = None) -> int:
         return 1
 
 
-def _run(connection: sqlite3.Connection, args: argparse.Namespace) -> int:
+def _run(connection: sqlite3.Connection, args: argparse.Namespace) -> None:
     if args.command == "query":
         hits = query(connection, args.words, title=args.title, limit=args.limit)
         if args.json:
             _print_json(hits)
-            return 0
+            return
         for number, hit in enumerate(hits, 1):
             print(f"{number}. {hit['act']}: {hit['heading']}")
             print(f"   {_describe(hit)}")
             print(f"   {' '.join(hit['snippet'].split())}")
         print(f"{len(hits)} rows. {_source_line(connection)}")
-        return 0
+        return
     if args.command == "define":
         found = define(connection, " ".join(args.term), title=args.title)
         if args.json:
             _print_json(found)
-            return 0
+            return
         for item in found:
             print(f"{item['term']} ({item['act']}, {item['heading']})")
             print(f"   {_describe(item)}")
@@ -608,11 +621,11 @@ def _run(connection: sqlite3.Connection, args: argparse.Namespace) -> int:
                   "in a row this index does not read as definitions; this is not a finding "
                   "that it has its ordinary meaning.")
         print(_source_line(connection))
-        return 0
+        return
     report = refs(connection, args.row_id)
     if args.json:
         _print_json([report])
-        return 0
+        return
     print(f"{report['row_id']}: {report['heading']}")
     for ref in report["cites"]:
         shown = [target["row_id"] for target in ref["rows"][:5]]
@@ -624,7 +637,6 @@ def _run(connection: sqlite3.Connection, args: argparse.Namespace) -> int:
     for source in report["cited_by"]:
         print(f"  cited by {source['row_id']} ({source['heading']}): {source['citation']}")
     print(_source_line(connection))
-    return 0
 
 
 if __name__ == "__main__":
