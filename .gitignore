@@ -6,6 +6,7 @@ external/
 sources.json
 INDEX.md
 LICENCE-NOTICE.md
+*.sqlite
 /corpus/
 
 # Pipeline intermediates: build outputs the pipeline regenerates, not shipped.

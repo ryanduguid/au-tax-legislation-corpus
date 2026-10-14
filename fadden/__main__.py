@@ -42,6 +42,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             "rulings",
             "as_at",
             "compare_builds",
+            "search",
         }:
             result = func(forwarded)
         elif args.stage == "extract" and forwarded:

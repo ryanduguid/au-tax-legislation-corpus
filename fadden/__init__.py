@@ -25,4 +25,5 @@ STAGES = (
     "rulings",
     "as_at",
     "compare_builds",
+    "search",
 )
