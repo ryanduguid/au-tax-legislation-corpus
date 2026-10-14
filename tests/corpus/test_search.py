@@ -370,6 +370,10 @@ class ReferenceTests(SearchTestCase):
                 ("subdivision", "20-A", None), ("subdivision", "20-B", None)],
             "Division 40 and Subdivision 20-A": [
                 ("division", "40", None), ("subdivision", "20-A", None)],
+            "section 10.": [("section", "10", None)],
+            "section 8-10.": [("section", "8-10", None)],
+            "section 123 and Division 10A": [
+                ("section", "123", None), ("division", "10A", None)],
         }
         for text, expected in cases.items():
             with self.subTest(text=text):
@@ -391,6 +395,28 @@ class ReferenceTests(SearchTestCase):
         for text, expected in cases.items():
             with self.subTest(text=text):
                 self.assertEqual(self.cited(text), expected)
+
+    def test_decimal_labels_are_not_truncated_to_integer_prefixes(self) -> None:
+        for keyword in ("section", "Division"):
+            for label in ("10.1", "123.45", "10A.1"):
+                with self.subTest(keyword=keyword, label=label):
+                    self.assertEqual(self.cited(f"{keyword} {label} applies."), [])
+        for label in ("8-10.1", "8" + NBH + "10.1"):
+            with self.subTest(label=label):
+                self.assertEqual(self.cited(f"section {label} applies."), [])
+
+    def test_decimal_divisions_do_not_create_outbound_or_inbound_references(self) -> None:
+        rows = [row(ACT, 1, "1", "Division 10.1 applies.", heading="1 Scope"),
+                row(ACT, 2, "2", "Text.", heading="2 Item")]
+        write_corpus(self.root, {ACT: ("Sample Levy Act 2099", rows)})
+        (self.root / "markdown" / ACT / f"{ACT}.md").write_text(
+            markdown("Sample Levy Act 2099", rows, {2: ["### Division 1\u2014Items"]}),
+            encoding="utf-8")
+        search.build(str(self.root), str(self.out))
+        connection = search.open_index(str(self.out))
+        self.addCleanup(connection.close)
+        self.assertEqual(search.refs(connection, f"{ACT}:0001:1")["cites"], [])
+        self.assertEqual(search.refs(connection, f"{ACT}:0002:2")["cited_by"], [])
 
     def test_structure_follows_the_markdown_headings(self) -> None:
         connection = self.built()
