@@ -49,6 +49,22 @@ class DocParserTests(unittest.TestCase):
         self.assertEqual(self.feed("<table><tr><td> </td></tr></table></table><p>after</p>"),
                          [{"k": "p", "cls": "", "text": "after", "sectno": False}])
 
+    def test_unbalanced_table_boundaries_are_rejected(self) -> None:
+        cases = [
+            ("<table><tr><caption>", "table row group is unbalanced"),
+            ("<table><tbody><colgroup>", "table row group is unbalanced"),
+            ("<table><table>", "nested table outside a cell"),
+            ("</td>", "table cell is unbalanced"),
+            ("</th>", "table cell is unbalanced"),
+            ("</tr>", "table row is unbalanced"),
+            ("<table><tr><td>unfinished</tr>", "table row is unbalanced"),
+            ("<table><thead></tbody>", "table row group is unbalanced"),
+            ("<table><tbody><tr></tbody>", "table row group is unbalanced"),
+        ]
+        for html, message in cases:
+            with self.subTest(html=html), self.assertRaisesRegex(ValueError, f"^{message}$"):
+                self.feed(html)
+
 
 class TableSplitTests(unittest.TestCase):
     TABLE = ["| Name | Number |", "|---|---|", "| A | 1 |"]
