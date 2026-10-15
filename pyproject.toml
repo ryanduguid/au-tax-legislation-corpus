@@ -58,8 +58,7 @@ src = ["tax_radar_au", "fadden", "tools", "tests"]
 select = ["E4", "E7", "E9", "F", "I"]
 
 [tool.coverage.run]
-# sysmon misses exception-unwinding branches in open_epub and monitor rollback
-# on Python 3.14. C tracing records those paths in the existing failure tests.
+# C tracing records exception-unwinding paths that sysmon misses in the failure tests.
 core = "ctrace"
 
 [tool.coverage.report]
