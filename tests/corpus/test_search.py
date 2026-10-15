@@ -12,7 +12,9 @@ import contextlib
 import hashlib
 import io
 import json
+import runpy
 import sqlite3
+import sys
 import tempfile
 import unittest
 from pathlib import Path
@@ -490,6 +492,17 @@ class ReferenceTests(SearchTestCase):
 
 
 class CommandLineTests(SearchTestCase):
+    def test_standalone_script_imports_its_sibling_and_prints_help(self) -> None:
+        script = Path(search.__file__).resolve()
+        output = io.StringIO()
+        with mock.patch.object(sys, "path", [str(script.parent), *sys.path]), \
+                mock.patch.object(sys, "argv", [str(script), "--help"]), \
+                mock.patch.dict(sys.modules), contextlib.redirect_stdout(output):
+            with self.assertRaises(SystemExit) as caught:
+                runpy.run_path(str(script), run_name="__main__")
+        self.assertEqual(caught.exception.code, 0)
+        self.assertIn("{build,query,define,refs}", output.getvalue())
+
     def test_commands_print_provenance_and_the_notice(self) -> None:
         write_corpus(self.root)
         code, out, _err = self.run_main("build", str(self.root), "--out", str(self.out))
