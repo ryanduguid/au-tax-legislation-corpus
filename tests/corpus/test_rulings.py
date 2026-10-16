@@ -46,6 +46,63 @@ def page(docid=DOCID, notice=True, rights="", body_extra="", reference=None):
 
 
 class ParseTests(unittest.TestCase):
+    def test_empty_notice_fragments_remain_unknown(self) -> None:
+        raw = page().replace(
+            b'<div id="LawBody">',
+            b'<div id="LawBody"><h3>Notice of Withdrawal</h3>'
+            b'<p><a name="PA"></a></p><p><a name="PB"></a></p>'
+            b'<h3><a name="H999"></a>Ruling</h3>',
+        )
+        parsed = rulings.parse_document(raw, DOCID)
+        self.assertEqual(parsed["withdrawal_status"], "UNKNOWN")
+        self.assertEqual(parsed["withdrawal_notice"], "")
+        self.assertEqual([p["paragraph"] for p in parsed["paragraphs"]],
+                         ["A", "B", "1", "2", "3"])
+        with tempfile.TemporaryDirectory() as directory:
+            out = Path(directory) / "run"
+            self.assertEqual(rulings.run([DOCID], out,
+                             fetcher=lambda d: (raw, rulings.BASE_URL + d), spacing=0,
+                             today="2099-02-01"), 0)
+            manifest = json.loads((out / "manifest.json").read_text(encoding="utf-8"))
+            rows = [json.loads(line) for line in
+                    (out / "rulings.jsonl").read_text(encoding="utf-8").splitlines()]
+            for record in [*manifest["documents"], *rows]:
+                self.assertEqual(record["withdrawal_status"], "UNKNOWN")
+                self.assertEqual(record["withdrawal_notice"], "")
+            self.assertEqual(rows[-1]["text"], "3. The ruling paragraph.")
+
+    def test_withdrawal_notice_keeps_its_lettered_paragraph_and_effect(self) -> None:
+        raw = page().replace(
+            b'<div id="LawBody">',
+            b'<div id="LawBody"><h3>Notice of Withdrawal</h3>'
+            b'<p><a name="PA"></a>This fabricated ruling is withdrawn from 1 July 2099.</p>',
+        )
+        parsed = rulings.parse_document(raw, DOCID)
+        self.assertEqual(parsed["withdrawal_status"], "NOTICE_PRESENT")
+        self.assertEqual(parsed["withdrawal_notice"],
+                         "This fabricated ruling is withdrawn from 1 July 2099.")
+        self.assertEqual(parsed["paragraphs"][0]["paragraph"], "A")
+
+    def test_no_notice_is_unknown_and_mentions_in_body_do_not_establish_withdrawal(self) -> None:
+        parsed = rulings.parse_document(page(body_extra='<p>Other rulings were withdrawn.</p>'),
+                                        DOCID)
+        self.assertEqual(parsed["withdrawal_status"], "UNKNOWN")
+        self.assertEqual(parsed["withdrawal_notice"], "")
+
+    def test_lettered_notice_keeps_printed_numbered_paragraphs(self) -> None:
+        raw = re.sub(rb'<a name="P\d+" id="P\d+"></a>', b"", page()).replace(
+            b'<div id="LawBody">',
+            b'<div id="LawBody"><h3>Notice of Withdrawal</h3>'
+            b'<p><a name="PA"></a>This fabricated ruling is withdrawn from 1 July 2099.</p>',
+        )
+        parsed = rulings.parse_document(raw, DOCID)
+        self.assertEqual([p["paragraph"] for p in parsed["paragraphs"]], ["A", "1", "2", "3"])
+        self.assertEqual(parsed["paragraphs"][2]["text"],
+                         "2. A second paragraph with a list: first item second item")
+        self.assertEqual(parsed["withdrawal_status"], "NOTICE_PRESENT")
+        self.assertEqual(parsed["withdrawal_notice"],
+                         "This fabricated ruling is withdrawn from 1 July 2099.")
+
     def test_paragraphs_headings_and_continuations(self) -> None:
         parsed = rulings.parse_document(page(), DOCID)
         self.assertEqual(parsed["licence_basis"], "document-notice")
@@ -180,8 +237,28 @@ class RunTests(unittest.TestCase):
         self.assertEqual({r["source_sha256"] for r in rows}, {hashlib.sha256(raw).hexdigest()})
         manifest = json.loads((out / "manifest.json").read_text(encoding="utf-8"))
         self.assertEqual(manifest["documents"][0]["family"], "Taxation Ruling")
+        self.assertEqual(manifest["documents"][0]["withdrawal_status"], "UNKNOWN")
+        self.assertEqual({r["withdrawal_status"] for r in rows}, {"UNKNOWN"})
         self.assertEqual((out / manifest["documents"][0]["raw_file"]).read_bytes(), raw)
         self.assertIn(rulings.NOTICE, (out / "LICENCE-NOTICE.md").read_text(encoding="utf-8"))
+
+    def test_run_binds_the_notice_to_every_row_and_the_capture_date(self) -> None:
+        raw = page().replace(
+            b'<div id="LawBody">',
+            b'<div id="LawBody"><h3>Notice of Withdrawal</h3>'
+            b'<p><a name="PA"></a>Withdrawal applies only after the stated date.</p>',
+        )
+        out = self.tmp / "withdrawal"
+        self.assertEqual(rulings.run([DOCID], out,
+                         fetcher=lambda d: (raw, rulings.BASE_URL + d), spacing=0,
+                         today="2099-02-01"), 0)
+        manifest = json.loads((out / "manifest.json").read_text(encoding="utf-8"))
+        document = manifest["documents"][0]
+        rows = [json.loads(line) for line in (out / "rulings.jsonl").read_text().splitlines()]
+        for row in rows:
+            self.assertEqual(row["withdrawal_status"], "NOTICE_PRESENT")
+            self.assertEqual(row["withdrawal_notice"], document["withdrawal_notice"])
+            self.assertEqual(row["fetched_on"], document["fetched_on"])
 
     def test_an_existing_destination_is_never_reused(self) -> None:
         out = self.tmp / "out"

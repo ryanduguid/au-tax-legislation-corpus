@@ -84,7 +84,7 @@ FAMILIES = {
 }
 
 _DOCID = re.compile(r"^[A-Za-z]{2,4}(?:/[A-Za-z0-9.-]+){1,5}$")
-_PARA = re.compile(r"^P(\d+[A-Z]?)$")
+_PARA = re.compile(r"^P(\d+[A-Z]?|[A-Z])$")
 _HEAD = re.compile(r"^H\d+[A-Z]?$")
 # Some families (decision impact statements) print "1. " without a P anchor.
 _PRINTED = re.compile(r"^(\d+[A-Z]?)\.\s")
@@ -284,13 +284,15 @@ def parse_document(raw: bytes, docid: str) -> dict[str, Any]:
                                    "text": block_text, "numbering": "sequential"})
         if not paragraphs:
             raise RulingsError(f"{docid}: no paragraphs found after the edited-version disclaimer")
-    anchored = any(_PARA.match(name) for anchors, _text, _bold in parser.blocks for name in anchors)
+    anchored = any(_PARA.match(name) and name[1].isdigit()
+                   for anchors, _text, _bold in parser.blocks for name in anchors)
     for anchors, block_text, _bold in ([] if parser.edited_version else parser.blocks):
         para = next((m.group(1) for m in map(_PARA.match, anchors) if m), None)
         if para is None and not anchored and not any(_HEAD.match(n) for n in anchors):
             printed = _PRINTED.match(block_text)
             para = printed.group(1) if printed else None
-        if any(_HEAD.match(name) for name in anchors) and para is None:
+        if para is None and (any(_HEAD.match(name) for name in anchors)
+                             or block_text.casefold() == "notice of withdrawal"):
             heading = block_text
             current = None
             continue
@@ -303,12 +305,19 @@ def parse_document(raw: bytes, docid: str) -> dict[str, Any]:
     if not paragraphs:
         raise RulingsError(f"{docid}: no numbered paragraphs found in LawBody")
 
+    withdrawal_notice = " ".join(
+        row["text"] for row in paragraphs
+        if row["heading"].casefold() == "notice of withdrawal"
+    ).strip()
+
     return {
         "reference": reference,
         "title": meta.get("dc.title", "") or meta.get("dc_title", ""),
         "document_type": meta.get("dc.type.documenttype", "") or meta.get("dc.description", ""),
         "issued": meta.get("dc.date.issued", "") or meta.get("dc_date_issued", ""),
         "licence_basis": basis,
+        "withdrawal_status": "NOTICE_PRESENT" if withdrawal_notice else "UNKNOWN",
+        "withdrawal_notice": withdrawal_notice,
         "paragraphs": paragraphs,
         "document_text": _norm(" ".join(parser.document_text)),
     }
@@ -437,6 +446,8 @@ def run(targets: Sequence[str], out: Path, fetcher: Callable[[str], tuple[bytes,
             "bytes": len(raw),
             "raw_file": raw_name,
             "licence_basis": parsed["licence_basis"],
+            "withdrawal_status": parsed["withdrawal_status"],
+            "withdrawal_notice": parsed["withdrawal_notice"],
             "paragraphs": len(parsed["paragraphs"]),
         })
         for row in parsed["paragraphs"]:
@@ -452,6 +463,8 @@ def run(targets: Sequence[str], out: Path, fetcher: Callable[[str], tuple[bytes,
                 "source_sha256": digest,
                 "fetched_on": fetched_on,
                 "licence_basis": parsed["licence_basis"],
+                "withdrawal_status": parsed["withdrawal_status"],
+                "withdrawal_notice": parsed["withdrawal_notice"],
             }, ensure_ascii=False, sort_keys=True))
 
     # Maintainer CLI; the path is a command-line argument or a fixed name under one.
