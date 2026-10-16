@@ -89,14 +89,25 @@ Keep it with any copy of the rows.
 | `source_sha256` | SHA-256 of the raw page bytes |
 | `fetched_on` | Run date (ISO 8601) |
 | `licence_basis` | `document-notice` or `site-notice-via-dc-rights` |
+| `withdrawal_status` | `NOTICE_PRESENT` when extracted paragraphs follow a Notice of Withdrawal heading; otherwise `UNKNOWN` |
+| `withdrawal_notice` | Extracted notice text, or an empty string when none was extracted |
+
+The manifest's document record carries the same withdrawal fields as its rows.
+They describe the page captured on `fetched_on`, identified by `source_sha256`.
+`UNKNOWN` does not establish that a ruling remains current. A notice may preserve
+reliance for an earlier period, so check its full effect and the relevant period
+on the live ATO Legal Database before reliance. Older captures without these
+fields carry no withdrawal observation.
 
 ### How paragraphs are found
 
-- Rulings and guidelines: blocks inside `div#LawBody` keyed by `P<n>` anchors, with
-  headings from `H<n>` anchors. The table of contents, footnotes and everything after
+- Rulings and guidelines: blocks inside `div#LawBody` keyed by `P<n>` anchors,
+  including a lettered notice anchor such as `PA`, with headings from `H<n>`
+  anchors or a Notice of Withdrawal heading. The table of contents, footnotes and everything after
   the copyright anchor are skipped.
 - Decision impact statements: the same body, but numbered in the text (`1. ...`)
-  without anchors. Printed numbers are used only when a page has no `P` anchors.
+  without anchors. Printed numbers are used only when a page has no numbered `P`
+  anchors; a lettered withdrawal notice does not suppress them.
 - Edited versions of private advice: the paragraphs after the `ev_disclaimer` box,
   ending at the "Back to top" bar; a paragraph whose text is all bold is a heading.
 
