@@ -224,3 +224,44 @@ pub fn write_text_atomic(path: &str, chunks: &[Vec<u32>]) -> Result<(), Exc> {
     }
     written
 }
+
+/// `sorted(glob(markdown_root/*/sections.jsonl))` as entry names: entries not
+/// starting with a dot whose sections.jsonl exists, even as a dangling link,
+/// in the order of their full paths.
+pub fn sections_files(markdown_root: &str) -> Vec<String> {
+    let Ok(entries) = std::fs::read_dir(markdown_root) else {
+        return Vec::new();
+    };
+    let mut names: Vec<String> = entries
+        .filter_map(Result::ok)
+        .map(|e| e.file_name().to_string_lossy().into_owned())
+        .filter(|name| !name.starts_with('.'))
+        .filter(|name| {
+            let file = pypath::join(&pypath::join(markdown_root, name), "sections.jsonl");
+            std::fs::symlink_metadata(file).is_ok()
+        })
+        .collect();
+    names.sort_by_key(|name| format!("{name}{}", pypath::SEP));
+    names
+}
+
+/// `open(path, "w", encoding="utf-8").write(text)`: text mode, so `\n` is the
+/// platform's line separator.
+pub fn write_text(path: &str, text: &[u32]) -> Result<(), Exc> {
+    let mut bytes = Vec::with_capacity(text.len());
+    for &cp in text {
+        if cp == 0x0a && cfg!(windows) {
+            bytes.push(b'\r');
+        }
+        let c = char::from_u32(cp).ok_or_else(|| {
+            Exc::UnicodeEncode(crate::pyvalue::utf8_strict_error(text).unwrap_or_default())
+        })?;
+        let mut buffer = [0; 4];
+        bytes.extend_from_slice(c.encode_utf8(&mut buffer).as_bytes());
+    }
+    let mut file =
+        std::fs::File::create(path).map_err(|e| OsError::new(&e, Some(path), Style::Errno))?;
+    file.write_all(&bytes)
+        .map_err(|e| OsError::new(&e, None, Style::Errno))?;
+    Ok(())
+}

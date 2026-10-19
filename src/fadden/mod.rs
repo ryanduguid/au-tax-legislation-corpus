@@ -11,6 +11,7 @@ pub mod compare_builds;
 pub mod corpus_paths;
 pub mod http;
 pub mod pii;
+pub mod pii_scan;
 pub mod rates;
 pub mod rulings;
 pub mod search;
@@ -191,6 +192,21 @@ pub fn getitem<'a>(value: &'a Json, key: &str) -> Result<&'a Json, Exc> {
         Json::Str(_) => Err(Exc::Type(
             "string indices must be integers, not 'str'".into(),
         )),
+        other => Err(Exc::Type(format!(
+            "'{}' object is not subscriptable",
+            type_name(other)
+        ))),
+    }
+}
+
+/// `value[:n]`, or the exception slicing raises.
+pub fn head(value: &Json, n: usize) -> Result<Json, Exc> {
+    match value {
+        Json::Str(s) => Ok(Json::Str(crate::pyjson::PyStr::from_code_points(
+            s.code_points().into_iter().take(n).collect(),
+        ))),
+        Json::Array(items) => Ok(Json::Array(items.iter().take(n).cloned().collect())),
+        Json::Object(_) => Err(Exc::Key(format!("slice(None, {n}, None)"))),
         other => Err(Exc::Type(format!(
             "'{}' object is not subscriptable",
             type_name(other)

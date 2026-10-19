@@ -84,12 +84,12 @@ them out:
    The CC BY 4.0 grant does not reach them, so `dist.py` drops them whole and
    `dist_verify.py` fails any tree that carries one.
 
-`pii_scan.py` finds the second category without being told where to look. It
+The `pii_scan` stage finds the second category without being told where to look. It
 tests every row in all 946 titles for personal names appearing alongside agent
 registration numbers, because a bare name test flags the whole corpus:
 legislation names Ministers, Commissioners and litigants constantly, and the
 registration number is what separates a disciplinary register from a statute.
-`pii_scan2.py` re-runs at a lower threshold and sweeps for emails, phone numbers
+The `pii_scan2` stage re-runs at a lower threshold and sweeps for emails, phone numbers
 and 8- or nine-digit tax file numbers. On the source snapshot retrieved
 2026-08-04, the JSONL scan finds 10 occurrences of 4 unique organisational
 contacts across 3 titles: 2 government email addresses and 2 government

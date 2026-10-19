@@ -157,7 +157,7 @@ class PathAndWriteTests(unittest.TestCase):
 
     def test_installed_locations_refuse_legacy_stages_before_side_effects(self):
         for name in ("discover", "versions", "download", "probe13", "retry13", "extract",
-                     "finalize", "check_current", "pii_scan", "pii_scan2", "dist"):
+                     "finalize", "check_current", "dist"):
             module = regressions.load_module("installed_guard_" + name, STAGE / (name + ".py"))
             with self.subTest(stage=name), tempfile.TemporaryDirectory() as temporary, \
                     mock.patch.object(module, "__file__", str(Path(temporary) / "fadden" / (name + ".py"))):

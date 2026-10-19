@@ -493,7 +493,11 @@ pub fn pii_findings(texts: &[&str]) -> Vec<String> {
         if pii::has_private_person_registration_pair(text) {
             kinds.push("name-with-registration-number".into());
         }
-        kinds.extend(pii::contact_kinds(text).into_iter().map(String::from));
+        kinds.extend(
+            pii::contact_fingerprints(text)
+                .into_iter()
+                .map(|(kind, _)| kind.to_string()),
+        );
     }
     kinds.sort();
     kinds.dedup();

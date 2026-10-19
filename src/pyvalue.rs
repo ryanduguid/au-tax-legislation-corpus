@@ -291,11 +291,21 @@ fn dump(value: &Json, ensure_ascii: bool, out: &mut Vec<u32>) {
     }
 }
 
-/// The bytes `print(text)` writes to a UTF-8 `surrogateescape` stream, or the
-/// `UnicodeEncodeError` message for a surrogate that handler cannot map.
 /// `json.dumps(value, indent=indent, ensure_ascii=False, sort_keys=True)`.
 pub fn dumps_sorted(value: &Json, indent: Option<usize>) -> Vec<u32> {
-    fn walk(value: &Json, indent: Option<usize>, level: usize, out: &mut Vec<u32>) {
+    dumps_with(value, indent, false, true)
+}
+
+/// `json.dumps(value, indent=indent, ensure_ascii=ensure_ascii, sort_keys=sort_keys)`.
+pub fn dumps_with(
+    value: &Json,
+    indent: Option<usize>,
+    ensure_ascii: bool,
+    sort_keys: bool,
+) -> Vec<u32> {
+    let options = (indent, ensure_ascii, sort_keys);
+    fn walk(value: &Json, options: (Option<usize>, bool, bool), level: usize, out: &mut Vec<u32>) {
+        let (indent, ensure_ascii, sort_keys) = options;
         let newline = |out: &mut Vec<u32>, level: usize| {
             if let Some(width) = indent {
                 out.push(u32::from('\n'));
@@ -311,35 +321,39 @@ pub fn dumps_sorted(value: &Json, indent: Option<usize>) -> Vec<u32> {
                         push(out, separator);
                     }
                     newline(out, level + 1);
-                    walk(item, indent, level + 1, out);
+                    walk(item, options, level + 1, out);
                 }
                 newline(out, level);
                 out.push(u32::from(']'));
             }
             Json::Object(pairs) if !pairs.is_empty() => {
-                let mut sorted: Vec<&(PyStr, Json)> = pairs.iter().collect();
-                sorted.sort_by_key(|(k, _)| k.code_points());
+                let mut ordered: Vec<&(PyStr, Json)> = pairs.iter().collect();
+                if sort_keys {
+                    ordered.sort_by_key(|(k, _)| k.code_points());
+                }
                 out.push(u32::from('{'));
-                for (i, (k, v)) in sorted.into_iter().enumerate() {
+                for (i, (k, v)) in ordered.into_iter().enumerate() {
                     if i > 0 {
                         push(out, separator);
                     }
                     newline(out, level + 1);
-                    dump_str(&k.code_points(), false, out);
+                    dump_str(&k.code_points(), ensure_ascii, out);
                     push(out, ": ");
-                    walk(v, indent, level + 1, out);
+                    walk(v, options, level + 1, out);
                 }
                 newline(out, level);
                 out.push(u32::from('}'));
             }
-            other => dump(other, false, out),
+            other => dump(other, ensure_ascii, out),
         }
     }
     let mut out = Vec::new();
-    walk(value, indent, 0, &mut out);
+    walk(value, options, 0, &mut out);
     out
 }
 
+/// The bytes `print(text)` writes to a UTF-8 `surrogateescape` stream, or the
+/// `UnicodeEncodeError` message for a surrogate that handler cannot map.
 pub fn encode_print(points: &[u32]) -> Result<Vec<u8>, String> {
     let mut out = Vec::with_capacity(points.len());
     let mut i = 0;

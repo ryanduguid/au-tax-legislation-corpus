@@ -1,13 +1,21 @@
 //! `fadden <stage> [arguments]`: run one ported corpus stage.
 use std::io::Write;
 
-use super::{Run, as_at, compare_builds, rates, rulings, search};
+use super::{Run, as_at, compare_builds, pii_scan, rates, rulings, search};
 use crate::argparse::Exit;
 
 /// The stages this binary runs; the others remain in the Python package.
-pub const STAGES: [&str; 5] = ["as_at", "compare_builds", "rates", "rulings", "search"];
+pub const STAGES: [&str; 7] = [
+    "as_at",
+    "compare_builds",
+    "pii_scan",
+    "pii_scan2",
+    "rates",
+    "rulings",
+    "search",
+];
 
-const USAGE: &str = "usage: fadden {as_at,compare_builds,rates,rulings,search} [arguments ...]\n";
+const USAGE: &str = "usage: fadden {as_at,compare_builds,pii_scan,pii_scan2,rates,rulings,search} [arguments ...]\n";
 
 /// Text-mode output: newlines become the platform's line separator.
 fn text_mode(bytes: &[u8]) -> Vec<u8> {
@@ -34,6 +42,8 @@ pub fn main(argv: &[String]) -> i32 {
         Some((stage, rest)) if stage == "rates" => rates::main(rest, &mut run),
         Some((stage, rest)) if stage == "rulings" => rulings::main(rest, &mut run),
         Some((stage, rest)) if stage == "search" => search::main(rest, &mut run),
+        Some((stage, rest)) if stage == "pii_scan" => pii_scan::main(rest, &mut run),
+        Some((stage, rest)) if stage == "pii_scan2" => pii_scan::main2(rest, &mut run),
         Some((flag, _)) if flag == "-h" || flag == "--help" => Err(Exit::Help(format!(
             "{USAGE}\nRun one ported corpus-builder stage; `python -m fadden` forwards these stages here.\n"
         ))),

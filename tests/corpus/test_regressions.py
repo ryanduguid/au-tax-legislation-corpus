@@ -5,7 +5,6 @@ not call the Register API or require a built corpus.
 """
 import contextlib
 import datetime
-import hashlib
 import importlib.util
 import io
 import json
@@ -2110,107 +2109,6 @@ class PiiNameGateTests(unittest.TestCase):
                 policy.write_text(json.dumps(document), encoding="utf-8")
                 with self.assertRaises(ValueError):
                     patterns.load_contact_allowlist(policy)
-
-    def test_pii_scan_flags_capitalised_register_before_finalization(self):
-        with tempfile.TemporaryDirectory() as tmp:
-            base = Path(tmp)
-            build = base / "build"
-            build.mkdir()
-            for name in ("pii_scan.py", "pii_patterns.py", "corpus_paths.py"):
-                shutil.copy2(stage_file(name), build / name)
-
-            titles = [
-                {"id": "F2026N00001", "name": "All Caps Register",
-                 "collection": "NotifiableInstrument"},
-                {"id": "C2004A00001", "name": "Ordinary Tax Act",
-                 "collection": "Act"},
-            ]
-            # The scan precedes finalize, so sources.json does not exist yet.
-            (build / "manifest_md.json").write_text(
-                json.dumps(titles), encoding="utf-8")
-            rows = {
-                "F2026N00001": {"row_id": "F2026N00001-1",
-                                "text": self.ALL_CAPS_ROW},
-                "C2004A00001": {"row_id": "C2004A00001-1",
-                                "text": "The Commissioner may determine the rate."},
-            }
-            for rid, row in rows.items():
-                folder = base / "markdown" / rid
-                folder.mkdir(parents=True)
-                (folder / "sections.jsonl").write_text(
-                    json.dumps(row) + "\n", encoding="utf-8")
-
-            scan = load_module("pii_scan_regression", build / "pii_scan.py")
-            with contextlib.redirect_stdout(io.StringIO()):
-                scan.main()
-
-            flagged = json.loads(
-                (build / "pii_flagged.json").read_text(encoding="utf-8"))
-            self.assertEqual([f["register_id"] for f in flagged], ["F2026N00001"])
-            self.assertEqual(flagged[0]["name"], "All Caps Register")
-            self.assertEqual(flagged[0]["collection"], "NotifiableInstrument")
-            self.assertGreaterEqual(flagged[0]["names_est"], 3)
-
-    def test_second_scan_does_not_copy_contact_identifiers_into_logs(self):
-        with tempfile.TemporaryDirectory() as tmp:
-            base = Path(tmp)
-            build = base / "build"
-            build.mkdir()
-            for name in ("pii_scan2.py", "pii_patterns.py", "corpus_paths.py",
-                         "pii_contact_allowlist.json"):
-                shutil.copy2(stage_file(name), build / name)
-            (build / "pii_flagged.json").write_text("[]\n", encoding="utf-8")
-
-            contact = "privacy-review@example.test"
-            rid = "C2004A00001"
-            folder = base / "markdown" / rid
-            folder.mkdir(parents=True)
-            (folder / "sections.jsonl").write_text(
-                json.dumps({"row_id": f"{rid}:0001:-", "text": contact}) + "\n",
-                encoding="utf-8",
-            )
-
-            scan = load_module("pii_scan2_redaction", build / "pii_scan2.py")
-            output = io.StringIO()
-            with contextlib.redirect_stdout(output):
-                result = scan.main()
-
-            logged = output.getvalue()
-            self.assertEqual(result, 1)
-            self.assertNotIn(contact, logged)
-            self.assertIn(
-                hashlib.sha256(contact.encode("utf-8")).hexdigest()[:16],
-                logged,
-            )
-            self.assertIn(f"{rid}:0001:-", logged)
-
-    def test_second_scan_accepts_only_a_title_bound_organisational_contact(self):
-        with tempfile.TemporaryDirectory() as tmp:
-            base = Path(tmp)
-            build = base / "build"
-            build.mkdir()
-            for name in ("pii_scan2.py", "pii_patterns.py", "corpus_paths.py"):
-                shutil.copy2(stage_file(name), build / name)
-            (build / "pii_flagged.json").write_text("[]\n", encoding="utf-8")
-
-            contact = "OFFICIAL@example.test"
-            rid = "C2004A00001"
-            digest = hashlib.sha256(contact.casefold().encode("utf-8")).hexdigest()
-            policy = {"schema_version": 1, "entries": [{
-                "kind": "email", "sha256": digest, "register_id": rid,
-                "reason": "synthetic organisational contact",
-            }]}
-            (build / "pii_contact_allowlist.json").write_text(
-                json.dumps(policy), encoding="utf-8")
-            folder = base / "markdown" / rid
-            folder.mkdir(parents=True)
-            (folder / "sections.jsonl").write_text(
-                json.dumps({"row_id": f"{rid}:0001:-", "text": contact}) + "\n",
-                encoding="utf-8")
-
-            scan = load_module("pii_scan2_approved", build / "pii_scan2.py")
-            with contextlib.redirect_stdout(io.StringIO()):
-                self.assertEqual(scan.main(), 0)
 
 
 class DistributionTests(unittest.TestCase):

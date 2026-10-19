@@ -593,7 +593,12 @@ struct Counter {
 
 impl Counter {
     fn add(&mut self, value: &Json) -> Result<(), Exc> {
-        let key = pyvalue::key(value).map_err(Exc::Type)?;
+        let key = pyvalue::key(value).map_err(|m| {
+            Exc::Type(format!(
+                "cannot use '{}' as a dict key ({m})",
+                type_name(value)
+            ))
+        })?;
         match self.items.iter_mut().find(|(k, _, _)| *k == key) {
             Some(item) => item.2 += 1,
             None => self.items.push((key, value.clone(), 1)),
@@ -619,7 +624,7 @@ fn dict_repr(pairs: &[(&Json, usize)]) -> String {
 }
 
 /// `f"{n:,}"`.
-fn thousands(n: usize) -> String {
+pub fn thousands(n: usize) -> String {
     let digits = n.to_string();
     let mut out = String::new();
     for (i, c) in digits.chars().enumerate() {
@@ -638,19 +643,6 @@ fn md_json(value: &Json) -> P {
 /// `value or default`.
 fn or<'a>(value: &'a Json, default: &'a Json) -> &'a Json {
     if value.truthy() { value } else { default }
-}
-
-/// `value[:n]`, or the exception slicing raises.
-fn head(value: &Json, n: usize) -> Result<Json, Exc> {
-    match value {
-        Json::Str(s) => Ok(pstr(s.code_points().into_iter().take(n).collect())),
-        Json::Array(items) => Ok(Json::Array(items.iter().take(n).cloned().collect())),
-        Json::Object(_) => Err(Exc::Key(format!("slice(None, {n}, None)"))),
-        other => Err(Exc::Type(format!(
-            "'{}' object is not subscriptable",
-            type_name(other)
-        ))),
-    }
 }
 
 /// `stale_source_lines(records)`: the warning for rows from a stale compilation.
@@ -830,26 +822,6 @@ fn read_title(
     Ok(())
 }
 
-/// `glob(markdown/*/sections.jsonl)`, sorted: the entries not starting with a
-/// dot whose sections.jsonl exists, even as a dangling link.
-fn listed_files(markdown_root: &str) -> Vec<String> {
-    let Ok(entries) = std::fs::read_dir(markdown_root) else {
-        return Vec::new();
-    };
-    let mut names: Vec<String> = entries
-        .filter_map(Result::ok)
-        .map(|e| e.file_name().to_string_lossy().into_owned())
-        .filter(|name| !name.starts_with('.'))
-        .filter(|name| {
-            let file =
-                crate::pypath::join(&crate::pypath::join(markdown_root, name), "sections.jsonl");
-            std::fs::symlink_metadata(file).is_ok()
-        })
-        .collect();
-    names.sort();
-    names
-}
-
 fn line(text: &str) -> P {
     pts(text)
 }
@@ -989,7 +961,7 @@ fn markdown(
                 }
                 listed.truncate(40);
                 let cells: [P; 6] = [
-                    md_json(&head(r.get("act"), 48)?),
+                    md_json(&super::head(r.get("act"), 48)?),
                     line(if is_act(r) { "Act" } else { "instrument" }),
                     md_json(or(r.get("section"), &Json::str("-"))),
                     markdown_text(&line(r.kind)),
@@ -1039,7 +1011,7 @@ fn execute(run: &mut Run) -> Result<(), Exc> {
 
     let markdown_root = child(&root, &["markdown"])?;
     let mut records = Vec::new();
-    for name in listed_files(&markdown_root) {
+    for name in super::corpus_paths::sections_files(&markdown_root) {
         let directory_id = register_id_str(&name)?;
         read_title(&markdown_root, &directory_id, &mut records)?;
     }
