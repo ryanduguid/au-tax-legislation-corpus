@@ -1312,7 +1312,9 @@ fn walk_drops_a_directory_whose_listing_fails() {
     tax_radar_au::pyos::set_listing_hook(|path, index| {
         (path.ends_with("sub") && index == 1).then(io_error)
     });
-    let steps = tax_radar_au::pyos::walk(&s(dir.path()), |_| {}).unwrap();
+    let steps: Vec<_> = tax_radar_au::pyos::walk(&s(dir.path()), |_| {})
+        .collect::<Result<_, _>>()
+        .unwrap();
     tax_radar_au::pyos::set_listing_hook(|_, _| None);
     assert_eq!(steps.len(), 1);
     assert_eq!(steps[0].dirs, ["sub"]);
@@ -1640,6 +1642,39 @@ fn a_permission_error_classifies_an_entry_as_unreadable() {
     if unsafe { libc::geteuid() } != 0 {
         assert_eq!(kind, "unreadable");
     }
+}
+
+/// A junction back to its own title is refused before the walk enters it, as
+/// Python's generator walk was.
+#[cfg(windows)]
+#[test]
+fn a_junction_cycle_is_refused_without_being_entered() {
+    let dir = tempfile::tempdir().unwrap();
+    let title = dir.path().join(PUBLIC_ID);
+    std::fs::create_dir(&title).unwrap();
+    std::fs::write(title.join("sections.jsonl"), "{}\n").unwrap();
+    let made = Command::new("cmd")
+        .args(["/C", "mklink", "/J"])
+        .arg(title.join("loop"))
+        .arg(&title)
+        .output()
+        .unwrap();
+    assert!(made.status.success());
+    let listed = std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
+    let seen = listed.clone();
+    tax_radar_au::pyos::set_listing_hook(move |path, index| {
+        if index == 0 {
+            seen.borrow_mut().push(path.to_string());
+        }
+        None
+    });
+    let error = tax_radar_au::fadden::corpus_paths::reject_symlinks(&s(&title)).unwrap_err();
+    tax_radar_au::pyos::set_listing_hook(|_, _| None);
+    assert_eq!(
+        error.to_string(),
+        "corpus tree contains a symbolic link, junction or reparse point"
+    );
+    assert_eq!(listed.borrow().as_slice(), [s(&title)]);
 }
 
 /// A directory carrying a third-party reparse tag: neither a symbolic link

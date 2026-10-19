@@ -1661,7 +1661,8 @@ fn build_distribution(paths: &Paths, staging: &str, run: &mut Run) -> Result<(),
     write_text(&child(staging, &["REMOVED.md"])?, &removed_md)?;
 
     let mut size = 0u64;
-    for step in pyos::walk(staging, |_| {})? {
+    for step in pyos::walk(staging, |_| {}) {
+        let step = step?;
         for name in &step.files {
             let path = pypath::join(&step.top, name);
             size += std::fs::metadata(&path)

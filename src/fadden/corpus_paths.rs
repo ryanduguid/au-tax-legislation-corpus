@@ -380,7 +380,8 @@ pub fn reject_symlinks(directory: &str) -> Result<(), Exc> {
     if linked(directory)? {
         return Err(Exc::value(LINKED_TREE));
     }
-    for step in crate::pyos::walk(directory, |_| {})? {
+    for step in crate::pyos::walk(directory, |_| {}) {
+        let step = step?;
         for name in step.dirs.iter().chain(&step.files) {
             if linked(&pypath::join(&step.top, name))? {
                 return Err(Exc::value(LINKED_TREE));

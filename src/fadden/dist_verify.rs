@@ -74,7 +74,8 @@ pub fn title_tree(directory: &str) -> Result<(Vec<String>, Vec<String>), Exc> {
     reject_symlinks(directory)?;
     let mut files = Vec::new();
     let mut nested = Vec::new();
-    for step in pyos::walk(directory, |s| s.dirs.sort())? {
+    for step in pyos::walk(directory, |s| s.dirs.sort()) {
+        let step = step?;
         for name in &step.dirs {
             nested.push(relative(&pypath::join(&step.top, name), directory));
         }
@@ -629,7 +630,7 @@ pub fn verify_distribution(
         "",
     );
 
-    let walked = pyos::walk(dist_root, |_| {})?;
+    let walked = pyos::walk(dist_root, |_| {}).collect::<Result<Vec<_>, _>>()?;
     let mut exts = Tally::default();
     let mut size: u64 = 0;
     for step in &walked {

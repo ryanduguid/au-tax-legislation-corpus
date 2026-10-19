@@ -423,38 +423,66 @@ pub struct WalkStep {
 /// walk drops it. A directory symlink is listed among `dirs` but not entered;
 /// a junction is entered, as CPython does. `order` may reorder each step's
 /// `dirs` before descent, as a caller sorting `directories` in place does.
-pub fn walk(top: &str, mut order: impl FnMut(&mut WalkStep)) -> Result<Vec<WalkStep>, NotUnicode> {
-    let mut steps = Vec::new();
-    let mut stack = vec![top.to_string()];
-    'directories: while let Some(top) = stack.pop() {
-        let Ok(entries) = scandir(&top) else {
-            continue;
-        };
-        let mut step = WalkStep {
-            top: top.clone(),
-            dirs: Vec::new(),
-            files: Vec::new(),
-        };
-        for entry in entries {
-            let Ok(entry) = entry else {
-                continue 'directories;
-            };
-            let name = entry_name(&entry)?;
-            let is_dir = std::fs::metadata(entry.path()).is_ok_and(|m| m.is_dir());
-            if is_dir {
-                step.dirs.push(name);
-            } else {
-                step.files.push(name);
-            }
-        }
-        order(&mut step);
-        for name in step.dirs.iter().rev() {
-            let path = crate::pypath::join(&top, name);
-            if !islink(&path) {
-                stack.push(path);
-            }
-        }
-        steps.push(step);
+///
+/// Like CPython's generator, a step's subdirectories are listed only when the
+/// caller asks for the next step, so a caller that refuses an entry stops
+/// before the walk enters it.
+pub fn walk<F: FnMut(&mut WalkStep)>(top: &str, order: F) -> Walk<F> {
+    Walk {
+        stack: vec![top.to_string()],
+        descend: None,
+        order,
     }
-    Ok(steps)
+}
+
+/// The steps of `walk`, in order.
+pub struct Walk<F> {
+    stack: Vec<String>,
+    /// The last step's directory and subdirectories, entered on the next call.
+    descend: Option<(String, Vec<String>)>,
+    order: F,
+}
+
+impl<F: FnMut(&mut WalkStep)> Iterator for Walk<F> {
+    type Item = Result<WalkStep, NotUnicode>;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        if let Some((top, dirs)) = self.descend.take() {
+            for name in dirs.iter().rev() {
+                let path = crate::pypath::join(&top, name);
+                if !islink(&path) {
+                    self.stack.push(path);
+                }
+            }
+        }
+        'directories: while let Some(top) = self.stack.pop() {
+            let Ok(entries) = scandir(&top) else {
+                continue;
+            };
+            let mut step = WalkStep {
+                top: top.clone(),
+                dirs: Vec::new(),
+                files: Vec::new(),
+            };
+            for entry in entries {
+                let Ok(entry) = entry else {
+                    continue 'directories;
+                };
+                let name = match entry_name(&entry) {
+                    Ok(name) => name,
+                    Err(error) => return Some(Err(error)),
+                };
+                let is_dir = std::fs::metadata(entry.path()).is_ok_and(|m| m.is_dir());
+                if is_dir {
+                    step.dirs.push(name);
+                } else {
+                    step.files.push(name);
+                }
+            }
+            (self.order)(&mut step);
+            self.descend = Some((top, step.dirs.clone()));
+            return Some(Ok(step));
+        }
+        None
+    }
 }
