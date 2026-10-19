@@ -34,7 +34,7 @@ Register captures and publication candidates as different contracts.
 ## CI gates
 
 `ci.yml` runs the full locked pytest suite on Ubuntu for Python 3.14 and 3.15, then the
-package build and the linters. Its Windows 3.14 matrix runs `tests/radar`,
+package build and the linters. Its Windows 3.14 matrix runs
 `tests/corpus/test_live_evidence_bundle_export.py` and
 `tests/corpus/test_live_evidence_publication_paths.py` under branch coverage so the
 supported live-evidence export boundary is exercised. Codecov merges that report with the
@@ -44,39 +44,44 @@ of pre-existing Windows failures around 8.3 short paths, junctions and reparse p
 do not describe a local Windows full-suite failure in those paths as a radar regression
 without proving it.
 
-The fenced list records the unique single-line commands. The multiline package-smoke gate
-is explained and matched semantically below without duplicating its shell body.
+The radar is the Rust `tax-radar-au` binary. The `rust` job runs its formatting, Clippy,
+tests and release build on Ubuntu and Windows, and the Ubuntu test legs build it for the
+cross-system contract test in `tests/corpus/test_monitor_contract.py`.
+
+The fenced list records the unique single-line commands. The multiline binary-smoke gate
+is reproduced exactly in the next section.
 ```bash
+rustup toolchain install && cargo build --locked --release
 uv run --locked --extra dev pytest tests
-uv run --locked --extra dev pytest tests/radar tests/corpus/test_live_evidence_bundle_export.py tests/corpus/test_live_evidence_publication_paths.py
-uv run --locked --extra dev coverage run --branch --source=tax_radar_au,fadden -m pytest tests
+uv run --locked --extra dev pytest tests/corpus/test_live_evidence_bundle_export.py tests/corpus/test_live_evidence_publication_paths.py
+uv run --locked --extra dev coverage run --branch --source=fadden -m pytest tests
 uv run --locked --extra dev coverage xml -o coverage-codecov.xml
 uv run --locked --extra dev coverage report
-uv run --locked --extra dev coverage run --branch --source=tax_radar_au,fadden -m pytest tests/radar tests/corpus/test_live_evidence_bundle_export.py tests/corpus/test_live_evidence_publication_paths.py
+uv run --locked --extra dev coverage run --branch --source=fadden -m pytest tests/corpus/test_live_evidence_bundle_export.py tests/corpus/test_live_evidence_publication_paths.py
 uv run --locked --extra dev coverage xml --fail-under=0 -o coverage-windows.xml
 uv run --locked --extra dev --python 3.14 python -m build
+python -m venv /tmp/venv && /tmp/venv/bin/pip install --no-index dist/tax_radar_au-*.whl && cd /tmp && /tmp/venv/bin/python -c "import fadden.source_snapshot"
+rustup toolchain install
+cargo fmt --check
+cargo clippy --locked --all-targets -- -D warnings
+cargo test --locked
+cargo build --locked --release
+cargo install cargo-audit --locked --version 0.22.2 && cargo audit
 uv run --locked --extra dev ruff check .
 uv run --locked --extra dev mypy
 uv audit --locked --no-config --python-version 3.14
 ```
 
-## Package build and installed-wheel smoke
+## Release binary smoke
 
-Run the locked build, then install and exercise that wheel from a fresh temporary
-directory outside the checkout. This is a package preflight, not a publication step:
+Build the release binary, then run it on the shipped samples from a fresh temporary
+directory outside the checkout. This is a binary preflight, not a publication step:
 
-```powershell
-uv run --locked --extra dev --python 3.14 python -m build
-$wheelDir = (Resolve-Path dist).Path
-$smokeDir = Join-Path ([System.IO.Path]::GetTempPath()) ("tax-radar-wheel-smoke-" + [guid]::NewGuid().ToString("N"))
-python -m venv "$smokeDir\venv"
-& "$smokeDir\venv\Scripts\python.exe" -m pip install --no-index (Get-Item "$wheelDir\tax_radar_au-*.whl").FullName
-Push-Location $smokeDir
-$baseline = & "$smokeDir\venv\Scripts\python.exe" -c "from tax_radar_au.util import sample_path; print(sample_path('baseline', 'sample-sources.json'))"
-$observation = & "$smokeDir\venv\Scripts\python.exe" -c "from tax_radar_au.util import sample_path; print(sample_path('observations', 'sample-register-observation.json'))"
-$mapping = & "$smokeDir\venv\Scripts\python.exe" -c "from tax_radar_au.util import sample_path; print(sample_path('mappings', 'sample-source-skill-map.json'))"
-$decision = & "$smokeDir\venv\Scripts\python.exe" -c "from tax_radar_au.util import sample_path; print(sample_path('decisions', 'sample-technical-review.json'))"
-& "$smokeDir\venv\Scripts\tax-radar-au.exe" compare --baseline $baseline --observation $observation --map $mapping --out demo
-& "$smokeDir\venv\Scripts\tax-radar-au.exe" validate-review --queue demo/impact-queue.json --decision $decision --out demo/validation.json
-Pop-Location
+```bash
+bin="$PWD/target/release/tax-radar-au"
+samples="$PWD/samples"
+demo="$(mktemp -d)"
+cd "$demo"
+"$bin" compare --baseline "$samples/baseline/sample-sources.json" --observation "$samples/observations/sample-register-observation.json" --map "$samples/mappings/sample-source-skill-map.json" --out demo
+"$bin" validate-review --queue demo/impact-queue.json --decision "$samples/decisions/sample-technical-review.json" --out demo/validation.json
 ```

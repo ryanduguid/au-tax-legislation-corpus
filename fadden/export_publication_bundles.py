@@ -18,11 +18,9 @@ from pathlib import Path
 from typing import Any, Sequence
 from urllib.parse import urlsplit
 
-from tax_radar_au.errors import MonitorError
-from tax_radar_au.util import SourceSnapshot, load_json
-
 from fadden import export_monitor_contract as monitor_contract
 from fadden.corpus_paths import _absolute, _path_is_junction, _same_location
+from fadden.source_snapshot import MonitorError, SourceSnapshot, load_json
 
 
 class PublicationBundleError(ValueError):

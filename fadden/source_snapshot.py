@@ -1,16 +1,27 @@
+"""Bounded, duplicate-refusing JSON snapshots for the publication export.
+
+These are the radar's SourceSnapshot and load_json, kept here unchanged when
+the radar moved to the Rust `tax-radar-au` binary, so the Python export stage
+reads its monitor inputs exactly as before.
+"""
 from __future__ import annotations
 
 import hashlib
 import json
 import os
 import stat
-import string
 from dataclasses import dataclass
-from importlib.resources import files
 from pathlib import Path
 from typing import Any
 
-from .errors import MonitorError, SourceTooLargeError
+
+class MonitorError(ValueError):
+    """A source, observation, mapping, or decision is outside the v0.1 contract."""
+
+
+class SourceTooLargeError(MonitorError):
+    """A source exceeds the caller's byte limit."""
+
 
 MAX_JSON_BYTES = 50_000_000
 MAX_JSON_DEPTH = 64
@@ -78,27 +89,6 @@ class SourceSnapshot:
             raise MonitorError(f"{label} could not be read as UTF-8: {self.path}.") from exc
 
 
-def sample_path(*parts: str) -> Path:
-    """Locate a shipped sample fixture inside the installed package.
-
-    The samples ship as package data, so this resolves correctly for editable
-    checkouts and plain ``pip install`` alike. The package installs as a real
-    directory; zip imports are not supported.
-    """
-    resource = files(__package__)
-    for part in ("samples", *parts):
-        resource = resource.joinpath(part)
-    return Path(str(resource))
-
-
-def canonical_json(value: Any) -> bytes:
-    return json.dumps(value, sort_keys=True, separators=(",", ":"), ensure_ascii=True).encode("utf-8")
-
-
-def sha256_json(value: Any) -> str:
-    return hashlib.sha256(canonical_json(value)).hexdigest()
-
-
 def load_json(
     path: Path | SourceSnapshot, *, label: str
 ) -> Any:
@@ -138,18 +128,3 @@ def load_json(
         ) from exc
     except (ValueError, RecursionError) as exc:
         raise MonitorError(f"{label} is not valid JSON: {source_path}.") from exc
-
-
-def load_json_exact(
-    path: Path | SourceSnapshot, required: set[str], *, label: str
-) -> dict[str, Any]:
-    payload = load_json(path, label=label)
-    if not isinstance(payload, dict) or set(payload) != required:
-        raise MonitorError(f"{label} must contain exactly: {', '.join(sorted(required))}.")
-    return payload
-
-
-def safe_markdown(value: str) -> str:
-    """Escape metadata as ordinary Markdown text, outside code spans."""
-    text = " ".join(value.splitlines())
-    return "".join("\\" + char if char in string.punctuation else char for char in text)

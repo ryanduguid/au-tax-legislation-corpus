@@ -34,8 +34,9 @@ jobs:
             # there on 8.3 short paths (RUNNER~1 against runneradmin), NTFS
             # junctions and reparse points. All pre-existing, none the radar's.
             # Keep other corpus modules excluded; exercise the supported
-            # Windows-only live-evidence export boundary as well as radar.
-            tests: "tests/radar tests/corpus/test_live_evidence_bundle_export.py tests/corpus/test_live_evidence_publication_paths.py"
+            # Windows-only live-evidence export boundary. The radar is Rust
+            # now and runs on Windows in the rust job.
+            tests: "tests/corpus/test_live_evidence_bundle_export.py tests/corpus/test_live_evidence_publication_paths.py"
     timeout-minutes: 30
     runs-on: ${{ matrix.os }}
     steps:
@@ -51,6 +52,11 @@ jobs:
         with:
           version: "0.12.0"
           enable-cache: true
+      # tests/corpus/test_monitor_contract.py feeds the exported contract to
+      # the Rust tax-radar-au binary named by TAX_RADAR_AU_BIN.
+      - name: build the tax-radar-au binary for the cross-system contract test
+        if: matrix.os == 'ubuntu-latest'
+        run: rustup toolchain install && cargo build --locked --release
       # No -q here: pyproject's addopts already sets it, and a second -q makes
       # it -qq, which drops the pass/fail count from the log. Without the count
       # a test file that stops being collected leaves every leg green.
@@ -58,11 +64,13 @@ jobs:
         run: uv run --locked --extra dev pytest ${{ matrix.tests }}
         env:
           UV_PYTHON: ${{ matrix.python }}
+          TAX_RADAR_AU_BIN: target/release/tax-radar-au
       - name: run tests with whole-package branch coverage
         if: matrix.os == 'ubuntu-latest' && matrix.python == '3.14'
-        run: uv run --locked --extra dev coverage run --branch --source=tax_radar_au,fadden -m pytest tests  # NOSONAR: the environment is synced from uv.lock, whose dependencies install from wheels
+        run: uv run --locked --extra dev coverage run --branch --source=fadden -m pytest tests  # NOSONAR: the environment is synced from uv.lock, whose dependencies install from wheels
         env:
           UV_PYTHON: ${{ matrix.python }}
+          TAX_RADAR_AU_BIN: target/release/tax-radar-au
       - name: write whole-package coverage for Codecov
         if: matrix.os == 'ubuntu-latest' && matrix.python == '3.14'
         run: uv run --locked --extra dev coverage xml -o coverage-codecov.xml  # NOSONAR: the environment is synced from uv.lock, whose dependencies install from wheels
@@ -86,7 +94,7 @@ jobs:
       # cannot run the Windows-only live-evidence publication transaction.
       - name: run the Windows tests with branch coverage
         if: matrix.os == 'windows-latest'
-        run: uv run --locked --extra dev coverage run --branch --source=tax_radar_au,fadden -m pytest ${{ matrix.tests }}  # NOSONAR: the environment is synced from uv.lock, whose dependencies install from wheels
+        run: uv run --locked --extra dev coverage run --branch --source=fadden -m pytest ${{ matrix.tests }}  # NOSONAR: the environment is synced from uv.lock, whose dependencies install from wheels
         env:
           UV_PYTHON: ${{ matrix.python }}
       - name: write Windows coverage for Codecov
@@ -150,26 +158,44 @@ jobs:
           version: "0.12.0"
           enable-cache: true
       - run: uv run --locked --extra dev --python 3.14 python -m build  # NOSONAR: unprivileged job; uv installs the hash-locked set
-      # The sample fixtures ship as package data; a wheel that cannot find
-      # them reintroduces the install-root bug where a plain 'pip install'
-      # produced a CLI that could never locate its own demo inputs.
-      - name: install the wheel and run the demo from outside the checkout
+      # The wheel file and --no-index, or pip is free to resolve the name from
+      # PyPI and test a release nobody built in this job. The wheel carries the
+      # corpus builder only; the radar ships as the Rust binary.
+      - name: install the wheel and import the builder from outside the checkout
+        run: python -m venv /tmp/venv && /tmp/venv/bin/pip install --no-index dist/tax_radar_au-*.whl && cd /tmp && /tmp/venv/bin/python -c "import fadden.source_snapshot"
+
+  rust:
+    permissions:
+      contents: read
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+    timeout-minutes: 30
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      # rust-toolchain.toml pins the channel and its clippy and rustfmt components.
+      - run: rustup toolchain install
+      - run: cargo fmt --check
+      - run: cargo clippy --locked --all-targets -- -D warnings
+      - run: cargo test --locked
+      - run: cargo build --locked --release
+      # The samples ship in the repository beside the binary; run the demo
+      # from a directory outside the checkout so nothing resolves relative to it.
+      - name: run the release binary on the samples from outside the checkout
+        shell: bash
         run: |
-          python -m venv /tmp/venv
-          # The wheel file and --no-index, or pip is free to resolve the name
-          # from PyPI and test a release nobody built in this job.
-          /tmp/venv/bin/pip install --no-index dist/tax_radar_au-*.whl
-          cd /tmp
-          resolve() { /tmp/venv/bin/python -c "from tax_radar_au.util import sample_path; print(sample_path('$1', '$2'))"; }
-          /tmp/venv/bin/tax-radar-au compare \
-            --baseline "$(resolve baseline sample-sources.json)" \
-            --observation "$(resolve observations sample-register-observation.json)" \
-            --map "$(resolve mappings sample-source-skill-map.json)" \
-            --out demo
-          /tmp/venv/bin/tax-radar-au validate-review \
-            --queue demo/impact-queue.json \
-            --decision "$(resolve decisions sample-technical-review.json)" \
-            --out demo/validation.json
+          bin="$PWD/target/release/tax-radar-au"
+          samples="$PWD/samples"
+          demo="$(mktemp -d)"
+          cd "$demo"
+          "$bin" compare --baseline "$samples/baseline/sample-sources.json" --observation "$samples/observations/sample-register-observation.json" --map "$samples/mappings/sample-source-skill-map.json" --out demo
+          "$bin" validate-review --queue demo/impact-queue.json --decision "$samples/decisions/sample-technical-review.json" --out demo/validation.json
+      - if: matrix.os == 'ubuntu-latest'
+        run: cargo install cargo-audit --locked --version 0.22.2 && cargo audit
 
   lint:
     permissions:
@@ -203,7 +229,7 @@ jobs:
     # unless every job it needs succeeded, when a job in this file is missing
     # from needs, or when a pull request removes a job without adding a
     # "# removed-jobs: <job>" comment to this file.
-    needs: [test, package, lint]
+    needs: [test, package, lint, rust]
     if: always()
     runs-on: ubuntu-latest
     timeout-minutes: 5

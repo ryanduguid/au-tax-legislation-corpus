@@ -23,22 +23,21 @@ python -m compileall -q .
 python -m unittest discover -s tests/corpus -t . -v
 ```
 
-Discovery is scoped to `tests/corpus` because the radar half under `tests/radar` imports pytest, which is not in the standard library. CI runs both halves as `uv run --locked --extra dev pytest` in `.github/workflows/ci.yml`.
+Discovery is scoped to `tests/corpus`. CI runs the Python suite as `uv run --locked --extra dev pytest` and the radar's Rust tests as `cargo test --locked` in `.github/workflows/ci.yml`.
 
 The suite carries regression tests tied to specific past defects. Do not relax one to make a change pass. Each assertion records something that went wrong here.
 
-The monitor-contract suite includes an optional compatibility assertion against
-`tax-radar-au` (formerly `au_tax_change_impact_monitor`). It first uses the audit workspace's fixed sibling
-checkout when that checkout exists. In an ordinary clone, install the monitor
-package or put its checkout root on Python's existing import path before launching
-the test; for example, in PowerShell:
+The monitor-contract suite includes a compatibility assertion against
+`tax-radar-au` (formerly `au_tax_change_impact_monitor`), the Rust binary in this
+repository. It runs the binary named by `TAX_RADAR_AU_BIN`, or else a release or
+debug build under `target/`; for example, in PowerShell:
 
 ```powershell
-$env:PYTHONPATH = 'C:\path\to\tax-radar-au'
-python -m unittest tests.corpus.test_monitor_contract.MonitorContractTests.test_generated_pair_is_accepted_by_a_local_monitor_when_available -v
+cargo build --locked --release
+python -m unittest tests.corpus.test_monitor_contract.MonitorContractTests.test_generated_pair_is_accepted_by_the_radar_binary_when_built -v
 ```
 
-Without either source, that one cross-project assertion skips; the producer-side
+Without a built binary, that one cross-system assertion skips; the producer-side
 contract tests still run.
 
 ## Pull requests

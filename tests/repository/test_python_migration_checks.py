@@ -5,7 +5,7 @@ import re
 import unittest
 from pathlib import Path
 
-from tests.radar.test_repository_guidance import _workflow_matrix_values
+from tests.repository.test_repository_guidance import _workflow_matrix_values
 
 ROOT = Path(__file__).resolve().parents[2]
 
@@ -42,9 +42,10 @@ class PythonMigrationChecks(unittest.TestCase):
         release = (ROOT / ".github/workflows/release.yml").read_text(encoding="utf-8")
         selected = re.findall(r"(?m)^        \.github/workflows/ci.yml: (.+)$", release)
         # The policy matches the shortened name reported by GitHub, not the full matrix value.
-        windows = "test (windows-latest, 3.14, tests/radar tests/corpus/test_live_evidence_bundle_export.py tests/co..."
+        windows = "test (windows-latest, 3.14, tests/corpus/test_live_evidence_bundle_export.py tests/corpus/test_li..."
         self.assertEqual(selected, [
             "lint", "package", "test (ubuntu-latest, 3.14, tests)",
             "test (ubuntu-latest, 3.15, tests)", windows,
+            "rust (ubuntu-latest)", "rust (windows-latest)",
             "tests-gates",
         ])

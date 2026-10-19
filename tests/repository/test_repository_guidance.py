@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import ast
 import re
-from pathlib import Path, PurePosixPath
+from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
 
@@ -43,7 +43,7 @@ EXPECTED_MAP = """\
 
 EXPECTED_PLATFORM_NOTE = """\
 `ci.yml` runs the full locked pytest suite on Ubuntu for Python 3.14 and 3.15, then the
-package build and the linters. Its Windows 3.14 matrix runs `tests/radar`,
+package build and the linters. Its Windows 3.14 matrix runs
 `tests/corpus/test_live_evidence_bundle_export.py` and
 `tests/corpus/test_live_evidence_publication_paths.py` under branch coverage so the
 supported live-evidence export boundary is exercised. Codecov merges that report with the
@@ -53,8 +53,12 @@ of pre-existing Windows failures around 8.3 short paths, junctions and reparse p
 do not describe a local Windows full-suite failure in those paths as a radar regression
 without proving it.
 
-The fenced list records the unique single-line commands. The multiline package-smoke gate
-is explained and matched semantically below without duplicating its shell body.
+The radar is the Rust `tax-radar-au` binary. The `rust` job runs its formatting, Clippy,
+tests and release build on Ubuntu and Windows, and the Ubuntu test legs build it for the
+cross-system contract test in `tests/corpus/test_monitor_contract.py`.
+
+The fenced list records the unique single-line commands. The multiline binary-smoke gate
+is reproduced exactly in the next section.
 """
 
 def _normalise(document: str) -> str:
@@ -191,122 +195,6 @@ def _workflow_multiline_gates() -> list[str]:
     ]
 
 
-def _workflow_run_commands(name: str) -> list[str]:
-    workflow = (ROOT / ".github" / "workflows" / "ci.yml").read_text(
-        encoding="utf-8"
-    )
-    lines = workflow.splitlines()
-    markers = [index for index, line in enumerate(lines) if line == f"      - name: {name}"]
-    assert len(markers) == 1, f"expected one {name!r} workflow step"
-    start = markers[0]
-    end = next(
-        (index for index in range(start + 1, len(lines)) if lines[index].startswith("      - ")),
-        len(lines),
-    )
-    step = lines[start:end]
-    run_markers = [index for index, line in enumerate(step) if line == "        run: |"]
-    assert len(run_markers) == 1, "expected one multiline run block"
-
-    active: list[str] = []
-    for line in step[run_markers[0] + 1 :]:
-        stripped = line.strip()
-        if not stripped or stripped.startswith("#"):
-            continue
-        if len(line) - len(line.lstrip()) <= 8:
-            break
-        active.append(stripped)
-
-    commands: list[str] = []
-    continued = ""
-    for line in active:
-        if line.endswith("\\"):
-            continued += line[:-1].rstrip() + " "
-        else:
-            commands.append((continued + line).strip())
-            continued = ""
-    assert not continued, "workflow smoke command has an unterminated continuation"
-    return commands
-
-
-def _fullmatch(pattern: str, value: str, label: str) -> re.Match[str]:
-    match = re.fullmatch(pattern, value)
-    assert match is not None, f"{label} does not match the package smoke contract: {value!r}"
-    return match
-
-
-def _workflow_smoke_contract() -> tuple[tuple[str, ...], ...]:
-    commands = _workflow_run_commands(
-        "install the wheel and run the demo from outside the checkout"
-    )
-    assert len(commands) == 6, "package smoke step must contain six active commands"
-    venv = _fullmatch(r"python -m venv (?P<path>/\S+)", commands[0], "workflow venv")
-    assert venv["path"] == "/tmp/venv"
-    venv_path = PurePosixPath(venv["path"])
-    assert commands[2] == "cd /tmp"
-    resolve = _fullmatch(
-        r'resolve\(\) \{ (?P<python>\S+) -c "from tax_radar_au\.util import sample_path; '
-        r"print\(sample_path\('\$1', '\$2'\)\)\"; \}",
-        commands[3],
-        "sample resolver",
-    )
-    assert resolve["python"] == str(venv_path / "bin" / "python")
-    substitutions = {
-        str(venv_path / "bin" / "pip"): "<python> -m pip",
-        str(venv_path / "bin" / "tax-radar-au"): "<cli>",
-    }
-    normalised = ["python -m venv <venv>", commands[1], "outside-checkout", *commands[4:]]
-    for old, new in substitutions.items():
-        normalised = [command.replace(old, new) for command in normalised]
-    return tuple(
-        tuple(
-            re.sub(r'"\$\(resolve ([^ )]+) ([^ )]+)\)"', r"<sample:\1/\2>", command).split()
-        )
-        for command in normalised
-    )
-
-
-def _guidance_smoke_contract(commands: list[str]) -> tuple[tuple[str, ...], ...]:
-    package_build = next(
-        command for command in _workflow_commands() if command.endswith("python -m build")
-    )
-    assert commands[0] == package_build
-    assert commands[1] == "$wheelDir = (Resolve-Path dist).Path"
-    _fullmatch(
-        r'\$smokeDir = Join-Path \(\[System\.IO\.Path\]::GetTempPath\(\)\) '
-        r'\("tax-radar-wheel-smoke-" \+ \[guid\]::NewGuid\(\)\.ToString\("N"\)\)',
-        commands[2],
-        "outside-checkout temporary directory",
-    )
-    assert commands[3] == 'python -m venv "$smokeDir\\venv"'
-    assert commands[5] == "Push-Location $smokeDir"
-
-    samples: dict[str, str] = {}
-    for command in commands[6:10]:
-        match = _fullmatch(
-            r'\$(?P<variable>[a-z]+) = & "\$smokeDir\\venv\\Scripts\\python\.exe" -c '
-            r'"from tax_radar_au\.util import sample_path; '
-            r"print\(sample_path\('(?P<kind>[^']+)', '(?P<file>[^']+)'\)\)\"",
-            command,
-            "installed sample resolver",
-        )
-        samples[f"${match['variable']}"] = f"<sample:{match['kind']}/{match['file']}>"
-    assert commands[12] == "Pop-Location"
-    normalised = [
-        "python -m venv <venv>",
-        commands[4]
-        .replace('& "$smokeDir\\venv\\Scripts\\python.exe"', "<python>")
-        .replace('(Get-Item "$wheelDir\\tax_radar_au-*.whl").FullName', "dist/tax_radar_au-*.whl"),
-        "outside-checkout",
-        *commands[10:12],
-    ]
-    for old, new in {
-        '& "$smokeDir\\venv\\Scripts\\tax-radar-au.exe"': "<cli>",
-        **samples,
-    }.items():
-        normalised = [command.replace(old, new) for command in normalised]
-    return tuple(tuple(command.split()) for command in normalised)
-
-
 def test_agents_preserves_exact_corpus_and_publication_boundaries() -> None:
     guidance = (ROOT / "AGENTS.md").read_text(encoding="utf-8")
     policy, separator, _remainder = guidance.partition("## Repository map")
@@ -371,16 +259,16 @@ def test_workflow_commands_derive_every_matrix_test_target() -> None:
     )
 
 
-def test_agents_requires_locked_build_and_installed_wheel_smoke() -> None:
+def test_agents_reproduces_the_release_binary_smoke() -> None:
     guidance = (ROOT / "AGENTS.md").read_text(encoding="utf-8")
-    build = _section(guidance, "Package build and installed-wheel smoke")
+    smoke = _section(guidance, "Release binary smoke")
 
-    assert len(_workflow_multiline_gates()) == 1
-    assert _guidance_smoke_contract(_fenced_commands(build)) == _workflow_smoke_contract()
-    assert _normalise(_without_fenced_commands(build)) == _normalise(
+    [gate] = _workflow_multiline_gates()
+    assert _fenced_commands(smoke) == gate.splitlines()
+    assert _normalise(_without_fenced_commands(smoke)) == _normalise(
         """\
-        Run the locked build, then install and exercise that wheel from a fresh temporary
-        directory outside the checkout. This is a package preflight, not a publication step:
+        Build the release binary, then run it on the shipped samples from a fresh temporary
+        directory outside the checkout. This is a binary preflight, not a publication step:
         """
     )
 

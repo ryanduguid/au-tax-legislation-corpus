@@ -1,3 +1,11 @@
+# Unreleased
+
+- Breaking: the review queue is a standalone Rust binary, `tax-radar-au` 1.0.0, built with `cargo build --locked --release`. Its commands, options, exit statuses, stdout and stderr lines, output file bytes (CRLF on Windows), digests and argparse usage and error text match the Python radar at 43b5e0c. The `tax_radar_au` import package, its `sample_path` helper and the wheel's console script are removed; the samples moved to `samples/`. The Python wheel carries the corpus builder only, and `fadden.source_snapshot` holds the snapshot loader the publication export used from the radar.
+- Documented differences from the Python radar:
+  - stdout and stderr are always UTF-8. Python on a non-UTF-8 Windows code page printed an unencodable `--out` path backslash-escaped with a note on stderr; Python 3.15's UTF-8 mode behaves like the binary.
+  - An argument that is not valid Unicode (possible on Windows) is refused with `tax-radar-au: blocked: every argument must be valid Unicode.` and exit 2, where Python accepted it and failed later on the path.
+  - Resolving an output path whose existing component cannot be opened (access denied, sharing violation) keeps that component's letter case as given; Python asked Windows for its stored name.
+
 # v0.3.0
 
 This candidate contains the corpus builder source. It excludes generated legislation and live evidence.

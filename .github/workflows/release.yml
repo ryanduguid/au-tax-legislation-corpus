@@ -46,9 +46,12 @@ jobs:
         .github/workflows/ci.yml: test (ubuntu-latest, 3.14, tests)
         .github/workflows/ci.yml: test (ubuntu-latest, 3.15, tests)
         # Match the shortened Windows name GitHub reports; the policy uses exact lookup.
-        .github/workflows/ci.yml: test (windows-latest, 3.14, tests/radar tests/corpus/test_live_evidence_bundle_export.py tests/co...
+        .github/workflows/ci.yml: test (windows-latest, 3.14, tests/corpus/test_live_evidence_bundle_export.py tests/corpus/test_li...
+        .github/workflows/ci.yml: rust (ubuntu-latest)
+        .github/workflows/ci.yml: rust (windows-latest)
         .github/workflows/ci.yml: tests-gates
         .github/workflows/codeql.yml: Analyze (actions)
         .github/workflows/codeql.yml: Analyze (python)
+        .github/workflows/codeql.yml: Analyze (rust)
         .github/workflows/codeql.yml: codeql-gates
       artifact-stem: au-tax-legislation-corpus-builder

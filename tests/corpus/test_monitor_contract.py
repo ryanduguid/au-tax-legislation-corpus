@@ -8,16 +8,14 @@ monitor at runtime.
 
 from __future__ import annotations
 
-import importlib
 import json
 import os
 import stat
-import sys
+import subprocess
 import tempfile
 import threading
 import time
 import unittest
-from contextlib import contextmanager
 from pathlib import Path
 from unittest import mock
 
@@ -146,149 +144,29 @@ def observation_facts_v3(*, complete: bool = True) -> dict:
     return facts
 
 
-def _local_monitor_repository() -> Path:
-    """Return the checkout holding the monitor.
+def _radar_binary() -> Path | None:
+    """Return the Rust tax-radar-au binary, or None when it has not been built.
 
-    Before the merge this reached sideways into a separate clone of
-    tax-radar-au, so the compatibility test only ran on a machine that
-    happened to have one. The monitor now lives in this repository, so the
-    answer is the repository root and the test always runs.
+    TAX_RADAR_AU_BIN names it, relative to the repository root when not
+    absolute; otherwise a Cargo release or debug build in target/ is used.
     """
-    return Path(__file__).resolve().parents[2]
-
-
-@contextmanager
-def _import_optional_monitor():
-    """Import the consumer from a fixed checkout or the interpreter environment."""
-    package_name = "tax_radar_au"
-    module_name = f"{package_name}.monitor"
-    fixed_repository = _local_monitor_repository()
-    fixed_package = fixed_repository / package_name
-    previous_modules = {
-        name: module
-        for name, module in sys.modules.items()
-        if name == package_name or name.startswith(f"{package_name}.")
-    }
-    previous_path = sys.path.copy()
-
-    for name in previous_modules:
-        sys.modules.pop(name, None)
-
-    try:
-        if fixed_package.is_dir():
-            sys.path.insert(0, str(fixed_repository))
-
-        try:
-            monitor = importlib.import_module(module_name)
-        except ModuleNotFoundError as error:
-            if error.name not in {package_name, module_name}:
-                raise
-            monitor = None
-
-        yield monitor
-    finally:
-        sys.path[:] = previous_path
-        for name in list(sys.modules):
-            if name == package_name or name.startswith(f"{package_name}."):
-                sys.modules.pop(name, None)
-        sys.modules.update(previous_modules)
+    root = Path(__file__).resolve().parents[2]
+    named = os.environ.get("TAX_RADAR_AU_BIN")
+    suffix = ".exe" if os.name == "nt" else ""
+    candidates = (
+        [root / named]
+        if named
+        else [root / "target" / build / f"tax-radar-au{suffix}" for build in ("release", "debug")]
+    )
+    for candidate in candidates:
+        if candidate.is_file():
+            return candidate
+        if named and candidate.with_name(candidate.name + suffix).is_file():
+            return candidate.with_name(candidate.name + suffix)
+    return None
 
 
 class MonitorContractTests(unittest.TestCase):
-    def test_optional_monitor_import_falls_back_to_the_existing_interpreter_path(self):
-        package_name = "tax_radar_au"
-        prior_modules = {
-            name: module
-            for name, module in sys.modules.items()
-            if name == package_name or name.startswith(f"{package_name}.")
-        }
-        with tempfile.TemporaryDirectory() as temporary:
-            import_root = Path(temporary) / "interpreter-path"
-            package = import_root / "tax_radar_au"
-            package.mkdir(parents=True)
-            (package / "__init__.py").write_text("", encoding="utf-8")
-            (package / "monitor.py").write_text(
-                "ORIGIN = 'interpreter-path'\n",
-                encoding="utf-8",
-            )
-            missing_fixed_checkout = Path(temporary) / "missing-fixed-checkout"
-            existing_path = [str(import_root), *sys.path]
-
-            with (
-                mock.patch.object(sys, "path", existing_path.copy()),
-                mock.patch(
-                    f"{__name__}._local_monitor_repository",
-                    return_value=missing_fixed_checkout,
-                ),
-            ):
-                before = sys.path.copy()
-                with _import_optional_monitor() as monitor:
-                    self.assertIsNotNone(monitor)
-                    self.assertEqual("interpreter-path", monitor.ORIGIN)
-                    self.assertEqual(before, sys.path)
-
-                self.assertEqual(before, sys.path)
-                restored_modules = {
-                    name: module
-                    for name, module in sys.modules.items()
-                    if name == package_name or name.startswith(f"{package_name}.")
-                }
-                self.assertEqual(set(prior_modules), set(restored_modules))
-                for name, module in prior_modules.items():
-                    self.assertIs(module, restored_modules[name])
-
-    def test_optional_monitor_import_prefers_fixed_checkout_and_restores_import_state(self):
-        package_name = "tax_radar_au"
-        modules_before_test = {
-            name: module
-            for name, module in sys.modules.items()
-            if name == package_name or name.startswith(f"{package_name}.")
-        }
-        for name in modules_before_test:
-            sys.modules.pop(name, None)
-
-        with tempfile.TemporaryDirectory() as temporary:
-            root = Path(temporary)
-            fallback_root = root / "interpreter-path"
-            fixed_root = root / "fixed-checkout"
-            for package_root, origin in (
-                (fallback_root, "interpreter-path"),
-                (fixed_root, "fixed-checkout"),
-            ):
-                package = package_root / "tax_radar_au"
-                package.mkdir(parents=True)
-                (package / "__init__.py").write_text("", encoding="utf-8")
-                (package / "monitor.py").write_text(
-                    f"ORIGIN = {origin!r}\n",
-                    encoding="utf-8",
-                )
-
-            try:
-                existing_path = [str(fallback_root), *sys.path]
-                with mock.patch.object(sys, "path", existing_path.copy()):
-                    prior_package = importlib.import_module(package_name)
-                    prior_monitor = importlib.import_module(f"{package_name}.monitor")
-                    self.assertEqual("interpreter-path", prior_monitor.ORIGIN)
-                    before = sys.path.copy()
-
-                    with mock.patch(
-                        f"{__name__}._local_monitor_repository",
-                        return_value=fixed_root,
-                    ):
-                        with _import_optional_monitor() as monitor:
-                            self.assertIsNotNone(monitor)
-                            self.assertEqual("fixed-checkout", monitor.ORIGIN)
-                            self.assertEqual(str(fixed_root), sys.path[0])
-
-                    self.assertEqual(before, sys.path)
-                    self.assertIs(prior_package, sys.modules[package_name])
-                    self.assertIs(prior_monitor, sys.modules[f"{package_name}.monitor"])
-            finally:
-                for name in list(sys.modules):
-                    if name == package_name or name.startswith(f"{package_name}."):
-                        sys.modules.pop(name, None)
-                sys.modules.update(modules_before_test)
-
     def test_build_docs_state_the_adapter_is_review_only_and_never_contacts_the_register(self):
         root = Path(__file__).resolve().parents[2]
         readme = (root / "docs" / "monitor-contract.md").read_text(encoding="utf-8")
@@ -895,36 +773,40 @@ class MonitorContractTests(unittest.TestCase):
                     contract.publish_pair(sources, facts, output)
             self.assertEqual(2, len(list(output.glob(".*.monitor-contract-*.bak"))))
 
-    def test_generated_pair_is_accepted_by_a_local_monitor_when_available(self):
-        with _import_optional_monitor() as monitor:
-            if monitor is None:
-                self.skipTest(
-                    "tax-radar-au is absent from the fixed checkout "
-                    "and interpreter import path"
-                )
-            with tempfile.TemporaryDirectory() as temporary:
-                root = Path(temporary)
-                sources = root / "sources.json"
-                facts = root / "facts.json"
-                mapping = root / "map.json"
-                sources.write_text(json.dumps(sources_document()), encoding="utf-8")
-                facts.write_text(json.dumps(observation_facts()), encoding="utf-8")
-                mapping.write_text(
-                    json.dumps(
-                        {
-                            "schema_version": "au-tax-source-skill-map.v1",
-                            "mapping_version": "test.1",
-                            "entries": [],
-                        }
-                    ),
-                    encoding="utf-8",
-                )
-                paths = contract.publish_pair(sources, facts, root / "out")
-                queue = monitor.compare(
-                    baseline_path=paths["baseline"],
-                    observation_path=paths["observation"],
-                    mapping_path=mapping,
-                )
+    def test_generated_pair_is_accepted_by_the_radar_binary_when_built(self):
+        binary = _radar_binary()
+        if binary is None:
+            self.skipTest("the tax-radar-au binary is not built; run cargo build --release")
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            sources = root / "sources.json"
+            facts = root / "facts.json"
+            mapping = root / "map.json"
+            sources.write_text(json.dumps(sources_document()), encoding="utf-8")
+            facts.write_text(json.dumps(observation_facts()), encoding="utf-8")
+            mapping.write_text(
+                json.dumps(
+                    {
+                        "schema_version": "au-tax-source-skill-map.v1",
+                        "mapping_version": "test.1",
+                        "entries": [],
+                    }
+                ),
+                encoding="utf-8",
+            )
+            paths = contract.publish_pair(sources, facts, root / "out")
+            subprocess.run(
+                [
+                    str(binary), "compare",
+                    "--baseline", str(paths["baseline"]),
+                    "--observation", str(paths["observation"]),
+                    "--map", str(mapping),
+                    "--out", str(root / "queue"),
+                ],
+                check=True,
+                capture_output=True,
+            )
+            queue = json.loads((root / "queue" / "impact-queue.json").read_text(encoding="utf-8"))
 
         self.assertEqual(queue["run_status"], "REVIEW_REQUIRED")
         self.assertEqual(queue["items"][0]["change_kind"], "SUPERSEDED")
