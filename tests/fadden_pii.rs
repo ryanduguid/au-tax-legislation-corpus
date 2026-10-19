@@ -429,3 +429,77 @@ fn the_second_scan_accepts_only_a_title_bound_organisational_contact() {
     write_rows(&d, FLAGGED, &[json!({"row_id": "x", "text": contact})]);
     assert_eq!(scan(&d, "pii_scan2").0, 1);
 }
+
+#[test]
+fn the_fuzz_seed_corpus_satisfies_the_target_invariants() {
+    // The cargo-fuzz target runs on nightly only; this replays its seeds on stable.
+    let corpus = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("fuzz")
+        .join("corpus");
+    let mut seeds: Vec<PathBuf> = std::fs::read_dir(&corpus)
+        .unwrap()
+        .map(|e| e.unwrap().path())
+        .collect();
+    seeds.sort();
+    assert!(!seeds.is_empty());
+    for seed in seeds {
+        pii::check_one_input(&std::fs::read(&seed).unwrap())
+            .unwrap_or_else(|e| panic!("{}: {e}", seed.display()));
+    }
+    assert!(pii::check_one_input(b"\xff\xfe SMITH, John 12345678 \x00").is_ok());
+}
+
+#[test]
+fn unapproved_contacts_are_bound_to_kind_digest_and_title_and_tfns_never_pass() {
+    let rid = "C2004A00001";
+    let contact = "privacy-review@example.test";
+    let (kind, digest) = pii::contact_fingerprints(contact).remove(0);
+    let approved = [(kind.to_string(), digest, rid.to_string())];
+    assert!(
+        pii::unapproved_contact_fingerprints(&contact.to_uppercase(), rid, &approved).is_empty()
+    );
+    assert!(!pii::unapproved_contact_fingerprints(contact, "F2026N00001", &approved).is_empty());
+    let text = "Tax file number: 123 456 789.";
+    let (kind, digest) = pii::contact_fingerprints(text).remove(0);
+    assert_eq!(kind, "tfn");
+    let approved = [(kind.to_string(), digest, rid.to_string())];
+    assert_eq!(
+        pii::unapproved_contact_fingerprints(text, rid, &approved).len(),
+        1
+    );
+}
+
+#[test]
+fn malformed_allowlist_documents_and_fields_are_refused() {
+    let dir = tempfile::tempdir().unwrap();
+    let valid = json!({"kind": "email", "sha256": "0".repeat(64), "register_id": "C2099A00001", "reason": "official contact"});
+    let with = |key: &str, value: Value| {
+        let mut entry = valid.clone();
+        entry[key] = value;
+        json!({"schema_version": 1, "entries": [entry]})
+    };
+    for (document, message) in [
+        (
+            json!(["not an object"]),
+            "invalid contact allowlist document",
+        ),
+        (
+            with("sha256", json!("A".repeat(64))),
+            "invalid contact allowlist digest",
+        ),
+        (
+            with("register_id", json!("c2099a00001")),
+            "invalid contact allowlist register id",
+        ),
+        (
+            with("reason", json!("  ")),
+            "invalid contact allowlist reason",
+        ),
+        (
+            with("raw", json!("not allowed")),
+            "invalid contact allowlist entry",
+        ),
+    ] {
+        assert_eq!(policy(dir.path(), document).unwrap_err(), message);
+    }
+}

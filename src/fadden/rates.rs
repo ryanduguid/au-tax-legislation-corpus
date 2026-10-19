@@ -593,12 +593,9 @@ struct Counter {
 
 impl Counter {
     fn add(&mut self, value: &Json) -> Result<(), Exc> {
-        let key = pyvalue::key(value).map_err(|m| {
-            Exc::Type(format!(
-                "cannot use '{}' as a dict key ({m})",
-                type_name(value)
-            ))
-        })?;
+        // `Counter(iterable)` counts in C, which words an unhashable value
+        // without the "cannot use ... as a dict key" prefix.
+        let key = pyvalue::key(value).map_err(Exc::Type)?;
         match self.items.iter_mut().find(|(k, _, _)| *k == key) {
             Some(item) => item.2 += 1,
             None => self.items.push((key, value.clone(), 1)),

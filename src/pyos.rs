@@ -287,3 +287,106 @@ pub fn random_hex(count: usize) -> String {
     let text: String = bytes.iter().map(|b| format!("{b:02x}")).collect();
     text[..count].to_string()
 }
+
+/// The reparse tag of a Windows reparse point, without following it.
+#[cfg(windows)]
+fn reparse_tag(path: &str) -> Option<u32> {
+    use std::os::windows::ffi::OsStrExt;
+    use windows_sys::Win32::Storage::FileSystem::{FindClose, FindFirstFileW, WIN32_FIND_DATAW};
+    let wide: Vec<u16> = std::ffi::OsStr::new(path)
+        .encode_wide()
+        .chain(Some(0))
+        .collect();
+    // SAFETY: WIN32_FIND_DATAW is plain data; FindFirstFileW fills it on success.
+    let mut data: WIN32_FIND_DATAW = unsafe { std::mem::zeroed() };
+    // SAFETY: `wide` is NUL-terminated and outlives the call.
+    let handle = unsafe { FindFirstFileW(wide.as_ptr(), &mut data) };
+    if handle == windows_sys::Win32::Foundation::INVALID_HANDLE_VALUE {
+        return None;
+    }
+    // SAFETY: the handle came from a successful FindFirstFileW.
+    unsafe { FindClose(handle) };
+    (data.dwFileAttributes & 0x400 != 0).then_some(data.dwReserved0)
+}
+
+const IO_REPARSE_TAG_SYMLINK: u32 = 0xA000_000C;
+const IO_REPARSE_TAG_MOUNT_POINT: u32 = 0xA000_0003;
+
+/// `os.path.islink(path)`: on Windows only a symbolic-link reparse point.
+pub fn islink(path: &str) -> bool {
+    #[cfg(windows)]
+    {
+        std::fs::symlink_metadata(path).is_ok_and(|m| is_reparse_point(&m))
+            && reparse_tag(path) == Some(IO_REPARSE_TAG_SYMLINK)
+    }
+    #[cfg(not(windows))]
+    {
+        let _ = (IO_REPARSE_TAG_SYMLINK, IO_REPARSE_TAG_MOUNT_POINT);
+        std::fs::symlink_metadata(path).is_ok_and(|m| m.file_type().is_symlink())
+    }
+}
+
+/// `os.path.isjunction(path)`: a Windows mount-point reparse point.
+pub fn isjunction(path: &str) -> bool {
+    #[cfg(windows)]
+    {
+        std::fs::symlink_metadata(path).is_ok_and(|m| is_reparse_point(&m))
+            && reparse_tag(path) == Some(IO_REPARSE_TAG_MOUNT_POINT)
+    }
+    #[cfg(not(windows))]
+    {
+        let _ = path;
+        false
+    }
+}
+
+/// `corpus_paths.is_reparse_point(path)`: `os.lstat`, which raises for a
+/// missing path, then the reparse attribute (never set on POSIX).
+pub fn is_reparse_point_at(path: &str) -> Result<bool, OsError> {
+    Ok(is_reparse_point(&lstat(path)?))
+}
+
+/// One `os.walk(top, followlinks=False)` step: a directory, its subdirectory
+/// names and its other names, in the order the directory lists them.
+pub struct WalkStep {
+    pub top: String,
+    pub dirs: Vec<String>,
+    pub files: Vec<String>,
+}
+
+/// `os.walk(top, followlinks=False)` top-down, errors ignored. A directory
+/// symlink is listed among `dirs` but not entered; a junction is entered, as
+/// CPython does. `order` may reorder each step's `dirs` before descent, as a
+/// caller sorting `directories` in place does.
+pub fn walk(top: &str, mut order: impl FnMut(&mut WalkStep)) -> Vec<WalkStep> {
+    let mut steps = Vec::new();
+    let mut stack = vec![top.to_string()];
+    while let Some(top) = stack.pop() {
+        let Ok(entries) = std::fs::read_dir(&top) else {
+            continue;
+        };
+        let mut step = WalkStep {
+            top: top.clone(),
+            dirs: Vec::new(),
+            files: Vec::new(),
+        };
+        for entry in entries.flatten() {
+            let name = entry.file_name().to_string_lossy().into_owned();
+            let is_dir = std::fs::metadata(entry.path()).is_ok_and(|m| m.is_dir());
+            if is_dir {
+                step.dirs.push(name);
+            } else {
+                step.files.push(name);
+            }
+        }
+        order(&mut step);
+        for name in step.dirs.iter().rev() {
+            let path = crate::pypath::join(&top, name);
+            if !islink(&path) {
+                stack.push(path);
+            }
+        }
+        steps.push(step);
+    }
+    steps
+}

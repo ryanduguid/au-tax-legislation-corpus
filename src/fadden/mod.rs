@@ -9,6 +9,8 @@ pub mod as_at;
 pub mod cli;
 pub mod compare_builds;
 pub mod corpus_paths;
+pub mod dist;
+pub mod dist_verify;
 pub mod http;
 pub mod pii;
 pub mod pii_scan;

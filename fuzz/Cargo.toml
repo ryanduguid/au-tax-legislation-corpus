@@ -1,0 +1,23 @@
+[package]
+name = "tax-radar-au-fuzz"
+version = "0.0.0"
+edition = "2024"
+publish = false
+
+[package.metadata]
+cargo-fuzz = true
+
+[dependencies]
+libfuzzer-sys = "0.4.13"
+tax-radar-au = { path = ".." }
+
+[[bin]]
+name = "privacy_patterns"
+path = "fuzz_targets/privacy_patterns.rs"
+test = false
+doc = false
+bench = false
+
+# Its own workspace, so the repository's stable builds never compile it.
+[workspace]
+members = ["."]

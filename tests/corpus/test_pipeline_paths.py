@@ -12,7 +12,7 @@ import uuid
 from pathlib import Path
 from unittest import mock
 
-from fadden import corpus_paths, pii_patterns
+from fadden import corpus_paths
 
 from tests.corpus import test_regressions as regressions
 
@@ -80,27 +80,6 @@ class AtomicTextWriterTests(TemporaryDirectoryTestCase):
         cleanup = PermissionError(13, "locked")
         error = self._fail_to_open(cleanup)
         self.assertIs(error.__cause__, cleanup)
-
-
-class ContactAllowlistTests(TemporaryDirectoryTestCase):
-    VALID = {"kind": "email", "sha256": "0" * 64, "register_id": RID, "reason": "official contact"}
-
-    def test_malformed_documents_and_fields_are_refused(self) -> None:
-        cases = {
-            "invalid contact allowlist document": ["not an object"],
-            "invalid contact allowlist digest": {"schema_version": 1, "entries": [
-                dict(self.VALID, sha256="A" * 64)]},
-            "invalid contact allowlist register id": {"schema_version": 1, "entries": [
-                dict(self.VALID, register_id="c2099a00001")]},
-            "invalid contact allowlist reason": {"schema_version": 1, "entries": [
-                dict(self.VALID, reason="  ")]},
-        }
-        policy = self.base / "policy.json"
-        for message, document in cases.items():
-            with self.subTest(message=message):
-                policy.write_text(json.dumps(document), encoding="utf-8")
-                with self.assertRaisesRegex(ValueError, "^%s$" % message):
-                    pii_patterns.load_contact_allowlist(policy)
 
 
 class DiscoverTests(TemporaryDirectoryTestCase):

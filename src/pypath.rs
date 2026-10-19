@@ -514,6 +514,15 @@ pub fn realpath(filename: &str) -> Result<String, crate::pyos::OsError> {
     Ok(path)
 }
 
+/// `os.path.normcase(path)`: on Windows lower case with backslashes; elsewhere unchanged.
+pub fn normcase(path: &str) -> String {
+    if cfg!(windows) {
+        path.replace('/', "\\").to_lowercase()
+    } else {
+        path.to_string()
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

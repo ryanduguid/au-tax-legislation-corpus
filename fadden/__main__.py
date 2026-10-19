@@ -16,7 +16,7 @@ from fadden import STAGES
 
 # Stages ported to the Rust `fadden` binary (Cargo.toml). They keep their
 # command lines; this dispatcher runs the binary for them.
-RUST_STAGES = frozenset({"as_at", "compare_builds", "pii_scan", "pii_scan2", "probe13", "rates", "rulings", "search"})
+RUST_STAGES = frozenset({"as_at", "compare_builds", "dist", "dist_verify", "pii_scan", "pii_scan2", "probe13", "rates", "rulings", "search"})
 
 
 def rust_binary() -> str | None:

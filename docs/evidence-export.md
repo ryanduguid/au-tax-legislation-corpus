@@ -103,7 +103,7 @@ python -m fadden dist          # build the redistributable subset -> ./corpus/di
 python -m fadden dist_verify   # check the built subset against its own claims, exits non-zero on failure
 ```
 
-`fadden/corpus_paths.py`, `fadden/http_fetch.py` and `fadden/pii_patterns.py` are shared modules the
+`fadden/corpus_paths.py` and `fadden/http_fetch.py` are shared modules the
 stages import; they are not run directly. `finalize.py` still copies the
 discover-through-finalize loop plus `check_current.py` and the shared modules
 into a completed corpus `build/` directory as flat scripts so a deployed

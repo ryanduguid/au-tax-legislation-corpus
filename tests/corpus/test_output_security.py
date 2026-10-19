@@ -157,7 +157,7 @@ class PathAndWriteTests(unittest.TestCase):
 
     def test_installed_locations_refuse_legacy_stages_before_side_effects(self):
         for name in ("discover", "versions", "download", "retry13", "extract",
-                     "finalize", "check_current", "dist"):
+                     "finalize", "check_current"):
             module = regressions.load_module("installed_guard_" + name, STAGE / (name + ".py"))
             with self.subTest(stage=name), tempfile.TemporaryDirectory() as temporary, \
                     mock.patch.object(module, "__file__", str(Path(temporary) / "fadden" / (name + ".py"))):
@@ -171,7 +171,7 @@ class PathAndWriteTests(unittest.TestCase):
     def test_clean_package_imports_ignore_bare_helper_modules(self):
         with tempfile.TemporaryDirectory() as temporary:
             hostile = Path(temporary)
-            for name in ("corpus_paths", "download", "http_fetch", "pii_patterns", "rates", "dist_verify"):
+            for name in ("corpus_paths", "download", "http_fetch"):
                 (hostile / (name + ".py")).write_text('raise AssertionError("bare helper imported")\n', encoding="utf-8")
             script = ("import sys, importlib; sys.path[:0] = " + repr([str(REPOSITORY), str(hostile)]) +
                       "; before = list(sys.path); from fadden import STAGES; import fadden.__main__; "

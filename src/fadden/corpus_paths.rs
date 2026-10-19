@@ -361,3 +361,33 @@ pub fn write_json_atomic(path: &str, value: &Json, indent: Option<usize>) -> Res
         &[crate::pyvalue::dumps_with(value, indent, true, false)],
     )
 }
+
+const LINKED_TREE: &str = "corpus tree contains a symbolic link, junction or reparse point";
+
+fn linked(path: &str) -> Result<bool, Exc> {
+    Ok(crate::pyos::islink(path)
+        || crate::pyos::isjunction(path)
+        || crate::pyos::is_reparse_point_at(path)?)
+}
+
+/// `reject_symlinks(directory)`: refuse a tree holding a link, junction or
+/// reparse point before anything walks or copies it.
+pub fn reject_symlinks(directory: &str) -> Result<(), Exc> {
+    if linked(directory)? {
+        return Err(Exc::value(LINKED_TREE));
+    }
+    for step in crate::pyos::walk(directory, |_| {}) {
+        for name in step.dirs.iter().chain(&step.files) {
+            if linked(&pypath::join(&step.top, name))? {
+                return Err(Exc::value(LINKED_TREE));
+            }
+        }
+    }
+    Ok(())
+}
+
+/// `os.path.relpath(path, start)` for a path inside `start`.
+pub fn relative(path: &str, start: &str) -> String {
+    let prefix = format!("{}{}", start.trim_end_matches(pypath::SEP), pypath::SEP);
+    path.strip_prefix(&prefix).unwrap_or(path).to_string()
+}

@@ -221,3 +221,89 @@ pub fn load_contact_allowlist(path: &str) -> Result<Vec<Approved>, Exc> {
     }
     Ok(approved)
 }
+
+/// The fuzz target's invariants for one input (fuzz/fuzz_targets): every
+/// reported name and registration number occurs in the text, and every
+/// contact fingerprint names a known kind and carries a SHA-256 digest, never
+/// the identifier. The seed corpus replays through this in the unit tests.
+pub fn check_one_input(data: &[u8]) -> Result<(), String> {
+    let text = String::from_utf8_lossy(data);
+    let (names, numbers) = private_person_registration_details(&text);
+    if !names
+        .iter()
+        .chain(&numbers)
+        .all(|found| text.contains(found.as_str()))
+    {
+        return Err("a reported match is not in the text".into());
+    }
+    for (kind, digest) in contact_fingerprints(&text) {
+        let hex = digest.len() == 64
+            && digest
+                .bytes()
+                .all(|b| matches!(b, b'0'..=b'9' | b'a'..=b'f'));
+        if !matches!(kind, "email" | "phone" | "tfn") || !hex {
+            return Err(format!("malformed fingerprint ({kind:?}, {digest:?})"));
+        }
+    }
+    Ok(())
+}
+
+/// A contact `(kind, sha256, register_id)` that no allowlist entry approves.
+pub type Unapproved = (&'static str, String, String);
+
+/// `unapproved_contact_fingerprints(text, register_id, approved)`, sorted: a
+/// tax file number is never approved.
+pub fn unapproved_contact_fingerprints(
+    text: &str,
+    register_id: &str,
+    approved: &[Approved],
+) -> Vec<Unapproved> {
+    let mut found: Vec<Unapproved> = contact_fingerprints(text)
+        .into_iter()
+        .filter(|(kind, digest)| {
+            *kind == "tfn"
+                || !approved
+                    .iter()
+                    .any(|(k, d, r)| k == kind && d == digest && r == register_id)
+        })
+        .map(|(kind, digest)| (kind, digest, register_id.to_string()))
+        .collect();
+    found.sort();
+    found.dedup();
+    found
+}
+
+/// Whether a privacy check could not read a file: `OSError` or `UnicodeError`.
+pub fn unreadable(error: &Exc) -> bool {
+    match error {
+        Exc::Os(_) => true,
+        Exc::Value { class, .. } => class.starts_with("Unicode"),
+        _ => false,
+    }
+}
+
+/// `privacy_findings_in_file(path, register_id, approved)`: whether the file
+/// pairs a name with a registration number, and its unapproved contacts. A
+/// file that is not UTF-8, or carries C0 or C1 controls other than tab, line
+/// endings and form feed, is refused as `UnicodeError`.
+pub fn privacy_findings_in_file(
+    path: &str,
+    register_id: &str,
+    approved: &[Approved],
+) -> Result<(bool, Vec<Unapproved>), Exc> {
+    let text = crate::pyio::read_text(path)?;
+    let binary = text.chars().any(|c| {
+        let cp = u32::from(c);
+        (cp < 32 && !matches!(c, '\t' | '\n' | '\r' | '\x0c')) || (127..=159).contains(&cp)
+    });
+    if binary {
+        return Err(Exc::Value {
+            class: "UnicodeError",
+            message: "redistributed file contains binary control bytes".into(),
+        });
+    }
+    Ok((
+        has_private_person_registration_pair(&text),
+        unapproved_contact_fingerprints(&text, register_id, approved),
+    ))
+}

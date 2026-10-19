@@ -50,7 +50,7 @@ Keep it with any copy of the rows.
 - **Personal data fails closed.** Every field that reaches the output (title, type,
   date, headings, paragraph text) and all text in the document region (the `Law*`
   divs, or the edited-version area from its disclaimer on, including the contents
-  table and footnotes) go through the corpus patterns in `pii_patterns.py` (a name beside an 8-digit registration number,
+  table and footnotes) go through the corpus patterns in `src/fadden/pii.rs` (a name beside an 8-digit registration number,
   email addresses, phone numbers, tax file numbers). A match excludes the whole
   document, records only the kind of match, and makes the run exit 1. The stage has
   no allowlist yet, so a document that prints an ATO contact email (such as

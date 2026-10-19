@@ -1,0 +1,1228 @@
+//! `fadden dist` and `fadden dist_verify`: ported from DistributionTests,
+//! DistTableBlockParagraphTests and DistVerifyExitStatusTests in
+//! tests/corpus/test_regressions.py and from tests/corpus/test_dist_paths.py.
+//! Every title, row and contact is fabricated.
+use std::path::{Path, PathBuf};
+use std::process::Command;
+
+use serde_json::{Value, json};
+use tax_radar_au::fadden::{dist, dist_verify};
+use tax_radar_au::pyjson::{self, Json};
+use tax_radar_au::pyos::OsError;
+
+const PUBLIC_ID: &str = "C2004A00001";
+const PRIVATE_ID: &str = "C2004A00002";
+const PUBLIC_NAME: &str = "Public Tax Act";
+const PRIVATE_NAME: &str = "Private Disciplinary Register";
+const ALL_CAPS_ROW: &str = "| SMITH, John | 12345678 | s 30-15 |\n\
+                            | McDonald, Anne | 23456789 | s 30-15 |\n\
+                            | O'Brien, Patrick | 34567890 | s 30-20 |";
+
+fn pyjson_value(value: &Value) -> Json {
+    pyjson::loads_standard(&value.to_string()).unwrap()
+}
+
+/// A deployed corpus: the corpus files in the base directory and the module
+/// files (the flagged list and the shipped contact allowlist) in `build/`.
+struct Fixture {
+    _dir: tempfile::TempDir,
+    root: PathBuf,
+    build: PathBuf,
+}
+
+impl Fixture {
+    fn dist(&self) -> PathBuf {
+        self.root.join("dist")
+    }
+}
+
+fn write(path: &Path, text: &str) {
+    std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+    std::fs::write(path, text).unwrap();
+}
+
+fn fixture() -> Fixture {
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path().to_path_buf();
+    let build = root.join("build");
+    std::fs::create_dir(&build).unwrap();
+    std::fs::copy(
+        Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("fadden")
+            .join("pii_contact_allowlist.json"),
+        build.join("pii_contact_allowlist.json"),
+    )
+    .unwrap();
+    write(
+        &build.join("pii_flagged.json"),
+        &json!([{"register_id": PRIVATE_ID, "name": PRIVATE_NAME, "rows_total": 1, "rows_flagged": 1, "names_est": 3, "words": 3}])
+            .to_string(),
+    );
+    let public = json!({"register_id": PUBLIC_ID, "act": PUBLIC_NAME, "collection": "Act", "section": "1",
+                        "heading": "Public rate", "kind": "section", "text": "The public rate is 10%."});
+    let private = json!({"register_id": PRIVATE_ID, "act": PRIVATE_NAME, "collection": "NotifiableInstrument",
+                         "section": "1", "heading": "Private register", "kind": "section", "text": "Private row with 20%."});
+    let mut titles = Vec::new();
+    for row in [&public, &private] {
+        let rid = row["register_id"].as_str().unwrap();
+        write(
+            &root.join("markdown").join(rid).join("sections.jsonl"),
+            &format!("{row}\n"),
+        );
+        write(
+            &root.join("markdown").join(rid).join(format!("{rid}.md")),
+            &format!("# {}\n", row["act"].as_str().unwrap()),
+        );
+        titles.push(json!({
+            "register_id": rid, "name": row["act"], "collection": row["collection"], "keywords_in_name": ["Tax"],
+            "jsonl_rows": 1, "words": row["text"].as_str().unwrap().split_whitespace().count(),
+            "granularity": "section", "endnotes": false, "version_is_current": true,
+            "epub": format!("epub/{rid}.epub"), "markdown": format!("markdown/{rid}/{rid}.md"),
+            "sections_jsonl": format!("markdown/{rid}/sections.jsonl"),
+        }));
+    }
+    let sources = json!({
+        "titles": titles,
+        "counts": {"titles": 2, "acts": 1, "instruments": 1, "jsonl_rows": 2, "words_body_only": 10, "epub_bytes": 200},
+        "titles_without_epub": [], "titles_not_current_version": [],
+    });
+    write(&root.join("sources.json"), &sources.to_string());
+    write(&root.join("LICENCE-NOTICE.md"), "licence\n");
+    write(
+        &root.join("INDEX.md"),
+        "# Index\n\n2 titles (1 Acts, 1 instruments), 2 retrieval rows, 10 words.\n\n\
+         | Collection | Titles | Rows | Words |\n|---|---|---|---|\n\
+         | Acts | 1 | 1 | 5 |\n| Notifiable instruments | 1 | 1 | 5 |\n\n\
+         ## Acts (1)\n| [Public Tax Act](markdown/C2004A00001) | C2004A00001 |\n\n\
+         ## Notifiable instruments (1)\n| [Private Disciplinary Register](markdown/C2004A00002) | C2004A00002 |\n",
+    );
+    write(
+        &root.join("README.md"),
+        "2 in-force principal titles covering tax.\n\n\
+         1 Acts and 1 legislative and notifiable instruments. 2 retrieval rows, 10 words.\n\n\
+         Each title is stored as:\n\n\
+         - `epub/<register_id>.epub` - the file exactly as the Register served it\n\
+         - `markdown/<register_id>/<register_id>.md` - full text\n\n\
+         **Eleven titles name people.** The corpus carries about 3 name mentions\n\
+         of disciplined agents with their registration numbers.\n\n\
+         **0 titles are not the current text.** Placeholder.\n",
+    );
+    let mut rates = [
+        json!({"register_id": PRIVATE_ID, "act": PRIVATE_NAME, "collection": "NotifiableInstrument", "section": "1",
+               "heading": "Private rate", "topic": "income tax rates", "kind": "rate", "amounts": ["20%"],
+               "content": "Private rate content must not be distributed.", "rate_id": "R00001"}),
+        json!({"register_id": PUBLIC_ID, "act": PUBLIC_NAME, "collection": "Act", "section": "1", "heading": "Public rate",
+               "topic": "income tax rates", "kind": "rate", "amounts": ["10%"], "content": "The public rate is 10%.",
+               "rate_id": "R00002"}),
+    ];
+    rates[0]["rate_id"] = json!("R00001");
+    write(
+        &root.join("rates").join("rates.jsonl"),
+        &rates.iter().map(|r| format!("{r}\n")).collect::<String>(),
+    );
+    write(
+        &root.join("rates").join("RATES.md"),
+        "2 entries across 2 titles.\nPrivate Disciplinary Register\n",
+    );
+    Fixture {
+        _dir: dir,
+        root,
+        build,
+    }
+}
+
+fn stage(f: &Fixture, name: &str) -> (i32, String, String) {
+    let out = Command::new(env!("CARGO_BIN_EXE_fadden"))
+        .arg(name)
+        .env("FADDEN_MODULE_DIR", &f.build)
+        .output()
+        .unwrap();
+    let text = |b: &[u8]| String::from_utf8_lossy(b).replace("\r\n", "\n");
+    (
+        out.status.code().unwrap(),
+        text(&out.stdout),
+        text(&out.stderr),
+    )
+}
+
+fn publish(f: &Fixture) -> PathBuf {
+    let (code, _, err) = stage(f, "dist");
+    assert_eq!(code, 0, "{err}");
+    f.dist()
+}
+
+fn verify(f: &Fixture) -> (i32, String) {
+    let (code, out, _) = stage(f, "dist_verify");
+    (code, out)
+}
+
+/// The PASS or FAIL word after a check's label.
+fn status(output: &str, label: &str) -> String {
+    let lines: Vec<&str> = output
+        .lines()
+        .map(str::trim)
+        .filter(|l| l.starts_with(label))
+        .collect();
+    assert_eq!(lines.len(), 1, "{output}");
+    lines[0][label.len()..]
+        .split_whitespace()
+        .next()
+        .unwrap()
+        .to_string()
+}
+
+fn read_json(path: &Path) -> Value {
+    serde_json::from_str(&std::fs::read_to_string(path).unwrap()).unwrap()
+}
+
+#[test]
+fn distribution_rebuilds_counts_and_rates_markdown_from_filtered_rows() {
+    let f = fixture();
+    let output = publish(&f);
+    let mut sources = read_json(&output.join("sources.json"));
+    assert_eq!(sources["counts"]["titles"], 1);
+    assert_eq!(sources["counts"]["jsonl_rows"], 1);
+    assert_eq!(sources["counts"]["epub_bytes"], 0);
+    assert_eq!(sources["titles_count"], 1);
+    assert_eq!(sources["titles"][0]["epub"], Value::Null);
+    assert_eq!(sources["titles"][0]["epub_included"], false);
+    let index = std::fs::read_to_string(output.join("INDEX.md")).unwrap();
+    assert!(index.contains(PUBLIC_NAME) && !index.contains(PRIVATE_NAME));
+    let rates_md = std::fs::read_to_string(output.join("rates").join("RATES.md")).unwrap();
+    let rates: Vec<Value> = std::fs::read_to_string(output.join("rates").join("rates.jsonl"))
+        .unwrap()
+        .lines()
+        .map(|l| serde_json::from_str(l).unwrap())
+        .collect();
+    assert_eq!(
+        rates
+            .iter()
+            .map(|r| r["rate_id"].clone())
+            .collect::<Vec<_>>(),
+        [json!("R00001")]
+    );
+    assert!(rates_md.contains("1 entries across 1 titles."));
+    assert!(rates_md.contains(PUBLIC_NAME) && !rates_md.contains(PRIVATE_NAME));
+    let readme = std::fs::read_to_string(output.join("README.md")).unwrap();
+    for absent in [
+        "epub/<register_id>.epub",
+        "titles name people",
+        "disciplined agents",
+    ] {
+        assert!(!readme.contains(absent), "{absent}");
+    }
+    assert!(
+        readme.contains("markdown/<register_id>/<register_id>.md") && readme.contains("REMOVED.md")
+    );
+    let policy = read_json(&f.build.join("pii_contact_allowlist.json"));
+    let mut unique: Vec<(String, String)> = policy["entries"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|e| {
+            (
+                e["kind"].as_str().unwrap().into(),
+                e["sha256"].as_str().unwrap().into(),
+            )
+        })
+        .collect();
+    unique.sort();
+    unique.dedup();
+    let removed = std::fs::read_to_string(output.join("REMOVED.md")).unwrap();
+    assert!(removed.contains(&format!(
+        "{} unique organisational identifiers",
+        unique.len()
+    )));
+
+    assert_eq!(verify(&f).0, 0);
+    // Nested machine-readable counts that drift from the shipped files fail.
+    sources["counts"]["jsonl_rows"] = json!(2);
+    std::fs::write(output.join("sources.json"), sources.to_string()).unwrap();
+    assert_eq!(verify(&f).0, 1);
+    // A full-corpus RATES.md carrying a removed title fails too.
+    sources["counts"]["jsonl_rows"] = json!(1);
+    std::fs::write(output.join("sources.json"), sources.to_string()).unwrap();
+    let md = output.join("rates").join("RATES.md");
+    let text = std::fs::read_to_string(&md).unwrap();
+    std::fs::write(&md, format!("{text}{PRIVATE_NAME}\n")).unwrap();
+    assert_eq!(verify(&f).0, 1);
+}
+
+#[test]
+fn the_verifier_fails_on_each_claim_it_reports_as_passing() {
+    let f = fixture();
+    let output = publish(&f);
+    let (code, out) = verify(&f);
+    assert_eq!(code, 0);
+    for label in [
+        "no row names private individuals",
+        "no unapproved contact identifiers",
+        "title files stay inside real link-free directories",
+        "all distributed title files are validated UTF-8 text",
+        "title file inventory matches declared outputs",
+        "no title file names private individuals",
+    ] {
+        assert_eq!(status(&out, label), "PASS", "{label}");
+    }
+    let rows = output
+        .join("markdown")
+        .join(PUBLIC_ID)
+        .join("sections.jsonl");
+    let clean_rows = std::fs::read_to_string(&rows).unwrap();
+    let row: Value = serde_json::from_str(clean_rows.trim()).unwrap();
+    let markdown = output
+        .join("markdown")
+        .join(PUBLIC_ID)
+        .join(format!("{PUBLIC_ID}.md"));
+    let clean_markdown = std::fs::read_to_string(&markdown).unwrap();
+    let sources_path = output.join("sources.json");
+    let clean_sources = std::fs::read_to_string(&sources_path).unwrap();
+    let with_text = |text: &str| {
+        let mut r = row.clone();
+        r["text"] = json!(text);
+        format!("{r}\n")
+    };
+    let contact = "new-contact@example.test";
+    let expect = |label: &str| {
+        let (code, out) = verify(&f);
+        assert_eq!(
+            (code, status(&out, label)),
+            (1, "FAIL".to_string()),
+            "{label}\n{out}"
+        );
+        out
+    };
+
+    std::fs::write(&rows, with_text(ALL_CAPS_ROW)).unwrap();
+    expect("no row names private individuals");
+    std::fs::write(&rows, with_text(contact)).unwrap();
+    assert!(!expect("no unapproved contact identifiers").contains(contact));
+    std::fs::write(&rows, "[]\n").unwrap();
+    expect("every JSONL row parses");
+    std::fs::write(&rows, b"\xff\xfe").unwrap();
+    expect("all distributed title files are validated UTF-8 text");
+    std::fs::write(&rows, &clean_rows).unwrap();
+
+    std::fs::write(&markdown, format!("{clean_markdown}\n{contact}\n")).unwrap();
+    assert!(!expect("no unapproved contact identifiers").contains(contact));
+    std::fs::write(
+        &markdown,
+        format!("{clean_markdown}\n| Smith, John | 12345678 | s 30-15 |\n"),
+    )
+    .unwrap();
+    let out = expect("no title file names private individuals");
+    assert_eq!(status(&out, "no row names private individuals"), "PASS");
+    assert!(!out.contains("Smith, John"));
+    std::fs::write(&markdown, &clean_markdown).unwrap();
+    std::fs::write(&rows, with_text("| Smith, John | 12345678 | s 30-15 |")).unwrap();
+    expect("no row names private individuals");
+    std::fs::write(&rows, &clean_rows).unwrap();
+
+    let stray = output.join("markdown").join(PRIVATE_ID);
+    std::fs::create_dir(&stray).unwrap();
+    expect("no removed title present");
+    std::fs::remove_dir(&stray).unwrap();
+
+    let planted = output.join("markdown").join(PUBLIC_ID).join("figure.png");
+    std::fs::write(&planted, b"\x89PNG\r\n\x1a\n").unwrap();
+    let out = expect("no image files");
+    assert_eq!(
+        status(&out, "all distributed title files are validated UTF-8 text"),
+        "FAIL"
+    );
+    assert_eq!(
+        status(&out, "title file inventory matches declared outputs"),
+        "FAIL"
+    );
+    std::fs::remove_file(&planted).unwrap();
+
+    std::fs::write(&markdown, b"GIF89a\x00\x01").unwrap();
+    expect("all distributed title files are validated UTF-8 text");
+    std::fs::write(&markdown, &clean_markdown).unwrap();
+    let hidden = output
+        .join("markdown")
+        .join(PUBLIC_ID)
+        .join(".operator-notes");
+    std::fs::write(&hidden, "scratch\n").unwrap();
+    expect("title file inventory matches declared outputs");
+    std::fs::remove_file(&hidden).unwrap();
+
+    let mut document: Value = serde_json::from_str(&clean_sources).unwrap();
+    document["titles"][0]["markdown"] = json!("../../outside.md");
+    std::fs::write(&sources_path, document.to_string()).unwrap();
+    expect("title file inventory matches declared outputs");
+    let mut document: Value = serde_json::from_str(&clean_sources).unwrap();
+    document["counts"]["acts"] = json!(9);
+    document["counts"]["instruments"] = json!(9);
+    std::fs::write(&sources_path, document.to_string()).unwrap();
+    expect("sources count: acts and instruments");
+    std::fs::write(&sources_path, &clean_sources).unwrap();
+
+    let readme = output.join("README.md");
+    let clean_readme = std::fs::read_to_string(&readme).unwrap();
+    std::fs::write(
+        &readme,
+        format!("{clean_readme}\n- `epub/<register_id>.epub` - as served\n"),
+    )
+    .unwrap();
+    expect("README does not promise EPUB files");
+    let drifted = clean_readme.replace(
+        "1 Acts and 0 legislative and notifiable",
+        "9 Acts and 9 legislative and notifiable",
+    );
+    assert_ne!(drifted, clean_readme);
+    std::fs::write(&readme, drifted).unwrap();
+    expect("README headline matches generated counts");
+    std::fs::write(&readme, &clean_readme).unwrap();
+    assert_eq!(verify(&f).0, 0);
+}
+
+#[test]
+fn a_stray_entry_under_markdown_is_reported_not_raised() {
+    let f = fixture();
+    let output = publish(&f);
+    let (code, out) = verify(&f);
+    assert_eq!(
+        (code, status(&out, "no directory beyond what is listed")),
+        (0, "PASS".into())
+    );
+    let markdown = output.join("markdown");
+    std::fs::write(markdown.join(".DS_Store"), "metadata\n").unwrap();
+    std::fs::write(markdown.join("F2026N00001"), "not a title directory\n").unwrap();
+    std::fs::write(markdown.join("notes.md"), "scratch\n").unwrap();
+    std::fs::create_dir(markdown.join("draft-backup")).unwrap();
+    std::fs::write(
+        markdown.join("draft-backup").join("sections.jsonl"),
+        "{\"register_id\": \"draft-backup\", \"text\": \"x\"}\n",
+    )
+    .unwrap();
+    let (code, out) = verify(&f);
+    assert_eq!(
+        (code, status(&out, "no directory beyond what is listed")),
+        (1, "FAIL".into())
+    );
+    for entry in [
+        ".DS_Store [file]",
+        "F2026N00001 [file]",
+        "notes.md [file]",
+        "draft-backup [directory]",
+    ] {
+        assert!(out.contains(entry), "{entry}\n{out}");
+    }
+    assert_eq!(status(&out, "no row names private individuals"), "PASS");
+}
+
+#[cfg(windows)]
+#[test]
+fn a_top_level_junction_is_a_named_failure() {
+    let f = fixture();
+    let output = publish(&f);
+    let outside = f.root.join("outside-title");
+    std::fs::create_dir(&outside).unwrap();
+    let junction = output.join("markdown").join("F2026N00002");
+    let made = Command::new("cmd")
+        .args(["/C", "mklink", "/J"])
+        .arg(&junction)
+        .arg(&outside)
+        .output()
+        .unwrap();
+    assert!(made.status.success());
+    let (code, out) = verify(&f);
+    assert_eq!(
+        (code, status(&out, "no directory beyond what is listed")),
+        (1, "FAIL".into())
+    );
+    assert!(out.contains("F2026N00002 [junction]"), "{out}");
+}
+
+#[cfg(unix)]
+#[test]
+fn a_top_level_symlink_is_a_named_failure() {
+    let f = fixture();
+    let output = publish(&f);
+    let outside = f.root.join("outside-title");
+    std::fs::create_dir(&outside).unwrap();
+    std::os::unix::fs::symlink(&outside, output.join("markdown").join("F2026N00001")).unwrap();
+    let (code, out) = verify(&f);
+    assert_eq!(
+        (code, status(&out, "no directory beyond what is listed")),
+        (1, "FAIL".into())
+    );
+    assert!(out.contains("F2026N00001 [symlink]"), "{out}");
+}
+
+#[test]
+fn the_exit_status_has_three_bands() {
+    let f = fixture();
+    let output = publish(&f);
+    let (code, out) = verify(&f);
+    assert_eq!(code, 0);
+    assert!(out.contains("all checks passed"));
+    std::fs::remove_dir_all(output.join("markdown").join(PUBLIC_ID)).unwrap();
+    let (code, out) = verify(&f);
+    assert_eq!(code, 1);
+    assert!(out.contains("FAILED") && !out.contains("VERIFIER ERROR"));
+    for broken in ["missing", "malformed"] {
+        let f = fixture();
+        let output = publish(&f);
+        if broken == "missing" {
+            std::fs::remove_file(output.join("sources.json")).unwrap();
+        } else {
+            std::fs::write(output.join("sources.json"), "{not json").unwrap();
+        }
+        let (code, out, err) = stage(&f, "dist_verify");
+        assert_eq!(code, 2, "{broken}");
+        assert!(out.contains("VERIFIER ERROR") && out.contains("unverified, not clean"));
+        assert!(!err.is_empty());
+    }
+}
+
+#[test]
+fn published_rows_blank_lines_and_malformed_rows_are_counted() {
+    let f = fixture();
+    let sections = f
+        .root
+        .join("markdown")
+        .join(PUBLIC_ID)
+        .join("sections.jsonl");
+    let row: Value =
+        serde_json::from_str(std::fs::read_to_string(&sections).unwrap().trim()).unwrap();
+    let mut unnumbered = row.clone();
+    unnumbered["section"] = Value::Null;
+    unnumbered["kind"] = Value::Null;
+    unnumbered["text"] = json!("Unnumbered words.");
+    std::fs::write(&sections, format!("\n{row}\n\n{unnumbered}\n")).unwrap();
+    let rates = f.root.join("rates").join("rates.jsonl");
+    let text = std::fs::read_to_string(&rates).unwrap();
+    std::fs::write(&rates, format!("\n{text}\n")).unwrap();
+    let sources_path = f.root.join("sources.json");
+    let mut sources = read_json(&sources_path);
+    sources["titles"][0]["jsonl_rows"] = json!(2);
+    std::fs::write(&sources_path, sources.to_string()).unwrap();
+    let output = publish(&f);
+    assert_eq!(
+        read_json(&output.join("sources.json"))["counts"]["jsonl_rows"],
+        2
+    );
+    assert_eq!(verify(&f).0, 0);
+
+    let published = output
+        .join("markdown")
+        .join(PUBLIC_ID)
+        .join("sections.jsonl");
+    let cases = [
+        (
+            "every JSONL row parses",
+            vec![
+                {
+                    let mut r = row.clone();
+                    r["text"] = json!(["not", "text"]);
+                    r
+                },
+                {
+                    let mut r = row.clone();
+                    r["kind"] = json!(7);
+                    r
+                },
+            ],
+        ),
+        (
+            "each JSONL row matches its title directory",
+            vec![{
+                let mut r = row.clone();
+                r["register_id"] = json!(PRIVATE_ID);
+                r
+            }],
+        ),
+    ];
+    for (label, rows) in cases {
+        std::fs::write(
+            &published,
+            rows.iter().map(|r| format!("{r}\n")).collect::<String>(),
+        )
+        .unwrap();
+        let (code, out) = verify(&f);
+        assert_eq!((code, status(&out, label)), (1, "FAIL".into()), "{label}");
+    }
+    std::fs::write(&published, format!("{row}\n")).unwrap();
+    let published_rates = output.join("rates").join("rates.jsonl");
+    let text = std::fs::read_to_string(&published_rates).unwrap();
+    std::fs::write(&published_rates, format!("\n{text}[]\n")).unwrap();
+    let (code, out) = verify(&f);
+    assert_eq!(
+        (code, status(&out, "every rates JSONL row parses")),
+        (1, "FAIL".into())
+    );
+}
+
+#[test]
+fn the_contact_gate_names_eight_and_refuses_missing_files() {
+    let f = fixture();
+    let titles = [pyjson_value(&json!({"register_id": PUBLIC_ID}))];
+    let root = f.root.to_string_lossy().to_string();
+    let contacts: Vec<String> = (0..9).map(|n| format!("person{n}@example.test")).collect();
+    std::fs::write(
+        f.root
+            .join("markdown")
+            .join(PUBLIC_ID)
+            .join(format!("{PUBLIC_ID}.md")),
+        contacts.join(" "),
+    )
+    .unwrap();
+    let title = pyjson_value(
+        &json!({"register_id": PUBLIC_ID, "markdown": format!("markdown/{PUBLIC_ID}/{PUBLIC_ID}.md"),
+                                     "sections_jsonl": format!("markdown/{PUBLIC_ID}/sections.jsonl"), "endnotes": false}),
+    );
+    let error = dist::reject_unapproved_contacts(&root, std::slice::from_ref(&title), &[])
+        .unwrap_err()
+        .to_string();
+    assert!(
+        error.starts_with("unapproved contact identifiers: 9 ("),
+        "{error}"
+    );
+    assert_eq!(error.matches("C2004A00001:email:").count(), 8);
+    std::fs::remove_file(
+        f.root
+            .join("markdown")
+            .join(PUBLIC_ID)
+            .join("sections.jsonl"),
+    )
+    .unwrap();
+    let error = dist::reject_unapproved_contacts(&root, &titles, &[])
+        .unwrap_err()
+        .to_string();
+    assert_eq!(error, "listed title C2004A00001 has no sections.jsonl");
+    std::fs::remove_dir_all(f.root.join("markdown").join(PUBLIC_ID)).unwrap();
+    let error = dist::reject_unapproved_contacts(&root, &titles, &[])
+        .unwrap_err()
+        .to_string();
+    assert_eq!(error, "listed title C2004A00001 has no markdown directory");
+}
+
+// ----------------------------------------------------------- paths
+
+fn s(p: &Path) -> String {
+    p.to_string_lossy().into_owned()
+}
+
+#[test]
+fn unusable_targets_are_refused() {
+    let dir = tempfile::tempdir().unwrap();
+    let a_file = dir.path().join("file");
+    std::fs::write(&a_file, "").unwrap();
+    let root = if cfg!(windows) {
+        "C:\\".to_string()
+    } else {
+        "/".to_string()
+    };
+    for (target, message) in [
+        (root, "must be a named child directory"),
+        (
+            s(&dir.path().join("missing").join("dist")),
+            "parent does not exist",
+        ),
+        (s(&a_file), "must be a directory"),
+    ] {
+        let error = dist::validated_distribution_target(&target)
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains(message), "{error}");
+    }
+    let target = s(&dir.path().join("dist"));
+    let error =
+        dist::validated_managed_sibling(&target, &s(&dir.path().join(".dist.cache-x")), "cache")
+            .unwrap_err();
+    assert_eq!(error.to_string(), "unknown managed distribution path kind");
+}
+
+#[cfg(unix)]
+#[test]
+fn a_linked_target_is_refused() {
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::create_dir(dir.path().join("real")).unwrap();
+    std::os::unix::fs::symlink(dir.path().join("real"), dir.path().join("dist")).unwrap();
+    let error = dist::validated_distribution_target(&s(&dir.path().join("dist")))
+        .unwrap_err()
+        .to_string();
+    assert!(error.contains("must not be a link or reparse point"));
+}
+
+#[test]
+fn sibling_allocation_gives_up_after_one_hundred_collisions() {
+    let dir = tempfile::tempdir().unwrap();
+    let fixed = format!("{:032x}", 7);
+    std::fs::create_dir(dir.path().join(format!(".dist.stage-{fixed}"))).unwrap();
+    let mut calls = 0;
+    let error = dist::new_managed_sibling(&s(&dir.path().join("dist")), "stage", || {
+        calls += 1;
+        fixed.clone()
+    })
+    .unwrap_err();
+    assert_eq!(
+        error.to_string(),
+        "could not allocate a unique distribution stage path"
+    );
+    assert_eq!(calls, 100);
+}
+
+#[test]
+fn a_managed_path_that_is_a_file_is_not_removed() {
+    let dir = tempfile::tempdir().unwrap();
+    let stage = dir.path().join(format!(".dist.stage-{}", "0".repeat(32)));
+    std::fs::write(&stage, "not a directory").unwrap();
+    let error =
+        dist::remove_managed_tree(&s(&dir.path().join("dist")), &s(&stage), "stage").unwrap_err();
+    assert_eq!(
+        error.to_string(),
+        "refusing to remove a non-directory managed path"
+    );
+    assert!(stage.is_file());
+}
+
+struct Promotion {
+    dir: tempfile::TempDir,
+}
+
+impl Promotion {
+    fn target(&self) -> PathBuf {
+        self.dir.path().join("dist")
+    }
+    fn stage(&self) -> PathBuf {
+        self.dir
+            .path()
+            .join(format!(".dist.stage-{}", "1".repeat(32)))
+    }
+    fn promote(&self) -> Result<(), String> {
+        dist::promote_distribution(&s(&self.stage()), &s(&self.target())).map_err(|e| e.to_string())
+    }
+}
+
+fn promotion() -> Promotion {
+    Promotion {
+        dir: tempfile::tempdir().unwrap(),
+    }
+}
+
+fn denied(path: &str) -> OsError {
+    OsError::new(
+        &std::io::Error::from(std::io::ErrorKind::PermissionDenied),
+        Some(path),
+        tax_radar_au::pyos::Style::Native,
+    )
+}
+
+#[test]
+fn promotion_refuses_a_stage_that_is_not_a_directory() {
+    let p = promotion();
+    std::fs::write(p.stage(), "").unwrap();
+    assert_eq!(
+        p.promote().unwrap_err(),
+        "distribution stage must be a real directory"
+    );
+}
+
+#[test]
+fn a_first_publication_failure_leaves_nothing_to_restore() {
+    let p = promotion();
+    std::fs::create_dir(p.stage()).unwrap();
+    dist::set_rename_hook(|src, _| Some(denied(src)));
+    assert!(p.promote().is_err());
+    dist::set_rename_hook(|_, _| None);
+    assert!(!p.target().exists());
+    assert!(p.stage().is_dir());
+}
+
+fn fail_second_rename(p: &Promotion, before_raising: impl Fn(&Path) + 'static) -> String {
+    std::fs::create_dir(p.stage()).unwrap();
+    std::fs::create_dir(p.target()).unwrap();
+    std::fs::write(p.target().join("old.txt"), "old").unwrap();
+    let mut first: Option<PathBuf> = None;
+    dist::set_rename_hook(move |src, dst| match &first {
+        None => {
+            first = Some(PathBuf::from(dst));
+            None
+        }
+        Some(backup) => {
+            before_raising(backup);
+            Some(denied(src))
+        }
+    });
+    let message = p.promote().unwrap_err();
+    dist::set_rename_hook(|_, _| None);
+    message
+}
+
+#[test]
+fn a_target_that_reappears_is_not_rolled_back_over() {
+    let p = promotion();
+    let target = p.target();
+    let message = fail_second_rename(&p, move |_| std::fs::create_dir(&target).unwrap());
+    assert!(
+        message.contains("automatic rollback is unsafe"),
+        "{message}"
+    );
+}
+
+#[test]
+fn a_backup_replaced_by_a_file_is_not_restored() {
+    let p = promotion();
+    let message = fail_second_rename(&p, |backup| {
+        std::fs::remove_dir_all(backup).unwrap();
+        std::fs::write(backup, "swapped").unwrap();
+    });
+    assert_eq!(message, "distribution backup is unsafe to restore");
+    assert!(!p.target().exists());
+}
+
+#[test]
+fn a_successful_promotion_replaces_the_old_tree_and_removes_the_backup() {
+    let p = promotion();
+    std::fs::create_dir(p.stage()).unwrap();
+    std::fs::write(p.stage().join("new.txt"), "new").unwrap();
+    std::fs::create_dir(p.target()).unwrap();
+    std::fs::write(p.target().join("old.txt"), "old").unwrap();
+    p.promote().unwrap();
+    assert!(p.target().join("new.txt").is_file() && !p.target().join("old.txt").exists());
+    let names: Vec<String> = std::fs::read_dir(p.dir.path())
+        .unwrap()
+        .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
+        .collect();
+    assert_eq!(names, ["dist"]);
+}
+
+#[test]
+fn nested_directories_are_reported() {
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::create_dir(dir.path().join("inner")).unwrap();
+    std::fs::write(dir.path().join("inner").join("file.md"), "x").unwrap();
+    let (files, directories) = dist_verify::title_tree(&s(dir.path())).unwrap();
+    assert_eq!(directories, ["inner"]);
+    assert_eq!(
+        files
+            .iter()
+            .map(|f| Path::new(f)
+                .file_name()
+                .unwrap()
+                .to_string_lossy()
+                .into_owned())
+            .collect::<Vec<_>>(),
+        ["file.md"]
+    );
+    assert_eq!(
+        dist_verify::entry_kind(&s(&dir.path().join("absent"))),
+        "unreadable"
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn both_tree_walkers_refuse_a_named_pipe() {
+    let dir = tempfile::tempdir().unwrap();
+    let title = dir.path().join("title");
+    std::fs::create_dir(&title).unwrap();
+    let pipe = std::ffi::CString::new(s(&title.join("pipe"))).unwrap();
+    // SAFETY: a valid NUL-terminated path.
+    assert_eq!(unsafe { libc::mkfifo(pipe.as_ptr(), 0o600) }, 0);
+    let error = dist_verify::title_tree(&s(&title)).unwrap_err();
+    assert_eq!(
+        (error.class(), error.to_string().as_str()),
+        ("ValueError", "title tree contains a non-regular file")
+    );
+    let error = dist::title_tree(&s(&title)).unwrap_err();
+    assert_eq!(
+        (error.class(), error.to_string().as_str()),
+        ("RuntimeError", "title tree contains a non-regular file")
+    );
+    assert_eq!(dist_verify::entry_kind(&s(&title.join("pipe"))), "other");
+}
+
+// --------------------------------------------------------- rendering
+
+fn points(text: &[u32]) -> String {
+    text.iter().map(|&cp| char::from_u32(cp).unwrap()).collect()
+}
+
+#[test]
+fn long_rate_sections_are_truncated_with_a_count() {
+    let mut records: Vec<Value> = (0..41)
+        .map(|n| json!({"register_id": PUBLIC_ID, "act": "Act", "collection": "LegislativeInstrument", "section": n.to_string(),
+                        "heading": "Table", "topic": "income tax rates", "kind": "table", "content": "| a |"}))
+        .collect();
+    records.extend((0..121).map(|_| json!({"register_id": PUBLIC_ID, "act": "Act", "collection": "Act", "section": null,
+                                            "topic": "income tax rates", "kind": "rate", "amounts": ["1%"], "content": "One per cent."})));
+    let records: Vec<_> = records.iter().map(pyjson_value).collect();
+    let md = points(&dist::render_rates_markdown(&records).unwrap());
+    for needle in [
+        "### Rate tables",
+        "**Act** _(instrument)_ s 0 \u{2014} Table",
+        "_1 further tables in rates.jsonl._",
+        "_1 further provisions in rates.jsonl._",
+    ] {
+        assert!(md.contains(needle), "{needle}");
+    }
+    let one = [pyjson_value(
+        &json!({"register_id": PUBLIC_ID, "act": "Act", "collection": "Act", "section": "1",
+                                     "heading": "Table", "topic": "medicare levy", "kind": "table", "content": "| a |"}),
+    )];
+    let md = points(&dist::render_rates_markdown(&one).unwrap());
+    assert!(md.contains("**Act** s 1 \u{2014} Table"));
+    assert!(!md.contains("further") && !md.contains("### Provisions carrying a number"));
+}
+
+#[test]
+fn readme_count_phrases_are_rewritten_and_malformed_ones_kept() {
+    let text = "x Acts and 2 legislative and notifiable. 1 Acts and 2 legislative and notifiable";
+    assert_eq!(
+        dist::replace_readme_collection_counts(text, 5, 6),
+        "x Acts and 2 legislative and notifiable. 5 Acts and 6 legislative and notifiable"
+    );
+}
+
+const SAMPLE: &str = "Intro paragraph.\n\n\
+    **Table-shaped instruments are split on their tables.** 14 titles carry\n\
+    `granularity: table_block`: no headings anywhere, just a run of tables. The Tax\n\
+    Practitioners Board publishes its terminations this way, and Excise By-law No.\n\
+    127 prescribes petroleum fields one table per basin.\n\n\
+    Following paragraph.\n";
+
+#[test]
+fn the_table_block_paragraph_is_replaced_with_the_subset_figure() {
+    let result = dist::replace_readme_table_block_paragraph(SAMPLE, 2);
+    assert!(result.contains("2 titles carry") && !result.contains("14 titles carry"));
+    assert!(
+        !result.contains("Excise By-law No.")
+            && !result.contains("publishes its terminations this way")
+    );
+    assert!(
+        result.starts_with("Intro paragraph.\n\n") && result.ends_with("Following paragraph.\n")
+    );
+    assert_eq!(result.matches(dist::TABLE_BLOCK_LEAD).count(), 1);
+    assert_eq!(
+        dist::replace_readme_table_block_paragraph("No such paragraph here.\n", 2),
+        "No such paragraph here.\n"
+    );
+    let hostile = dist::TABLE_BLOCK_LEAD.repeat(20_000);
+    assert!(dist::replace_readme_table_block_paragraph(&hostile, 2).contains("2 titles"));
+    // finalize writes the paragraph dist rewrites; a reworded lead would stop the rewrite.
+    let finalize = std::fs::read_to_string(
+        Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("fadden")
+            .join("finalize.py"),
+    )
+    .unwrap();
+    assert!(finalize.contains(dist::TABLE_BLOCK_LEAD));
+}
+
+// ------------------------------------------------- publication safety
+
+/// The stage and backup siblings `dist` may leave beside the target.
+fn managed_paths(f: &Fixture) -> Vec<String> {
+    std::fs::read_dir(&f.root)
+        .unwrap()
+        .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
+        .filter(|n| n.starts_with(".dist.stage-") || n.starts_with(".dist.backup-"))
+        .collect()
+}
+
+fn with_existing_dist(f: &Fixture) -> PathBuf {
+    std::fs::create_dir(f.dist()).unwrap();
+    let marker = f.dist().join("last-publishable-build.txt");
+    std::fs::write(&marker, "keep me").unwrap();
+    marker
+}
+
+fn refused(f: &Fixture, needle: &str) -> String {
+    let (code, _, err) = stage(f, "dist");
+    assert_eq!(code, 1, "{err}");
+    assert!(err.contains(needle), "{err:?} lacks {needle:?}");
+    err
+}
+
+fn empty_policy(f: &Fixture) {
+    std::fs::write(
+        f.build.join("pii_contact_allowlist.json"),
+        r#"{"schema_version": 1, "entries": []}"#,
+    )
+    .unwrap();
+}
+
+fn declare_endnotes(f: &Fixture) {
+    let path = f.root.join("sources.json");
+    let mut sources = read_json(&path);
+    for title in sources["titles"].as_array_mut().unwrap() {
+        if title["register_id"] == PUBLIC_ID {
+            title["endnotes"] = json!(format!("markdown/{PUBLIC_ID}/endnotes.md"));
+        }
+    }
+    std::fs::write(&path, sources.to_string()).unwrap();
+}
+
+#[test]
+fn preflight_findings_preserve_the_existing_distribution() {
+    let contact = "markdown-only-contact@example.test";
+    let pair = "| Smith, John | 12345678 | s 30-15 |";
+    for file in [
+        format!("{PUBLIC_ID}.md"),
+        "endnotes.md".into(),
+        "sections.jsonl".into(),
+    ] {
+        for (planted, needle, secret) in [
+            (contact, "unapproved contact identifiers", contact),
+            (pair, "private-person registration pairs", "Smith, John"),
+        ] {
+            let f = fixture();
+            empty_policy(&f);
+            let marker = with_existing_dist(&f);
+            let path = f.root.join("markdown").join(PUBLIC_ID).join(&file);
+            if file == "sections.jsonl" {
+                let row = json!({"register_id": PUBLIC_ID, "text": planted});
+                std::fs::write(&path, format!("{row}\n")).unwrap();
+            } else {
+                std::fs::write(&path, format!("{planted}\n")).unwrap();
+            }
+            if file == "endnotes.md" {
+                declare_endnotes(&f);
+            }
+            let err = refused(&f, needle);
+            assert!(!err.contains(secret), "{err}");
+            assert_eq!(std::fs::read_to_string(&marker).unwrap(), "keep me");
+            assert!(managed_paths(&f).is_empty());
+        }
+    }
+}
+
+#[test]
+fn binary_files_and_title_dotfiles_preserve_the_existing_distribution() {
+    let f = fixture();
+    let marker = with_existing_dist(&f);
+    let markdown = f
+        .root
+        .join("markdown")
+        .join(PUBLIC_ID)
+        .join(format!("{PUBLIC_ID}.md"));
+    std::fs::write(markdown, b"GIF89a\x00\x01").unwrap();
+    refused(
+        &f,
+        "RuntimeError: listed title C2004A00001 contains an unreadable or non-text file",
+    );
+    assert_eq!(std::fs::read_to_string(&marker).unwrap(), "keep me");
+
+    let f = fixture();
+    let marker = with_existing_dist(&f);
+    std::fs::write(
+        f.root
+            .join("markdown")
+            .join(PUBLIC_ID)
+            .join(".operator-notes"),
+        "scratch\n",
+    )
+    .unwrap();
+    refused(&f, "unexpected file inventory");
+    assert_eq!(std::fs::read_to_string(&marker).unwrap(), "keep me");
+    assert!(managed_paths(&f).is_empty());
+}
+
+#[test]
+fn a_mid_build_failure_preserves_the_prior_distribution() {
+    // The Python test made copytree raise; a corpus missing its licence notice
+    // fails the build after the titles are copied into the stage.
+    let f = fixture();
+    let marker = with_existing_dist(&f);
+    std::fs::remove_file(f.root.join("LICENCE-NOTICE.md")).unwrap();
+    refused(&f, "FileNotFoundError: [Errno 2]");
+    assert_eq!(std::fs::read_to_string(&marker).unwrap(), "keep me");
+    assert!(managed_paths(&f).is_empty());
+}
+
+#[test]
+fn a_failed_staging_validation_preserves_the_prior_distribution() {
+    // A README without the headline phrases builds but fails verification.
+    let f = fixture();
+    let marker = with_existing_dist(&f);
+    std::fs::write(f.root.join("README.md"), "No headline here.\n").unwrap();
+    refused(
+        &f,
+        "RuntimeError: staged distribution failed validation: README states the real title count",
+    );
+    assert_eq!(std::fs::read_to_string(&marker).unwrap(), "keep me");
+    assert!(managed_paths(&f).is_empty());
+}
+
+fn publish_in_process(f: &Fixture) -> Result<(), String> {
+    let mut state = tax_radar_au::fadden::Run::default();
+    dist::publish(&f.build.to_string_lossy(), &mut state).map_err(|e| format!("{}: {e}", e.class()))
+}
+
+#[test]
+fn a_first_promotion_rename_failure_leaves_the_old_dist_untouched() {
+    let f = fixture();
+    let marker = with_existing_dist(&f);
+    let calls = std::rc::Rc::new(std::cell::Cell::new(0));
+    let counter = calls.clone();
+    dist::set_rename_hook(move |src, _| {
+        counter.set(counter.get() + 1);
+        Some(denied(src))
+    });
+    let error = publish_in_process(&f).unwrap_err();
+    dist::set_rename_hook(|_, _| None);
+    assert!(error.to_lowercase().contains("permission"), "{error}");
+    assert_eq!(calls.get(), 1);
+    assert_eq!(std::fs::read_to_string(&marker).unwrap(), "keep me");
+    assert!(managed_paths(&f).is_empty());
+}
+
+#[test]
+fn a_second_promotion_rename_failure_rolls_back_the_old_dist() {
+    let f = fixture();
+    let marker = with_existing_dist(&f);
+    let calls = std::rc::Rc::new(std::cell::Cell::new(0));
+    let counter = calls.clone();
+    dist::set_rename_hook(move |src, _| {
+        counter.set(counter.get() + 1);
+        (counter.get() == 2).then(|| denied(src))
+    });
+    let error = publish_in_process(&f).unwrap_err();
+    dist::set_rename_hook(|_, _| None);
+    assert!(error.to_lowercase().contains("permission"), "{error}");
+    assert_eq!(calls.get(), 3);
+    assert_eq!(std::fs::read_to_string(&marker).unwrap(), "keep me");
+    assert!(managed_paths(&f).is_empty());
+}
+
+#[test]
+fn a_successful_promotion_removes_stage_and_backup() {
+    let f = fixture();
+    let marker = with_existing_dist(&f);
+    publish(&f);
+    assert!(!marker.exists());
+    assert!(
+        f.dist()
+            .join("markdown")
+            .join(PUBLIC_ID)
+            .join("sections.jsonl")
+            .is_file()
+    );
+    assert!(managed_paths(&f).is_empty());
+}
+
+#[test]
+fn managed_cleanup_refuses_a_path_outside_the_dist_siblings() {
+    let dir = tempfile::tempdir().unwrap();
+    let target = dir.path().join("corpus").join("dist");
+    std::fs::create_dir(target.parent().unwrap()).unwrap();
+    let unrelated = dir.path().join(".dist.stage-unrelated");
+    std::fs::create_dir(&unrelated).unwrap();
+    let error = dist::remove_managed_tree(&s(&target), &s(&unrelated), "stage").unwrap_err();
+    assert!(error.to_string().contains("validated sibling"));
+    assert!(unrelated.is_dir());
+}
+
+#[test]
+fn accounting_standards_under_restrictive_notices_are_dropped_and_listed() {
+    let f = fixture();
+    let (standard, name) = ("F2015L01601", "AASB 112 - Income Taxes - August 2015");
+    let folder = f.root.join("markdown").join(standard);
+    let row = json!({"register_id": standard, "act": name, "collection": "LegislativeInstrument",
+                     "section": "1", "heading": "Tax rate", "kind": "section", "text": "The tax rate is 30%."});
+    write(&folder.join("sections.jsonl"), &format!("{row}\n"));
+    write(&folder.join(format!("{standard}.md")), "# AASB 112\n");
+    let path = f.root.join("sources.json");
+    let mut sources = read_json(&path);
+    let mut title = sources["titles"][0].clone();
+    title["register_id"] = json!(standard);
+    title["name"] = json!(name);
+    title["collection"] = json!("LegislativeInstrument");
+    title["markdown"] = json!(format!("markdown/{standard}/{standard}.md"));
+    title["sections_jsonl"] = json!(format!("markdown/{standard}/sections.jsonl"));
+    sources["titles"].as_array_mut().unwrap().push(title);
+    std::fs::write(&path, sources.to_string()).unwrap();
+    let readme = f.root.join("README.md");
+    let text = std::fs::read_to_string(&readme)
+        .unwrap()
+        .replace("2 in-force principal titles", "3 in-force principal titles");
+    std::fs::write(&readme, text).unwrap();
+    let output = publish(&f);
+    assert!(!output.join("markdown").join(standard).exists());
+    let shipped = read_json(&output.join("sources.json"));
+    let expected = json!({"register_id": standard, "name": name, "reason": "restrictive copyright notice; see REMOVED.md"});
+    assert!(
+        shipped["excluded_titles"]
+            .as_array()
+            .unwrap()
+            .contains(&expected)
+    );
+    let removed = std::fs::read_to_string(output.join("REMOVED.md")).unwrap();
+    assert!(removed.contains("## 1 accounting standards under restrictive copyright notices"));
+    assert!(removed.contains(&format!(
+        "[{standard}](https://www.legislation.gov.au/{standard}/latest/text)"
+    )));
+    // The verifier keys on the standard itself, whatever sources.json says.
+    let copy = output.join("markdown").join(standard);
+    std::fs::create_dir(&copy).unwrap();
+    for entry in std::fs::read_dir(&folder).unwrap() {
+        let entry = entry.unwrap();
+        std::fs::copy(entry.path(), copy.join(entry.file_name())).unwrap();
+    }
+    let (code, out) = verify(&f);
+    assert_eq!(
+        (
+            code,
+            status(&out, "no title under a restrictive copyright notice")
+        ),
+        (1, "FAIL".into())
+    );
+}
+
+#[test]
+fn readme_count_replacement_is_precise_and_linear() {
+    let text = "1 Acts and 2 legislative and notifiable instruments. 3 Acts and 4 legislative and notifiable instruments.";
+    assert_eq!(
+        dist::replace_readme_collection_counts(text, 5, 6),
+        "5 Acts and 6 legislative and notifiable instruments. 5 Acts and 6 legislative and notifiable instruments."
+    );
+    let digits = "9".repeat(200_000);
+    let long = format!("{digits} Acts and {digits} legislative and notifiable");
+    assert_eq!(
+        dist::replace_readme_collection_counts(&long, 5, 6),
+        "5 Acts and 6 legislative and notifiable"
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn links_inside_titles_are_refused() {
+    // Before copying: a nested link in the source stops the build.
+    let f = fixture();
+    let outside = f.root.join("outside.txt");
+    std::fs::write(&outside, "must not be copied").unwrap();
+    let link = f
+        .root
+        .join("markdown")
+        .join(PUBLIC_ID)
+        .join("unexpected-link");
+    std::os::unix::fs::symlink(&outside, link).unwrap();
+    refused(
+        &f,
+        "ValueError: corpus tree contains a symbolic link, junction or reparse point",
+    );
+
+    // After publication: the verifier names the title as unsafe.
+    let f = fixture();
+    let output = publish(&f);
+    let rows = output
+        .join("markdown")
+        .join(PUBLIC_ID)
+        .join("sections.jsonl");
+    let real = f.root.join("real-rows.jsonl");
+    std::fs::rename(&rows, &real).unwrap();
+    std::os::unix::fs::symlink(&real, &rows).unwrap();
+    let (code, out) = verify(&f);
+    assert_eq!(
+        (
+            code,
+            status(&out, "title files stay inside real link-free directories")
+        ),
+        (1, "FAIL".into())
+    );
+    assert!(out.contains(PUBLIC_ID));
+}
