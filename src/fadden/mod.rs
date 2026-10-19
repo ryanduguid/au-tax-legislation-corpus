@@ -40,6 +40,13 @@ pub enum Exc {
     Overflow(String),
     /// `sqlite3.Error`, which the stages catch.
     Sqlite(String),
+    /// `RecursionError`, a `RuntimeError` no stage catches.
+    Recursion(String),
+    /// `shutil.Error` or `shutil.SpecialFileError`, named by `class`.
+    Shutil {
+        class: &'static str,
+        message: String,
+    },
 }
 
 impl Exc {
@@ -62,6 +69,8 @@ impl Exc {
             Exc::UnicodeEncode(_) => "UnicodeEncodeError",
             Exc::Overflow(_) => "OverflowError",
             Exc::Sqlite(_) => "sqlite3.Error",
+            Exc::Recursion(_) => "RecursionError",
+            Exc::Shutil { class, .. } => class,
         }
     }
 
@@ -79,7 +88,9 @@ impl std::fmt::Display for Exc {
             | Exc::Runtime(message)
             | Exc::UnicodeEncode(message)
             | Exc::Overflow(message)
-            | Exc::Sqlite(message) => f.write_str(message),
+            | Exc::Sqlite(message)
+            | Exc::Recursion(message)
+            | Exc::Shutil { message, .. } => f.write_str(message),
             Exc::Key(message) => f.write_str(message),
             Exc::Os(error) => f.write_str(&error.text),
         }
@@ -89,6 +100,15 @@ impl std::fmt::Display for Exc {
 impl From<OsError> for Exc {
     fn from(error: OsError) -> Self {
         Exc::Os(error)
+    }
+}
+
+impl From<crate::pyos::NotUnicode> for Exc {
+    fn from(error: crate::pyos::NotUnicode) -> Self {
+        Exc::value(format!(
+            "file name is not valid Unicode: {}",
+            crate::py::repr_str(&error.0)
+        ))
     }
 }
 
@@ -117,6 +137,9 @@ pub fn json_error(error: crate::pyjson::DecodeError) -> Exc {
             message,
         },
         crate::pyjson::DecodeError::Duplicate => Exc::value("duplicate JSON member"),
+        crate::pyjson::DecodeError::Recursion(kind) => Exc::Recursion(format!(
+            "maximum recursion depth exceeded while decoding a JSON {kind} from a unicode string"
+        )),
     }
 }
 

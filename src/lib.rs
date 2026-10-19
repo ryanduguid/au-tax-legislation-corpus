@@ -13,6 +13,7 @@ pub mod pyjson;
 pub mod pyos;
 pub mod pypath;
 pub mod pyre;
+pub mod pysort;
 mod pytext;
 mod pyunicode;
 pub mod pyurl;

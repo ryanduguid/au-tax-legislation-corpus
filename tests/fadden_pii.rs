@@ -503,3 +503,85 @@ fn malformed_allowlist_documents_and_fields_are_refused() {
         assert_eq!(policy(dir.path(), document).unwrap_err(), message);
     }
 }
+
+/// A title directory whose name is not valid Unicode is refused, not
+/// silently left out of the scan.
+#[cfg(unix)]
+#[test]
+fn a_title_name_that_is_not_unicode_stops_both_scans() {
+    use std::os::unix::ffi::OsStrExt;
+    for stage in ["pii_scan", "pii_scan2"] {
+        let d = deployed();
+        std::fs::write(d.build.join("manifest_md.json"), "[]").unwrap();
+        std::fs::write(d.build.join("pii_flagged.json"), "[]").unwrap();
+        std::fs::copy(
+            Path::new(env!("CARGO_MANIFEST_DIR"))
+                .join("fadden")
+                .join("pii_contact_allowlist.json"),
+            d.build.join("pii_contact_allowlist.json"),
+        )
+        .unwrap();
+        let folder = d
+            .base
+            .join("markdown")
+            .join(std::ffi::OsStr::from_bytes(b"C2004A0000\xff"));
+        std::fs::create_dir_all(&folder).unwrap();
+        std::fs::write(folder.join("sections.jsonl"), "{}\n").unwrap();
+        let out = Command::new(env!("CARGO_BIN_EXE_fadden"))
+            .arg(stage)
+            .env("FADDEN_MODULE_DIR", &d.build)
+            .output()
+            .unwrap();
+        let err = String::from_utf8_lossy(&out.stderr);
+        assert_eq!(out.status.code(), Some(1), "{stage}: {err}");
+        assert!(
+            err.contains("ValueError: file name is not valid Unicode: "),
+            "{stage}: {err}"
+        );
+    }
+}
+
+/// The fuzz target's invariants catch a detector that leaks or invents.
+#[test]
+fn the_fuzz_invariants_reject_broken_detector_output() {
+    use std::collections::BTreeSet;
+    let none = (BTreeSet::new(), BTreeSet::new());
+    let leaked = [("email", "jane@example.test".to_string())];
+    assert!(
+        pii::check_findings("", &none, &leaked)
+            .unwrap_err()
+            .starts_with("malformed fingerprint")
+    );
+    let unknown_kind = [("fax", "0".repeat(64))];
+    assert!(pii::check_findings("", &none, &unknown_kind).is_err());
+    let invented = (BTreeSet::from(["Jo".to_string()]), BTreeSet::new());
+    assert_eq!(
+        pii::check_findings("", &invented, &[]).unwrap_err(),
+        "a reported match is not in the text"
+    );
+    let number = (BTreeSet::new(), BTreeSet::from(["12345678".to_string()]));
+    assert!(pii::check_findings("no digits", &number, &[]).is_err());
+    assert!(pii::check_findings("reg 12345678", &number, &[]).is_ok());
+}
+
+/// Run from an installed package directory, each stage refuses before it
+/// writes anything, as the Python stages did.
+#[test]
+fn installed_locations_refuse_the_stages_before_side_effects() {
+    for name in ["dist", "pii_scan", "pii_scan2", "probe13"] {
+        let dir = tempfile::tempdir().unwrap();
+        let out = Command::new(env!("CARGO_BIN_EXE_fadden"))
+            .arg(name)
+            .env("FADDEN_MODULE_DIR", dir.path().join("fadden"))
+            .current_dir(dir.path())
+            .output()
+            .unwrap();
+        let err = String::from_utf8_lossy(&out.stderr);
+        assert_eq!(out.status.code(), Some(1), "{name}: {err}");
+        assert!(
+            err.contains("RuntimeError: corpus stages require a source checkout"),
+            "{name}: {err}"
+        );
+        assert_eq!(std::fs::read_dir(dir.path()).unwrap().count(), 0, "{name}");
+    }
+}

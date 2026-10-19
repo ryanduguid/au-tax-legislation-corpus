@@ -41,8 +41,23 @@ fn exists(path: &str) -> bool {
     std::fs::symlink_metadata(path).is_ok()
 }
 
-fn linked(path: &str) -> bool {
-    pyos::islink(path) || pyos::isjunction(path) || pyos::is_reparse_point_at(path).unwrap_or(false)
+/// `islink(path) or is_junction(path) or is_reparse_point(path)`: the last
+/// `lstat`s the path and raises if it cannot.
+fn linked(path: &str) -> Result<bool, Exc> {
+    let injected = PROBE_HOOK.with(|h| h.borrow_mut().as_mut().and_then(|hook| hook(path)));
+    if let Some(error) = injected {
+        return Err(Exc::Os(error));
+    }
+    Ok(pyos::islink(path) || pyos::isjunction(path) || pyos::is_reparse_point_at(path)?)
+}
+
+/// `os.path.realpath(path)`, as the managed-sibling check resolves parents.
+fn realpath(path: &str) -> Result<String, Exc> {
+    let injected = REALPATH_HOOK.with(|h| h.borrow_mut().as_mut().and_then(|hook| hook(path)));
+    match injected {
+        Some(resolved) => Ok(resolved),
+        None => Ok(pypath::realpath(path)?),
+    }
 }
 
 /// `os.path.abspath(path)`.
@@ -54,12 +69,18 @@ fn abspath(path: &str) -> String {
     pypath::normpath(&pypath::join(&cwd.to_string_lossy(), path))
 }
 
-// ------------------------------------------------------------ test hook
+// ----------------------------------------------------------- test hooks
 
 type RenameHook = Box<dyn FnMut(&str, &str) -> Option<OsError>>;
+type ProbeHook = Box<dyn FnMut(&str) -> Option<OsError>>;
+type RealpathHook = Box<dyn FnMut(&str) -> Option<String>>;
+type PreflightHook = Box<dyn FnMut()>;
 
 thread_local! {
     static RENAME_HOOK: RefCell<Option<RenameHook>> = const { RefCell::new(None) };
+    static PROBE_HOOK: RefCell<Option<ProbeHook>> = const { RefCell::new(None) };
+    static REALPATH_HOOK: RefCell<Option<RealpathHook>> = const { RefCell::new(None) };
+    static PREFLIGHT_HOOK: RefCell<Option<PreflightHook>> = const { RefCell::new(None) };
 }
 
 /// Run `hook(source, destination)` before every rename on this thread; an
@@ -67,6 +88,27 @@ thread_local! {
 #[doc(hidden)]
 pub fn set_rename_hook(hook: impl FnMut(&str, &str) -> Option<OsError> + 'static) {
     RENAME_HOOK.with(|h| *h.borrow_mut() = Some(Box::new(hook)));
+}
+
+/// Run `hook(path)` before every link and reparse-point probe of a managed
+/// path on this thread; an error it returns is the probe's. For tests.
+#[doc(hidden)]
+pub fn set_probe_hook(hook: impl FnMut(&str) -> Option<OsError> + 'static) {
+    PROBE_HOOK.with(|h| *h.borrow_mut() = Some(Box::new(hook)));
+}
+
+/// Run `hook(path)` before every managed-sibling parent lookup on this
+/// thread; a path it returns replaces the resolved one. For tests.
+#[doc(hidden)]
+pub fn set_realpath_hook(hook: impl FnMut(&str) -> Option<String> + 'static) {
+    REALPATH_HOOK.with(|h| *h.borrow_mut() = Some(Box::new(hook)));
+}
+
+/// Run `hook()` after the source privacy gate passes and before any title is
+/// copied, on this thread. For tests.
+#[doc(hidden)]
+pub fn set_preflight_hook(hook: impl FnMut() + 'static) {
+    PREFLIGHT_HOOK.with(|h| *h.borrow_mut() = Some(Box::new(hook)));
 }
 
 /// `os.rename(src, dst)`, which never replaces an existing directory here.
@@ -136,7 +178,7 @@ pub fn validated_managed_sibling(target: &str, candidate: &str, kind: &str) -> R
             "managed distribution path is not a validated sibling",
         ));
     }
-    let real = |p: &str| -> Result<String, Exc> { Ok(pypath::normcase(&pypath::realpath(p)?)) };
+    let real = |p: &str| -> Result<String, Exc> { Ok(pypath::normcase(&realpath(p)?)) };
     if real(&candidate_parent)? != real(&parent)? {
         return Err(Exc::value(
             "managed distribution path resolves outside its parent",
@@ -172,7 +214,7 @@ pub fn remove_managed_tree(target: &str, candidate: &str, kind: &str) -> Result<
     if !exists(&candidate) {
         return Ok(());
     }
-    if linked(&candidate) || !pyos::isdir(&candidate) {
+    if linked(&candidate)? || !pyos::isdir(&candidate) {
         return Err(Exc::value(
             "refusing to remove a non-directory managed path",
         ));
@@ -188,7 +230,7 @@ pub fn remove_managed_tree(target: &str, candidate: &str, kind: &str) -> Result<
 pub fn promote_distribution(staging: &str, target: &str) -> Result<(), Exc> {
     let target = validated_distribution_target(target)?;
     let staging = validated_managed_sibling(&target, staging, "stage")?;
-    if !pyos::isdir(&staging) || linked(&staging) {
+    if !pyos::isdir(&staging) || linked(&staging)? {
         return Err(Exc::value("distribution stage must be a real directory"));
     }
     let mut backup = None;
@@ -205,7 +247,7 @@ pub fn promote_distribution(staging: &str, target: &str) -> Result<(), Exc> {
                 ));
             }
             let path = validated_managed_sibling(&target, &path, "backup")?;
-            if !pyos::isdir(&path) || linked(&path) {
+            if !pyos::isdir(&path) || linked(&path)? {
                 return Err(Exc::Runtime(
                     "distribution backup is unsafe to restore".into(),
                 ));
@@ -391,41 +433,12 @@ impl Counter {
     }
 }
 
-/// `sorted(keys)` for hashable JSON values, or Python's TypeError.
+/// `sorted(keys)` for the distinct keys of a dict, in insertion order, or the
+/// TypeError CPython's sort meets first.
 fn sorted_keys(values: Vec<Json>) -> Result<Vec<Json>, Exc> {
     let mut values = values;
-    if values.iter().all(|v| matches!(v, Json::Str(_))) {
-        values.sort_by_key(s);
-        return Ok(values);
-    }
-    if values.len() < 2 {
-        return Ok(values);
-    }
-    let other = values
-        .iter()
-        .find(|v| !matches!(v, Json::Str(_)))
-        .unwrap_or(&values[0]);
-    if values
-        .iter()
-        .all(|v| matches!(v, Json::Bool(_) | Json::Int(_) | Json::Float(_)))
-    {
-        let num = |v: &Json| match v {
-            Json::Bool(b) => f64::from(u8::from(*b)),
-            Json::Int(i) => i.to_string().parse().unwrap_or(f64::NAN),
-            Json::Float(f) => *f,
-            _ => f64::NAN,
-        };
-        values.sort_by(|a, b| {
-            num(a)
-                .partial_cmp(&num(b))
-                .unwrap_or(std::cmp::Ordering::Equal)
-        });
-        return Ok(values);
-    }
-    Err(Exc::Type(format!(
-        "'<' not supported between instances of 'str' and '{}'",
-        type_name(other)
-    )))
+    crate::pysort::sort(&mut values, super::rates::py_lt)?;
+    Ok(values)
 }
 
 /// `stale_source_lines(records)`: the warning for rows from a stale compilation.
@@ -867,38 +880,178 @@ fn dump_json(path: &str, value: &Json) -> Result<(), Exc> {
     write_text(path, &dumps_with(value, Some(1), false, false))
 }
 
-/// `shutil.copytree(src, dst, symlinks=True)`.
-fn copytree(src: &str, dst: &str) -> Result<(), Exc> {
-    std::fs::create_dir_all(dst).map_err(|e| OsError::new(&e, Some(dst), Style::Native))?;
-    let entries = std::fs::read_dir(src).map_err(|e| OsError::new(&e, Some(src), Style::Native))?;
-    for entry in entries {
-        let entry = entry.map_err(|e| OsError::new(&e, Some(src), Style::Native))?;
-        let name = entry.file_name().to_string_lossy().into_owned();
-        let (from, to) = (pypath::join(src, &name), pypath::join(dst, &name));
-        let kind = std::fs::symlink_metadata(&from)
-            .map_err(|e| OsError::new(&e, Some(&from), Style::Native))?;
-        if kind.file_type().is_symlink() {
-            let target = std::fs::read_link(&from)
-                .map_err(|e| OsError::new(&e, Some(&from), Style::Native))?;
-            #[cfg(unix)]
-            std::os::unix::fs::symlink(&target, &to)
-                .map_err(|e| OsError::new(&e, Some(&to), Style::Native))?;
-            #[cfg(windows)]
-            {
-                let made = if kind.is_dir() {
-                    std::os::windows::fs::symlink_dir(&target, &to)
-                } else {
-                    std::os::windows::fs::symlink_file(&target, &to)
-                };
-                made.map_err(|e| OsError::new(&e, Some(&to), Style::Native))?;
-            }
-        } else if kind.is_dir() {
-            copytree(&from, &to)?;
-        } else {
-            std::fs::copy(&from, &to).map_err(|e| OsError::two(&e, &from, &to, Style::Errno))?;
+/// One failure `shutil.copytree` collects: source, destination, `str(error)`.
+type CopyError = (String, String, String);
+
+/// Why copying one entry failed: an `OSError` (its text), a nested
+/// `copytree`'s collected failures, or an exception copytree does not catch.
+enum CopyFailure {
+    Os(String),
+    Nested(Vec<CopyError>),
+    Other(Exc),
+}
+
+impl From<OsError> for CopyFailure {
+    fn from(error: OsError) -> Self {
+        CopyFailure::Os(error.text)
+    }
+}
+
+impl From<Exc> for CopyFailure {
+    fn from(error: Exc) -> Self {
+        match error {
+            Exc::Os(error) => CopyFailure::Os(error.text),
+            // SpecialFileError is an OSError.
+            Exc::Shutil {
+                class: "shutil.SpecialFileError",
+                message,
+            } => CopyFailure::Os(message),
+            other => CopyFailure::Other(other),
         }
     }
+}
+
+/// `shutil.copytree(src, dst, symlinks=True)`: list `src`, create `dst`,
+/// which must not exist, and copy each entry, collecting the failures into one
+/// `shutil.Error` after the directory's own metadata is copied.
+fn copytree(src: &str, dst: &str) -> Result<(), Exc> {
+    let errors = copytree_errors(src, dst)?;
+    if errors.is_empty() {
+        return Ok(());
+    }
+    let shown: Vec<String> = errors
+        .iter()
+        .map(|(a, b, c)| {
+            format!(
+                "({}, {}, {})",
+                py::repr_str(a),
+                py::repr_str(b),
+                py::repr_str(c)
+            )
+        })
+        .collect();
+    Err(Exc::Shutil {
+        class: "shutil.Error",
+        message: format!("[{}]", shown.join(", ")),
+    })
+}
+
+fn copytree_errors(src: &str, dst: &str) -> Result<Vec<CopyError>, Exc> {
+    let listing = |e: std::io::Error| OsError::new(&e, Some(src), Style::Native);
+    let mut names = Vec::new();
+    for entry in pyos::scandir(src).map_err(listing)? {
+        names.push(pyos::entry_name(&entry.map_err(listing)?)?);
+    }
+    pyos::makedirs_new(dst)?;
+    let mut errors = Vec::new();
+    for name in names {
+        let (from, to) = (pypath::join(src, &name), pypath::join(dst, &name));
+        match copy_entry(&from, &to) {
+            Ok(()) => {}
+            Err(CopyFailure::Os(text)) => errors.push((from, to, text)),
+            Err(CopyFailure::Nested(nested)) => errors.extend(nested),
+            Err(CopyFailure::Other(error)) => return Err(error),
+        }
+    }
+    // Copying a directory's times can fail on Windows; copytree ignores that.
+    if let Err(error) = copystat(src, dst)
+        && cfg!(not(windows))
+    {
+        errors.push((src.to_string(), dst.to_string(), error.text));
+    }
+    Ok(errors)
+}
+
+/// One `copytree` entry: a link recreated as a link, a directory copied
+/// recursively, anything else with `copy2`.
+fn copy_entry(from: &str, to: &str) -> Result<(), CopyFailure> {
+    let meta =
+        std::fs::symlink_metadata(from).map_err(|e| OsError::new(&e, Some(from), Style::Native))?;
+    // copytree enters a junction rather than recreating it.
+    if meta.file_type().is_symlink() && !pyos::isjunction(from) {
+        // shortcut: the link's own times and mode are not copied. The source
+        // gate refused links just before the copy, so only a concurrent change
+        // reaches here, and the copied-tree gate then refuses the link.
+        let target =
+            std::fs::read_link(from).map_err(|e| OsError::new(&e, Some(from), Style::Native))?;
+        let target_text = target.to_string_lossy();
+        #[cfg(unix)]
+        let made = std::os::unix::fs::symlink(&target, to);
+        // `os.symlink` without target_is_directory makes a file link.
+        #[cfg(windows)]
+        let made = std::os::windows::fs::symlink_file(&target, to);
+        made.map_err(|e| OsError::two(&e, &target_text, to, Style::Native))?;
+        return Ok(());
+    }
+    if std::fs::metadata(from).is_ok_and(|m| m.is_dir()) {
+        return match copytree_errors(from, to) {
+            Ok(nested) if nested.is_empty() => Ok(()),
+            Ok(nested) => Err(CopyFailure::Nested(nested)),
+            Err(error) => Err(error.into()),
+        };
+    }
+    copy2(from, to)
+}
+
+/// `shutil.copy2(src, dst)`: the data, times and permission bits. On Windows
+/// CopyFile2 copies them together, as `std::fs::copy`'s CopyFileExW does.
+fn copy2(from: &str, to: &str) -> Result<(), CopyFailure> {
+    #[cfg(windows)]
+    {
+        std::fs::copy(from, to).map_err(|e| OsError::two(&e, from, to, Style::Native))?;
+    }
+    #[cfg(not(windows))]
+    {
+        copyfile(from, to)?;
+        copystat(from, to)?;
+    }
     Ok(())
+}
+
+/// `shutil.copyfile(src, dst)` to a new destination: a named pipe on either
+/// side is refused before anything is opened.
+fn copyfile(src: &str, dst: &str) -> Result<(), Exc> {
+    #[cfg(unix)]
+    for path in [src, dst] {
+        use std::os::unix::fs::FileTypeExt;
+        if std::fs::metadata(path).is_ok_and(|m| m.file_type().is_fifo()) {
+            return Err(Exc::Shutil {
+                class: "shutil.SpecialFileError",
+                message: format!("`{path}` is a named pipe"),
+            });
+        }
+    }
+    let mut input =
+        std::fs::File::open(src).map_err(|e| OsError::new(&e, Some(src), Style::Errno))?;
+    let mut output =
+        std::fs::File::create(dst).map_err(|e| OsError::new(&e, Some(dst), Style::Errno))?;
+    std::io::copy(&mut input, &mut output).map_err(|e| OsError::new(&e, None, Style::Errno))?;
+    Ok(())
+}
+
+/// `shutil.copystat(src, dst)`: access and modification times, then the
+/// permission bits. shortcut: Linux extended attributes are not copied; the
+/// corpus's title files carry none, and a copy without them publishes less.
+fn copystat(src: &str, dst: &str) -> Result<(), OsError> {
+    let source = |e: std::io::Error| OsError::new(&e, Some(src), Style::Native);
+    let target = |e: std::io::Error| OsError::new(&e, Some(dst), Style::Native);
+    let meta = std::fs::metadata(src).map_err(source)?;
+    let times = std::fs::FileTimes::new()
+        .set_accessed(meta.accessed().map_err(source)?)
+        .set_modified(meta.modified().map_err(source)?);
+    #[cfg(unix)]
+    let handle = std::fs::File::open(dst);
+    #[cfg(windows)]
+    let handle = {
+        use std::os::windows::fs::OpenOptionsExt;
+        // FILE_WRITE_ATTRIBUTES, with FILE_FLAG_BACKUP_SEMANTICS so a directory opens.
+        std::fs::OpenOptions::new()
+            .access_mode(0x100)
+            .custom_flags(0x0200_0000)
+            .open(dst)
+    };
+    handle.and_then(|f| f.set_times(times)).map_err(target)?;
+    std::fs::set_permissions(dst, meta.permissions()).map_err(target)
 }
 
 /// `len(text.split())` on a row's text, or the AttributeError a non-str raises.
@@ -999,10 +1152,15 @@ fn build_distribution(paths: &Paths, staging: &str, run: &mut Run) -> Result<(),
 
     // The gate runs against the source before anything is copied.
     reject_unapproved_contacts(&paths.root, &titles, &approved)?;
+    PREFLIGHT_HOOK.with(|h| {
+        if let Some(hook) = h.borrow_mut().as_mut() {
+            hook();
+        }
+    });
 
     for part in ["markdown", "rates"] {
         let path = child(staging, &[part])?;
-        pyos::makedirs(&pypath::PyPath::new(&path))?;
+        pyos::makedirs_new(&path)?;
     }
 
     let unknown = Json::str("unknown");
@@ -1249,10 +1407,13 @@ fn build_distribution(paths: &Paths, staging: &str, run: &mut Run) -> Result<(),
 
     let licence_src = child(&paths.root, &["LICENCE-NOTICE.md"])?;
     let licence_dst = child(staging, &["LICENCE-NOTICE.md"])?;
-    let bytes = std::fs::read(&licence_src)
-        .map_err(|e| OsError::new(&e, Some(&licence_src), Style::Errno))?;
-    std::fs::write(&licence_dst, bytes)
-        .map_err(|e| OsError::new(&e, Some(&licence_dst), Style::Errno))?;
+    // `shutil.copy`: the data, then the permission bits.
+    copyfile(&licence_src, &licence_dst)?;
+    let mode = std::fs::metadata(&licence_src)
+        .map_err(|e| OsError::new(&e, Some(&licence_src), Style::Native))?
+        .permissions();
+    std::fs::set_permissions(&licence_dst, mode)
+        .map_err(|e| OsError::new(&e, Some(&licence_dst), Style::Native))?;
 
     // INDEX.md and README.md describe the full corpus: rewrite both for dist.
     let index_text = crate::pyio::read_text(&child(&paths.root, &["INDEX.md"])?)?;
@@ -1398,13 +1559,14 @@ fn build_distribution(paths: &Paths, staging: &str, run: &mut Run) -> Result<(),
         pts("| Register ID | Rows | Title |"),
         pts("|---|---|---|"),
     ];
-    let mut ordered: Vec<(&String, &Json, f64)> = Vec::new();
+    // `sorted(drop, key=lambda r: -drop[r]["names_est"])`: every key first.
+    let mut ordered: Vec<(&String, &Json, Json)> = Vec::new();
     for (rid, f) in &drop {
         let names = getitem(f, "names_est")?;
         let key = match names {
-            Json::Bool(b) => -f64::from(u8::from(*b)),
-            Json::Int(i) => -(i.to_string().parse::<f64>().unwrap_or(0.0)),
-            Json::Float(x) => -x,
+            Json::Bool(b) => Json::Int(-num_bigint::BigInt::from(u8::from(*b))),
+            Json::Int(i) => Json::Int(-i),
+            Json::Float(x) => Json::Float(-x),
             other => {
                 return Err(Exc::Type(format!(
                     "bad operand type for unary -: '{}'",
@@ -1414,7 +1576,7 @@ fn build_distribution(paths: &Paths, staging: &str, run: &mut Run) -> Result<(),
         };
         ordered.push((rid, f, key));
     }
-    ordered.sort_by(|a, b| a.2.partial_cmp(&b.2).unwrap_or(std::cmp::Ordering::Equal));
+    crate::pysort::sort(&mut ordered, |a, b| super::rates::py_lt(&a.2, &b.2))?;
     for (rid, f, _) in ordered {
         // The tuple's items are evaluated before `%` formats them.
         let rows_total = getitem(f, "rows_total")?;
@@ -1499,7 +1661,7 @@ fn build_distribution(paths: &Paths, staging: &str, run: &mut Run) -> Result<(),
     write_text(&child(staging, &["REMOVED.md"])?, &removed_md)?;
 
     let mut size = 0u64;
-    for step in pyos::walk(staging, |_| {}) {
+    for step in pyos::walk(staging, |_| {})? {
         for name in &step.files {
             let path = pypath::join(&step.top, name);
             size += std::fs::metadata(&path)

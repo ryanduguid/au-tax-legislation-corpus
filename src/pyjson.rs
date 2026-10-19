@@ -125,7 +125,16 @@ pub enum DecodeError {
     Invalid(String),
     /// The `object_pairs_hook` found a repeated member.
     Duplicate,
+    /// `RecursionError`: containers nested deeper than `MAX_DEPTH`, while
+    /// decoding a JSON "array" or "object".
+    Recursion(&'static str),
 }
+
+/// The deepest container nesting decoded. CPython's decoder stops where its C
+/// stack runs low, which varies by platform and is above 13,000 levels on
+/// Windows; refusing at 1,000 refuses only more than Python does, and keeps
+/// every recursive walk of a decoded value well inside the Rust stack.
+pub const MAX_DEPTH: usize = 1000;
 
 fn decode_error(msg: &str, doc: &[char], pos: usize) -> DecodeError {
     let lineno = doc[..pos].iter().filter(|c| **c == '\n').count() + 1;
@@ -205,6 +214,9 @@ fn decode(text: &str, reject_duplicates: bool) -> Result<Json, DecodeError> {
                 Json::Str(string)
             }
             '{' => {
+                if stack.len() >= MAX_DEPTH {
+                    return Err(DecodeError::Recursion("object"));
+                }
                 idx = skip(idx + 1);
                 if idx < len && s[idx] == '}' {
                     idx += 1;
@@ -216,6 +228,9 @@ fn decode(text: &str, reject_duplicates: bool) -> Result<Json, DecodeError> {
                 }
             }
             '[' => {
+                if stack.len() >= MAX_DEPTH {
+                    return Err(DecodeError::Recursion("array"));
+                }
                 idx = skip(idx + 1);
                 if idx < len && s[idx] == ']' {
                     idx += 1;

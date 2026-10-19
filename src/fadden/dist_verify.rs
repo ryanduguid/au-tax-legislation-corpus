@@ -74,7 +74,7 @@ pub fn title_tree(directory: &str) -> Result<(Vec<String>, Vec<String>), Exc> {
     reject_symlinks(directory)?;
     let mut files = Vec::new();
     let mut nested = Vec::new();
-    for step in pyos::walk(directory, |s| s.dirs.sort()) {
+    for step in pyos::walk(directory, |s| s.dirs.sort())? {
         for name in &step.dirs {
             nested.push(relative(&pypath::join(&step.top, name), directory));
         }
@@ -234,12 +234,14 @@ pub fn verify_distribution(
     };
     let listed: BTreeSet<String> = by_id.iter().map(|(k, _)| k.clone()).collect();
     let markdown_root = child(dist_root, &["markdown"])?;
-    let entries = std::fs::read_dir(&markdown_root)
-        .map_err(|e| pyos::OsError::new(&e, Some(&markdown_root), pyos::Style::Native))?;
-    let mut names: Vec<String> = entries
-        .flatten()
-        .map(|e| e.file_name().to_string_lossy().into_owned())
-        .collect();
+    let listing_error =
+        |e: std::io::Error| pyos::OsError::new(&e, Some(&markdown_root), pyos::Style::Native);
+    let mut names = Vec::new();
+    // An error part-way through the listing stops the verifier, as Python's
+    // scandir iteration raises; the entries already seen are not a complete tree.
+    for entry in pyos::scandir(&markdown_root).map_err(listing_error)? {
+        names.push(pyos::entry_name(&entry.map_err(listing_error)?)?);
+    }
     names.sort();
     let (mut present, mut stray) = (BTreeSet::new(), Vec::new());
     for name in names {
@@ -375,8 +377,13 @@ pub fn verify_distribution(
                     continue;
                 }
                 rows += 1;
+                // Only TypeError and ValueError count as a malformed row.
+                let loaded = pyjson::loads_standard(&line);
+                if let Err(error @ pyjson::DecodeError::Recursion(_)) = loaded {
+                    return Err(json_error(error));
+                }
                 let parsed = (|| -> Option<(Json, P, P, P)> {
-                    let r = pyjson::loads_standard(&line).ok()?;
+                    let r = loaded.ok()?;
                     if !matches!(r, Json::Object(_)) {
                         return None;
                     }
@@ -622,7 +629,7 @@ pub fn verify_distribution(
         "",
     );
 
-    let walked = pyos::walk(dist_root, |_| {});
+    let walked = pyos::walk(dist_root, |_| {})?;
     let mut exts = Tally::default();
     let mut size: u64 = 0;
     for step in &walked {
@@ -710,6 +717,7 @@ pub fn verify_distribution(
             {
                 rate_ids.push(as_points(record.at("register_id")).unwrap_or_default());
             }
+            Err(error @ pyjson::DecodeError::Recursion(_)) => return Err(json_error(error)),
             _ => rates_bad += 1,
         }
     }

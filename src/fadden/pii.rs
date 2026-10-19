@@ -228,20 +228,32 @@ pub fn load_contact_allowlist(path: &str) -> Result<Vec<Approved>, Exc> {
 /// the identifier. The seed corpus replays through this in the unit tests.
 pub fn check_one_input(data: &[u8]) -> Result<(), String> {
     let text = String::from_utf8_lossy(data);
-    let (names, numbers) = private_person_registration_details(&text);
+    check_findings(
+        &text,
+        &private_person_registration_details(&text),
+        &contact_fingerprints(&text),
+    )
+}
+
+/// `check_one_input`'s invariants over what the detectors reported for `text`.
+pub fn check_findings(
+    text: &str,
+    (names, numbers): &(BTreeSet<String>, BTreeSet<String>),
+    fingerprints: &[(&str, String)],
+) -> Result<(), String> {
     if !names
         .iter()
-        .chain(&numbers)
+        .chain(numbers)
         .all(|found| text.contains(found.as_str()))
     {
         return Err("a reported match is not in the text".into());
     }
-    for (kind, digest) in contact_fingerprints(&text) {
+    for (kind, digest) in fingerprints {
         let hex = digest.len() == 64
             && digest
                 .bytes()
                 .all(|b| matches!(b, b'0'..=b'9' | b'a'..=b'f'));
-        if !matches!(kind, "email" | "phone" | "tfn") || !hex {
+        if !matches!(*kind, "email" | "phone" | "tfn") || !hex {
             return Err(format!("malformed fingerprint ({kind:?}, {digest:?})"));
         }
     }

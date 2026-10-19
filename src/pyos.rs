@@ -190,6 +190,19 @@ pub fn makedirs(path: &crate::pypath::PyPath) -> Result<(), OsError> {
     }
 }
 
+/// `os.makedirs(path)`: missing parents are created, and `path` itself must
+/// not exist.
+pub fn makedirs_new(path: &str) -> Result<(), OsError> {
+    let (head, tail) = crate::pypath::split(path);
+    if !head.is_empty() && !tail.is_empty() && !exists(&head) {
+        match makedirs_new(&head) {
+            Err(error) if error.kind == io::ErrorKind::AlreadyExists => {}
+            other => other?,
+        }
+    }
+    std::fs::create_dir(path).map_err(|e| OsError::new(&e, Some(path), Style::Native))
+}
+
 /// `os.link(src, dst, follow_symlinks=False)`.
 pub fn link(src: &str, dst: &str) -> Result<(), OsError> {
     std::fs::hard_link(src, dst).map_err(|e| OsError::two(&e, src, dst, Style::Native))
@@ -346,6 +359,57 @@ pub fn is_reparse_point_at(path: &str) -> Result<bool, OsError> {
     Ok(is_reparse_point(&lstat(path)?))
 }
 
+type ListingHook = Box<dyn FnMut(&str, usize) -> Option<io::Error>>;
+
+thread_local! {
+    static LISTING_HOOK: std::cell::RefCell<Option<ListingHook>> =
+        const { std::cell::RefCell::new(None) };
+}
+
+/// Run `hook(directory, index)` before each entry `scandir` yields on this
+/// thread, including once past the last; an error it returns ends the
+/// listing with that error. For tests.
+#[doc(hidden)]
+pub fn set_listing_hook(hook: impl FnMut(&str, usize) -> Option<io::Error> + 'static) {
+    LISTING_HOOK.with(|h| *h.borrow_mut() = Some(Box::new(hook)));
+}
+
+/// `os.scandir(path)`: its entries in listing order, each of which can fail.
+pub fn scandir(path: &str) -> io::Result<impl Iterator<Item = io::Result<std::fs::DirEntry>>> {
+    let mut entries = std::fs::read_dir(path)?;
+    let path = path.to_string();
+    let (mut index, mut done) = (0, false);
+    Ok(std::iter::from_fn(move || {
+        if done {
+            return None;
+        }
+        let injected =
+            LISTING_HOOK.with(|h| h.borrow_mut().as_mut().and_then(|hook| hook(&path, index)));
+        index += 1;
+        if let Some(error) = injected {
+            done = true;
+            return Some(Err(error));
+        }
+        let next = entries.next();
+        done = next.is_none();
+        next
+    }))
+}
+
+/// A directory entry whose name is not valid Unicode (bytes that are not
+/// UTF-8 on POSIX, a lone surrogate on Windows), by its lossy path. Python
+/// carried such a name as a surrogate-escaped str; the stages refuse it.
+#[derive(Debug)]
+pub struct NotUnicode(pub String);
+
+/// A directory entry's name as a str.
+pub fn entry_name(entry: &std::fs::DirEntry) -> Result<String, NotUnicode> {
+    entry
+        .file_name()
+        .into_string()
+        .map_err(|_| NotUnicode(entry.path().to_string_lossy().into_owned()))
+}
+
 /// One `os.walk(top, followlinks=False)` step: a directory, its subdirectory
 /// names and its other names, in the order the directory lists them.
 pub struct WalkStep {
@@ -354,15 +418,16 @@ pub struct WalkStep {
     pub files: Vec<String>,
 }
 
-/// `os.walk(top, followlinks=False)` top-down, errors ignored. A directory
-/// symlink is listed among `dirs` but not entered; a junction is entered, as
-/// CPython does. `order` may reorder each step's `dirs` before descent, as a
-/// caller sorting `directories` in place does.
-pub fn walk(top: &str, mut order: impl FnMut(&mut WalkStep)) -> Vec<WalkStep> {
+/// `os.walk(top, followlinks=False)` top-down, errors ignored: a directory
+/// that cannot be opened or fails while listing yields no step, as CPython's
+/// walk drops it. A directory symlink is listed among `dirs` but not entered;
+/// a junction is entered, as CPython does. `order` may reorder each step's
+/// `dirs` before descent, as a caller sorting `directories` in place does.
+pub fn walk(top: &str, mut order: impl FnMut(&mut WalkStep)) -> Result<Vec<WalkStep>, NotUnicode> {
     let mut steps = Vec::new();
     let mut stack = vec![top.to_string()];
-    while let Some(top) = stack.pop() {
-        let Ok(entries) = std::fs::read_dir(&top) else {
+    'directories: while let Some(top) = stack.pop() {
+        let Ok(entries) = scandir(&top) else {
             continue;
         };
         let mut step = WalkStep {
@@ -370,8 +435,11 @@ pub fn walk(top: &str, mut order: impl FnMut(&mut WalkStep)) -> Vec<WalkStep> {
             dirs: Vec::new(),
             files: Vec::new(),
         };
-        for entry in entries.flatten() {
-            let name = entry.file_name().to_string_lossy().into_owned();
+        for entry in entries {
+            let Ok(entry) = entry else {
+                continue 'directories;
+            };
+            let name = entry_name(&entry)?;
             let is_dir = std::fs::metadata(entry.path()).is_ok_and(|m| m.is_dir());
             if is_dir {
                 step.dirs.push(name);
@@ -388,5 +456,5 @@ pub fn walk(top: &str, mut order: impl FnMut(&mut WalkStep)) -> Vec<WalkStep> {
         }
         steps.push(step);
     }
-    steps
+    Ok(steps)
 }

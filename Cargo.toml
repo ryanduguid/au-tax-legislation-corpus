@@ -46,6 +46,10 @@ fake-http = []
 [target."cfg(unix)".dev-dependencies]
 libc = "0.2"
 
+# DeviceIoControl, so tests/fadden_dist.rs can make a third-party reparse point.
+[target."cfg(windows)".dev-dependencies]
+windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_Storage_FileSystem", "Win32_System_IO", "Win32_System_Ioctl"] }
+
 [dev-dependencies]
 serde_json = { version = "1.0.145", features = ["preserve_order"] }
 tempfile = "3.27.0"

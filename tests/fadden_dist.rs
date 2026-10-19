@@ -435,14 +435,39 @@ fn a_top_level_junction_is_a_named_failure() {
     assert!(out.contains("F2026N00002 [junction]"), "{out}");
 }
 
-#[cfg(unix)]
+/// Make a symbolic link to a directory (`dir`) or file, or return false where
+/// this Windows account lacks the privilege, so the test is skipped.
+fn symlink(target: &Path, link: &Path, dir: bool) -> bool {
+    #[cfg(unix)]
+    let made = {
+        let _ = dir;
+        std::os::unix::fs::symlink(target, link)
+    };
+    #[cfg(windows)]
+    let made = if dir {
+        std::os::windows::fs::symlink_dir(target, link)
+    } else {
+        std::os::windows::fs::symlink_file(target, link)
+    };
+    match made {
+        Ok(()) => true,
+        Err(error) if cfg!(windows) => {
+            eprintln!("skipped: symbolic links are unavailable to this account ({error})");
+            false
+        }
+        Err(error) => panic!("{error}"),
+    }
+}
+
 #[test]
 fn a_top_level_symlink_is_a_named_failure() {
     let f = fixture();
     let output = publish(&f);
     let outside = f.root.join("outside-title");
     std::fs::create_dir(&outside).unwrap();
-    std::os::unix::fs::symlink(&outside, output.join("markdown").join("F2026N00001")).unwrap();
+    if !symlink(&outside, &output.join("markdown").join("F2026N00001"), true) {
+        return;
+    }
     let (code, out) = verify(&f);
     assert_eq!(
         (code, status(&out, "no directory beyond what is listed")),
@@ -635,12 +660,13 @@ fn unusable_targets_are_refused() {
     assert_eq!(error.to_string(), "unknown managed distribution path kind");
 }
 
-#[cfg(unix)]
 #[test]
 fn a_linked_target_is_refused() {
     let dir = tempfile::tempdir().unwrap();
     std::fs::create_dir(dir.path().join("real")).unwrap();
-    std::os::unix::fs::symlink(dir.path().join("real"), dir.path().join("dist")).unwrap();
+    if !symlink(&dir.path().join("real"), &dir.path().join("dist"), true) {
+        return;
+    }
     let error = dist::validated_distribution_target(&s(&dir.path().join("dist")))
         .unwrap_err()
         .to_string();
@@ -1188,7 +1214,6 @@ fn readme_count_replacement_is_precise_and_linear() {
     );
 }
 
-#[cfg(unix)]
 #[test]
 fn links_inside_titles_are_refused() {
     // Before copying: a nested link in the source stops the build.
@@ -1200,7 +1225,9 @@ fn links_inside_titles_are_refused() {
         .join("markdown")
         .join(PUBLIC_ID)
         .join("unexpected-link");
-    std::os::unix::fs::symlink(&outside, link).unwrap();
+    if !symlink(&outside, &link, false) {
+        return;
+    }
     refused(
         &f,
         "ValueError: corpus tree contains a symbolic link, junction or reparse point",
@@ -1215,7 +1242,7 @@ fn links_inside_titles_are_refused() {
         .join("sections.jsonl");
     let real = f.root.join("real-rows.jsonl");
     std::fs::rename(&rows, &real).unwrap();
-    std::os::unix::fs::symlink(&real, &rows).unwrap();
+    assert!(symlink(&real, &rows, false));
     let (code, out) = verify(&f);
     assert_eq!(
         (
@@ -1225,4 +1252,453 @@ fn links_inside_titles_are_refused() {
         (1, "FAIL".into())
     );
     assert!(out.contains(PUBLIC_ID));
+}
+
+// ------------------------------------------- final-review regressions
+
+/// Access denied as the operating system reports it (EACCES, ERROR_ACCESS_DENIED).
+fn io_error() -> std::io::Error {
+    std::io::Error::from_raw_os_error(if cfg!(windows) { 5 } else { 13 })
+}
+
+fn access_denied(path: &str) -> OsError {
+    OsError::new(&io_error(), Some(path), tax_radar_au::pyos::Style::Native)
+}
+
+fn policy(f: &Fixture) -> String {
+    s(&f.build.join("pii_contact_allowlist.json"))
+}
+
+#[test]
+fn an_error_part_way_through_the_markdown_listing_is_a_verifier_error() {
+    let f = fixture();
+    let output = publish(&f);
+    // dist/markdown holds one title: fail before it, and after it is listed.
+    for at in [0, 1] {
+        tax_radar_au::pyos::set_listing_hook(move |path, index| {
+            (path.ends_with("markdown") && index == at).then(io_error)
+        });
+        let mut run = tax_radar_au::fadden::Run::default();
+        let result = dist_verify::verify_distribution(&s(&output), &policy(&f), &mut run);
+        tax_radar_au::pyos::set_listing_hook(|_, _| None);
+        let error = result
+            .err()
+            .unwrap_or_else(|| panic!("index {at} verified"));
+        assert_eq!(error.class(), "PermissionError", "{error}");
+        assert!(!String::from_utf8_lossy(&run.stdout).contains("all checks passed"));
+    }
+}
+
+#[test]
+fn a_staged_listing_error_stops_publication() {
+    let f = fixture();
+    let marker = with_existing_dist(&f);
+    tax_radar_au::pyos::set_listing_hook(|path, index| {
+        (path.contains(".dist.stage-") && path.ends_with("markdown") && index == 1).then(io_error)
+    });
+    let error = publish_in_process(&f).unwrap_err();
+    tax_radar_au::pyos::set_listing_hook(|_, _| None);
+    assert!(error.starts_with("PermissionError"), "{error}");
+    assert_eq!(std::fs::read_to_string(&marker).unwrap(), "keep me");
+    assert!(managed_paths(&f).is_empty());
+}
+
+#[test]
+fn walk_drops_a_directory_whose_listing_fails() {
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::write(dir.path().join("a.txt"), "a").unwrap();
+    std::fs::create_dir(dir.path().join("sub")).unwrap();
+    std::fs::write(dir.path().join("sub").join("b.txt"), "b").unwrap();
+    tax_radar_au::pyos::set_listing_hook(|path, index| {
+        (path.ends_with("sub") && index == 1).then(io_error)
+    });
+    let steps = tax_radar_au::pyos::walk(&s(dir.path()), |_| {}).unwrap();
+    tax_radar_au::pyos::set_listing_hook(|_, _| None);
+    assert_eq!(steps.len(), 1);
+    assert_eq!(steps[0].dirs, ["sub"]);
+    assert_eq!(steps[0].files, ["a.txt"]);
+}
+
+#[test]
+fn a_title_listed_twice_is_refused_as_python_copytree_refuses_it() {
+    let f = fixture();
+    let marker = with_existing_dist(&f);
+    let path = f.root.join("sources.json");
+    let mut sources = read_json(&path);
+    let first = sources["titles"][0].clone();
+    sources["titles"] = json!([first, first]);
+    std::fs::write(&path, sources.to_string()).unwrap();
+    let err = refused(&f, "FileExistsError: ");
+    let expected = if cfg!(windows) {
+        "[WinError 183] Cannot create a file when that file already exists: "
+    } else {
+        "[Errno 17] File exists: "
+    };
+    assert!(err.contains(expected), "{err}");
+    assert!(err.trim_end().ends_with(&format!("{PUBLIC_ID}'")), "{err}");
+    assert_eq!(std::fs::read_to_string(&marker).unwrap(), "keep me");
+    assert!(managed_paths(&f).is_empty());
+}
+
+#[test]
+fn a_failed_stage_probe_stops_promotion() {
+    let f = fixture();
+    let marker = with_existing_dist(&f);
+    let renames = std::rc::Rc::new(std::cell::Cell::new(0));
+    let counter = renames.clone();
+    dist::set_rename_hook(move |_, _| {
+        counter.set(counter.get() + 1);
+        None
+    });
+    let mut failed = false;
+    dist::set_probe_hook(move |path| {
+        if path.contains(".dist.stage-") && !failed {
+            failed = true;
+            return Some(access_denied(path));
+        }
+        None
+    });
+    let error = publish_in_process(&f).unwrap_err();
+    dist::set_probe_hook(|_| None);
+    dist::set_rename_hook(|_, _| None);
+    assert!(error.starts_with("PermissionError"), "{error}");
+    assert_eq!(renames.get(), 0);
+    assert_eq!(std::fs::read_to_string(&marker).unwrap(), "keep me");
+    assert!(managed_paths(&f).is_empty());
+}
+
+#[test]
+fn a_failed_backup_probe_stops_restoration() {
+    let f = fixture();
+    with_existing_dist(&f);
+    let renames = std::rc::Rc::new(std::cell::Cell::new(0));
+    let counter = renames.clone();
+    dist::set_rename_hook(move |src, _| {
+        counter.set(counter.get() + 1);
+        (counter.get() == 2).then(|| access_denied(src))
+    });
+    dist::set_probe_hook(|path| path.contains(".dist.backup-").then(|| access_denied(path)));
+    let error = publish_in_process(&f).unwrap_err();
+    dist::set_probe_hook(|_| None);
+    dist::set_rename_hook(|_, _| None);
+    assert!(error.starts_with("PermissionError"), "{error}");
+    assert!(error.contains(".dist.backup-"), "{error}");
+    // Not restored: the old tree stays in its backup, and dist is absent.
+    assert_eq!(renames.get(), 2);
+    assert!(!f.dist().exists());
+    let left = managed_paths(&f);
+    assert_eq!(left.len(), 1);
+    assert!(left[0].starts_with(".dist.backup-"));
+    let kept = f.root.join(&left[0]).join("last-publishable-build.txt");
+    assert_eq!(std::fs::read_to_string(kept).unwrap(), "keep me");
+}
+
+#[test]
+fn a_parent_resolving_elsewhere_is_refused() {
+    let dir = tempfile::tempdir().unwrap();
+    let target = dir.path().join("dist");
+    let candidate = dir.path().join(format!(".dist.stage-{}", "0".repeat(32)));
+    let elsewhere = s(&dir.path().join("elsewhere"));
+    let mut moved = false;
+    // The first lookup sees the parent moved; the second sees the original.
+    dist::set_realpath_hook(move |_| {
+        if moved {
+            return None;
+        }
+        moved = true;
+        Some(elsewhere.clone())
+    });
+    let error = dist::validated_managed_sibling(&s(&target), &s(&candidate), "stage").unwrap_err();
+    dist::set_realpath_hook(|_| None);
+    assert_eq!(
+        (error.class(), error.to_string().as_str()),
+        (
+            "ValueError",
+            "managed distribution path resolves outside its parent"
+        )
+    );
+}
+
+/// A change to the public title's source directory.
+type Change = fn(&Path);
+
+/// Each copied-file gate, reached by changing the source after the source
+/// gate passed.
+#[test]
+fn the_copy_step_rechecks_what_the_source_gate_saw() {
+    let cases: [(&str, Change); 4] = [
+        (
+            "RuntimeError: listed title C2004A00001 has no sections.jsonl",
+            |t| {
+                std::fs::remove_file(t.join("sections.jsonl")).unwrap();
+            },
+        ),
+        (
+            "RuntimeError: listed title C2004A00001 has no markdown directory",
+            |t| {
+                std::fs::remove_dir_all(t).unwrap();
+            },
+        ),
+        (
+            "RuntimeError: copied title contains private-person registration details: C2004A00001",
+            |t| {
+                let md = t.join(format!("{PUBLIC_ID}.md"));
+                let text = std::fs::read_to_string(&md).unwrap();
+                std::fs::write(&md, format!("{text}{ALL_CAPS_ROW}\n")).unwrap();
+            },
+        ),
+        (
+            "RuntimeError: copied title contains an unapproved contact identifier: C2004A00001:email:",
+            |t| {
+                let md = t.join(format!("{PUBLIC_ID}.md"));
+                let text = std::fs::read_to_string(&md).unwrap();
+                std::fs::write(&md, format!("{text}Write to fresh-contact@example.test.\n"))
+                    .unwrap();
+            },
+        ),
+    ];
+    for (needle, change) in cases {
+        let f = fixture();
+        let marker = with_existing_dist(&f);
+        let directory = f.root.join("markdown").join(PUBLIC_ID);
+        dist::set_preflight_hook(move || change(&directory));
+        let error = publish_in_process(&f).unwrap_err();
+        dist::set_preflight_hook(|| {});
+        assert!(error.starts_with(needle), "{error:?} lacks {needle:?}");
+        assert_eq!(std::fs::read_to_string(&marker).unwrap(), "keep me");
+        assert!(managed_paths(&f).is_empty());
+    }
+}
+
+#[test]
+fn stale_sources_that_do_not_order_raise_the_pair_python_meets_first() {
+    let f = fixture();
+    with_existing_dist(&f);
+    let rate = |rid: Value| {
+        json!({"register_id": rid, "act": PUBLIC_NAME, "collection": "Act", "section": "1",
+               "heading": "Public rate", "topic": "income tax rates", "kind": "rate", "amounts": ["10%"],
+               "content": "The public rate is 10%.", "version_is_current": false})
+    };
+    let rows = [rate(json!(42)), rate(json!(true)), rate(json!(PUBLIC_ID))];
+    let records: Vec<Json> = rows.iter().map(pyjson_value).collect();
+    let error = dist::render_rates_markdown(&records).unwrap_err();
+    let message = "'<' not supported between instances of 'str' and 'bool'";
+    assert_eq!(
+        (error.class(), error.to_string().as_str()),
+        ("TypeError", message)
+    );
+    write(
+        &f.root.join("rates").join("rates.jsonl"),
+        &rows.iter().map(|r| format!("{r}\n")).collect::<String>(),
+    );
+    refused(&f, &format!("TypeError: {message}"));
+    assert!(managed_paths(&f).is_empty());
+}
+
+#[test]
+fn deeply_nested_rows_are_a_recursion_error_not_a_malformed_row() {
+    let depth = tax_radar_au::pyjson::MAX_DEPTH + 1;
+    let deep = format!("{}{}\n", "[".repeat(depth), "]".repeat(depth));
+    for rates in [true, false] {
+        let f = fixture();
+        let output = publish(&f);
+        let path = if rates {
+            output.join("rates").join("rates.jsonl")
+        } else {
+            output
+                .join("markdown")
+                .join(PUBLIC_ID)
+                .join("sections.jsonl")
+        };
+        let text = std::fs::read_to_string(&path).unwrap();
+        std::fs::write(&path, format!("{text}{deep}")).unwrap();
+        let (code, out, err) = stage(&f, "dist_verify");
+        assert_eq!(code, 2, "rates {rates}: {out}");
+        assert!(out.contains("VERIFIER ERROR"));
+        assert!(
+            err.contains(
+                "RecursionError: maximum recursion depth exceeded while decoding a JSON array"
+            ),
+            "{err}"
+        );
+    }
+}
+
+#[cfg(unix)]
+fn run_with_timeout(f: &Fixture, name: &str) -> (i32, String, String) {
+    let mut child = Command::new(env!("CARGO_BIN_EXE_fadden"))
+        .arg(name)
+        .env("FADDEN_MODULE_DIR", &f.build)
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .spawn()
+        .unwrap();
+    let start = std::time::Instant::now();
+    while child.try_wait().unwrap().is_none() {
+        if start.elapsed() > std::time::Duration::from_secs(60) {
+            child.kill().unwrap();
+            panic!("{name} blocked");
+        }
+        std::thread::sleep(std::time::Duration::from_millis(50));
+    }
+    let out = child.wait_with_output().unwrap();
+    let text = |b: &[u8]| String::from_utf8_lossy(b).into_owned();
+    (
+        out.status.code().unwrap(),
+        text(&out.stdout),
+        text(&out.stderr),
+    )
+}
+
+#[cfg(unix)]
+#[test]
+fn a_named_pipe_licence_notice_is_refused_before_it_is_opened() {
+    let f = fixture();
+    let marker = with_existing_dist(&f);
+    let notice = f.root.join("LICENCE-NOTICE.md");
+    std::fs::remove_file(&notice).unwrap();
+    let pipe = std::ffi::CString::new(s(&notice)).unwrap();
+    // SAFETY: a valid NUL-terminated path.
+    assert_eq!(unsafe { libc::mkfifo(pipe.as_ptr(), 0o600) }, 0);
+    let (code, _, err) = run_with_timeout(&f, "dist");
+    assert_eq!(code, 1, "{err}");
+    assert!(
+        err.contains("shutil.SpecialFileError: `")
+            && err.contains("LICENCE-NOTICE.md` is a named pipe"),
+        "{err}"
+    );
+    assert_eq!(std::fs::read_to_string(&marker).unwrap(), "keep me");
+    assert!(managed_paths(&f).is_empty());
+}
+
+#[cfg(unix)]
+#[test]
+fn copied_files_keep_their_times_and_mode() {
+    use std::os::unix::fs::PermissionsExt;
+    let f = fixture();
+    let source = f
+        .root
+        .join("markdown")
+        .join(PUBLIC_ID)
+        .join(format!("{PUBLIC_ID}.md"));
+    std::fs::set_permissions(&source, std::fs::Permissions::from_mode(0o640)).unwrap();
+    let old = std::time::SystemTime::UNIX_EPOCH + std::time::Duration::from_secs(1_000_000_000);
+    std::fs::File::options()
+        .write(true)
+        .open(&source)
+        .unwrap()
+        .set_modified(old)
+        .unwrap();
+    let output = publish(&f);
+    let copied = output
+        .join("markdown")
+        .join(PUBLIC_ID)
+        .join(format!("{PUBLIC_ID}.md"));
+    let copied = std::fs::metadata(copied).unwrap();
+    assert_eq!(copied.permissions().mode() & 0o7777, 0o640);
+    assert_eq!(copied.modified().unwrap(), old);
+}
+
+#[cfg(unix)]
+#[test]
+fn a_name_that_is_not_unicode_stops_the_verifier() {
+    use std::os::unix::ffi::OsStrExt;
+    let odd = std::ffi::OsStr::from_bytes(b"notes-\xff");
+    for in_markdown in [true, false] {
+        let f = fixture();
+        let output = publish(&f);
+        if in_markdown {
+            std::fs::write(output.join("markdown").join(odd), "x").unwrap();
+        } else {
+            // Python passed this one: only the size walk sees it.
+            std::fs::create_dir(output.join(odd)).unwrap();
+            std::fs::write(output.join(odd).join("notes.txt"), "x").unwrap();
+        }
+        let (code, out, err) = stage(&f, "dist_verify");
+        assert_eq!(code, 2, "in markdown {in_markdown}: {out}");
+        assert!(out.contains("VERIFIER ERROR"));
+        assert!(
+            err.contains("ValueError: file name is not valid Unicode: "),
+            "{err}"
+        );
+    }
+}
+
+#[cfg(unix)]
+#[test]
+fn a_permission_error_classifies_an_entry_as_unreadable() {
+    use std::os::unix::fs::PermissionsExt;
+    let dir = tempfile::tempdir().unwrap();
+    let parent = dir.path().join("markdown");
+    std::fs::create_dir(&parent).unwrap();
+    std::fs::create_dir(parent.join("F2026N00004")).unwrap();
+    // Listable but not searchable: the entry's lstat is refused.
+    std::fs::set_permissions(&parent, std::fs::Permissions::from_mode(0o600)).unwrap();
+    let kind = dist_verify::entry_kind(&s(&parent.join("F2026N00004")));
+    std::fs::set_permissions(&parent, std::fs::Permissions::from_mode(0o700)).unwrap();
+    // SAFETY: geteuid has no preconditions.
+    if unsafe { libc::geteuid() } != 0 {
+        assert_eq!(kind, "unreadable");
+    }
+}
+
+/// A directory carrying a third-party reparse tag: neither a symbolic link
+/// nor a junction.
+#[cfg(windows)]
+fn make_reparse_point(path: &Path) -> bool {
+    use std::os::windows::fs::OpenOptionsExt;
+    use std::os::windows::io::AsRawHandle;
+    std::fs::create_dir(path).unwrap();
+    let handle = std::fs::OpenOptions::new()
+        .access_mode(0x4000_0000) // GENERIC_WRITE
+        .custom_flags(0x0020_0000 | 0x0200_0000) // OPEN_REPARSE_POINT | BACKUP_SEMANTICS
+        .open(path)
+        .unwrap();
+    // REPARSE_GUID_DATA_BUFFER: tag, data length, reserved, GUID, then data.
+    let mut buffer = Vec::new();
+    buffer.extend_from_slice(&0x0000_1234u32.to_le_bytes());
+    buffer.extend_from_slice(&4u16.to_le_bytes());
+    buffer.extend_from_slice(&0u16.to_le_bytes());
+    buffer.extend_from_slice(&[0x5a; 16]);
+    buffer.extend_from_slice(b"test");
+    let mut returned = 0u32;
+    // SAFETY: the handle is open, the buffer outlives the call and its length is exact.
+    let ok = unsafe {
+        windows_sys::Win32::System::IO::DeviceIoControl(
+            handle.as_raw_handle(),
+            windows_sys::Win32::System::Ioctl::FSCTL_SET_REPARSE_POINT,
+            buffer.as_ptr().cast(),
+            buffer.len() as u32,
+            std::ptr::null_mut(),
+            0,
+            &mut returned,
+            std::ptr::null_mut(),
+        )
+    };
+    if ok == 0 {
+        eprintln!(
+            "skipped: cannot set a reparse point ({})",
+            std::io::Error::last_os_error()
+        );
+    }
+    ok != 0
+}
+
+#[cfg(windows)]
+#[test]
+fn a_top_level_reparse_point_is_a_named_failure() {
+    let f = fixture();
+    let output = publish(&f);
+    let point = output.join("markdown").join("F2026N00003");
+    if !make_reparse_point(&point) {
+        return;
+    }
+    assert_eq!(dist_verify::entry_kind(&s(&point)), "reparse point");
+    let (code, out) = verify(&f);
+    let _ = std::fs::remove_dir(&point);
+    assert_eq!(
+        (code, status(&out, "no directory beyond what is listed")),
+        (1, "FAIL".into())
+    );
+    assert!(out.contains("F2026N00003 [reparse point]"), "{out}");
 }

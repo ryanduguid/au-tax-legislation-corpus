@@ -87,6 +87,7 @@ pub fn fetch_json(http: &mut dyn Http, url: &str) -> Result<Option<Json>, Exc> {
             {
                 return Err(Exc::value(message));
             }
+            Err(Some(error @ DecodeError::Recursion(_))) => return Err(super::json_error(error)),
             _ => {}
         }
     }

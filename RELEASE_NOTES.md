@@ -3,7 +3,6 @@
 - Breaking: the review queue is a standalone Rust binary, `tax-radar-au` 1.0.0, built with `cargo build --locked --release`. Its commands, options, exit statuses, stdout and stderr lines, output file bytes (CRLF on Windows), digests and argparse usage and error text match the Python radar at 43b5e0c. The `tax_radar_au` import package, its `sample_path` helper and the wheel's console script are removed; the samples moved to `samples/`. The Python wheel carries the corpus builder only, and `fadden.source_snapshot` holds the snapshot loader the publication export used from the radar.
 - Documented differences from the Python radar:
   - stdout and stderr are always UTF-8. Python on a non-UTF-8 Windows code page printed an unencodable `--out` path backslash-escaped with a note on stderr; Python 3.15's UTF-8 mode behaves like the binary.
-  - `rates` sorts its entries by topic, title name, section and kind. Where entries of one topic carry title names that cannot be ordered against each other (a corpus row whose `act` is not a string), both stop with a `TypeError`, but the pair the sort meets first, and so the message, can differ.
   - `rulings` fetches with its own HTTP client. It follows up to 10 redirects, honours the proxy environment variables and checks certificates against the operating system's store, as urllib does, but it does not read the Windows Internet Settings proxy, it sends its own `Accept` and connection headers, and its 90-second limit applies to each phase of a request rather than to each socket read. Where a transport failure is reported as `fetch failed (<name>)`, the name is `URLError`, `TimeoutError` or `IncompleteRead` by the phase that failed, which can differ from the exception urllib would have raised. A final URL after redirects is recorded as the client normalises it.
   - `dist_verify` still exits 2 when the checks could not run, but prints only the traceback's last line where Python printed it whole.
   - `dist_verify` lists unapproved contact findings in its FAIL detail sorted by title and digest; Python listed them in set order, which follows string hashes and varied from run to run. Where two values that cannot be ordered meet in a sort (a non-string collection beside string ones), the TypeError can name the two types in the other order, as Python's own runs could.
@@ -13,6 +12,9 @@
   - An exception the Python stage did not catch printed a traceback; the binary prints only its last line, with the same exit status 1.
   - A search index records the bundled SQLite's version (3.53.2) in its file header, so the file differs from Python's in those 4 header bytes only.
   - An argument that is not valid Unicode (possible on Windows) is refused with `fadden: every argument must be valid Unicode.` and exit 2, as the radar does.
+  - A file or directory name that is not valid Unicode (bytes that are not UTF-8 on Linux, a lone surrogate on Windows) in a tree a stage lists stops the stage with `ValueError: file name is not valid Unicode: '<path>'`, exit 1, or exit 2 from `dist_verify`. Python carried such a name through as a surrogate-escaped string.
+  - JSON nested more than 1,000 levels deep raises `RecursionError: maximum recursion depth exceeded while decoding a JSON array from a unicode string` (or `object`). CPython 3.15 raises it only where its C stack runs low, above 13,000 levels on Windows, and words the message by the stack used.
+  - `dist` copies each title's files with their data, times and permission bits, as `shutil.copy2` does, but not Linux extended attributes.
 
 # v0.3.0
 

@@ -109,7 +109,7 @@ fn first_scan(run: &mut Run) -> Result<(), Exc> {
 
     let mut flagged: Vec<Flagged> = Vec::new();
     let markdown_root = child(&root, &["markdown"])?;
-    for name in sections_files(&markdown_root) {
+    for name in sections_files(&markdown_root)? {
         let rid = register_id_str(&name)?;
         let path = child(&markdown_root, &[&rid, "sections.jsonl"])?;
         let mut rows = Vec::new();
@@ -245,7 +245,7 @@ fn second_scan(run: &mut Run) -> Result<i32, Exc> {
     let mut unapproved: Vec<(&'static str, usize)> = Vec::new();
     let mut examples: Vec<(&'static str, Vec<Example>)> = Vec::new();
     let markdown_root = child(&root, &["markdown"])?;
-    for name in sections_files(&markdown_root) {
+    for name in sections_files(&markdown_root)? {
         let rid = register_id_str(&name)?;
         let path = child(&markdown_root, &[&rid, "sections.jsonl"])?;
         let is_known = known.contains(&Key::Str(pts(&rid)));

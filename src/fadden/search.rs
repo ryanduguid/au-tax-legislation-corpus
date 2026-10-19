@@ -350,6 +350,7 @@ fn read_title(root: &str, title: &Json) -> Result<Title, Exc> {
             {
                 return Err(Exc::value(message));
             }
+            Err(error @ pyjson::DecodeError::Recursion(_)) => return Err(super::json_error(error)),
             Err(_) => return Err(refused(format!("{place} is not JSON"))),
         };
         if !matches!(row.get("text"), Some(Json::Str(_))) {
@@ -412,9 +413,13 @@ fn read_corpus(root: &str) -> Result<(Vec<u8>, Json, Vec<Title>), Exc> {
         .and_then(|file| read_all(file, &path))
         .map_err(|e| refused(format!("cannot read sources.json ({})", strerror(&e))))?;
     let not_finished = || refused("sources.json is not a finished corpus inventory");
-    let sources = pyjson::loads_bytes(&sources_bytes)
-        .ok()
-        .ok_or_else(not_finished)?;
+    let sources = match pyjson::loads_bytes(&sources_bytes) {
+        Ok(sources) => sources,
+        Err(Some(error @ pyjson::DecodeError::Recursion(_))) => {
+            return Err(super::json_error(error));
+        }
+        Err(_) => return Err(not_finished()),
+    };
     let listed = match sources.get("titles") {
         Some(Json::Array(items)) if items.iter().all(|t| matches!(t, Json::Object(_))) => {
             items.clone()

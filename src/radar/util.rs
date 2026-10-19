@@ -181,7 +181,8 @@ pub fn load_json(snapshot: &SourceSnapshot, label: &str) -> Result<Json> {
             "{label} contains duplicate JSON members: {}.",
             snapshot.path
         )),
-        DecodeError::Invalid(_) => {
+        // The depth check above stops nesting long before the decoder's limit.
+        DecodeError::Invalid(_) | DecodeError::Recursion(_) => {
             Error::monitor(format!("{label} is not valid JSON: {}.", snapshot.path))
         }
     })

@@ -16,6 +16,13 @@ cargo install cargo-fuzz --locked --version 0.13.2
 cargo +nightly fuzz run privacy_patterns fuzz/corpus -- -max_total_time=60 -max_len=4096 -timeout=2 -rss_limit_mb=1024
 ```
 
+libFuzzer adds each new interesting input to `fuzz/corpus`; delete those
+hash-named files rather than committing them. On Windows with the MSVC
+toolchain the same commands work once the directory holding
+`clang_rt.asan_dynamic-x86_64.dll` (the Visual Studio `bin\Hostx64\x64` tools
+directory) is on `PATH`; without it the target exits with
+`STATUS_DLL_NOT_FOUND`.
+
 The target lives in its own Cargo workspace here, so the repository's stable
 builds never compile it. `.github/workflows/fuzzing.yml` runs it after main
 pushes, weekly and on demand, with read-only repository access and a 15-minute

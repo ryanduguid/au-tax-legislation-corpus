@@ -500,7 +500,7 @@ fn number_cmp(a: &Json, b: &Json) -> Option<Option<Ordering>> {
 }
 
 /// `a < b` for two JSON values, or the TypeError Python raises.
-fn py_lt(a: &Json, b: &Json) -> Result<bool, Exc> {
+pub fn py_lt(a: &Json, b: &Json) -> Result<bool, Exc> {
     if let Some(order) = number_cmp(a, b) {
         return Ok(order == Some(Ordering::Less));
     }
@@ -537,10 +537,8 @@ fn key_lt(a: &SortKey, b: &SortKey) -> Result<bool, Exc> {
     Ok(a.3 < b.3)
 }
 
-/// `records.sort(key=...)`. With every title name a string the keys are
-/// totally ordered and any stable sort agrees with Python's. Otherwise a
-/// stable binary insertion sort meets Python's TypeError for keys that cannot
-/// be ordered; which pair it meets first can differ from Python's merge.
+/// `records.sort(key=...)`, comparing as CPython's sort does, so keys that
+/// cannot be ordered raise the TypeError Python meets first.
 fn sort_records(records: Vec<Record>) -> Result<Vec<Record>, Exc> {
     let keys: Vec<SortKey> = records
         .iter()
@@ -555,32 +553,7 @@ fn sort_records(records: Vec<Record>) -> Result<Vec<Record>, Exc> {
         })
         .collect();
     let mut order: Vec<usize> = (0..records.len()).collect();
-    if keys.iter().all(|k| matches!(k.1, Json::Str(_))) {
-        order.sort_by(|&i, &j| {
-            if key_lt(&keys[i], &keys[j]).unwrap_or(false) {
-                Ordering::Less
-            } else if key_lt(&keys[j], &keys[i]).unwrap_or(false) {
-                Ordering::Greater
-            } else {
-                Ordering::Equal
-            }
-        });
-    } else {
-        for n in 1..order.len() {
-            let item = order[n];
-            let (mut lo, mut hi) = (0, n);
-            while lo < hi {
-                let mid = (lo + hi) / 2;
-                if key_lt(&keys[item], &keys[order[mid]])? {
-                    hi = mid;
-                } else {
-                    lo = mid + 1;
-                }
-            }
-            order.remove(n);
-            order.insert(lo, item);
-        }
-    }
+    crate::pysort::sort(&mut order, |&i, &j| key_lt(&keys[i], &keys[j]))?;
     let mut slots: Vec<Option<Record>> = records.into_iter().map(Some).collect();
     Ok(order.into_iter().filter_map(|i| slots[i].take()).collect())
 }
@@ -1008,7 +981,7 @@ fn execute(run: &mut Run) -> Result<(), Exc> {
 
     let markdown_root = child(&root, &["markdown"])?;
     let mut records = Vec::new();
-    for name in super::corpus_paths::sections_files(&markdown_root) {
+    for name in super::corpus_paths::sections_files(&markdown_root)? {
         let directory_id = register_id_str(&name)?;
         read_title(&markdown_root, &directory_id, &mut records)?;
     }

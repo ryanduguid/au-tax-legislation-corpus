@@ -58,8 +58,11 @@ pub fn refuse_unlisted_titles(root: &str, listed: &BTreeSet<String>) -> Result<(
     let mut stale = Vec::new();
     for entry in entries {
         let entry = entry.map_err(|e| OsError::new(&e, Some(&base), Style::Native))?;
-        let name = entry.file_name().to_string_lossy().into_owned();
-        if !name.starts_with('.') && !listed.contains(&name) {
+        if entry.file_name().to_string_lossy().starts_with('.') {
+            continue;
+        }
+        let name = crate::pyos::entry_name(&entry)?;
+        if !listed.contains(&name) {
             stale.push(name);
         }
     }
@@ -232,22 +235,23 @@ pub fn write_text_atomic(path: &str, chunks: &[Vec<u32>]) -> Result<(), Exc> {
 
 /// `sorted(glob(markdown_root/*/sections.jsonl))` as entry names: entries not
 /// starting with a dot whose sections.jsonl exists, even as a dangling link,
-/// in the order of their full paths.
-pub fn sections_files(markdown_root: &str) -> Vec<String> {
+/// in the order of their full paths. A matching name that is not valid
+/// Unicode is refused rather than skipped.
+pub fn sections_files(markdown_root: &str) -> Result<Vec<String>, crate::pyos::NotUnicode> {
     let Ok(entries) = std::fs::read_dir(markdown_root) else {
-        return Vec::new();
+        return Ok(Vec::new());
     };
-    let mut names: Vec<String> = entries
-        .filter_map(Result::ok)
-        .map(|e| e.file_name().to_string_lossy().into_owned())
-        .filter(|name| !name.starts_with('.'))
-        .filter(|name| {
-            let file = pypath::join(&pypath::join(markdown_root, name), "sections.jsonl");
-            std::fs::symlink_metadata(file).is_ok()
-        })
-        .collect();
+    let mut names = Vec::new();
+    for entry in entries.filter_map(Result::ok) {
+        if entry.file_name().to_string_lossy().starts_with('.')
+            || std::fs::symlink_metadata(entry.path().join("sections.jsonl")).is_err()
+        {
+            continue;
+        }
+        names.push(crate::pyos::entry_name(&entry)?);
+    }
     names.sort_by_key(|name| format!("{name}{}", pypath::SEP));
-    names
+    Ok(names)
 }
 
 /// `open(path, "w", encoding="utf-8").write(text)`: text mode, so `\n` is the
@@ -376,7 +380,7 @@ pub fn reject_symlinks(directory: &str) -> Result<(), Exc> {
     if linked(directory)? {
         return Err(Exc::value(LINKED_TREE));
     }
-    for step in crate::pyos::walk(directory, |_| {}) {
+    for step in crate::pyos::walk(directory, |_| {})? {
         for name in step.dirs.iter().chain(&step.files) {
             if linked(&pypath::join(&step.top, name))? {
                 return Err(Exc::value(LINKED_TREE));
