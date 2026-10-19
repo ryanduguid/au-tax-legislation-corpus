@@ -488,6 +488,12 @@ From an empty checkout, run the stages in order. Stage names are unchanged;
 the dispatcher lives at `python -m fadden <stage>`. Intermediate JSON files
 are written beside the stage modules under `fadden/`.
 
+The `as_at` and `compare_builds` stages are the Rust `fadden` binary, built
+with `cargo build --locked --release`; the dispatcher runs it with the same
+arguments and the binary keeps their command lines, messages and exit
+statuses. `FADDEN_BIN` names another build of it. An exception those Python
+stages did not catch printed a traceback; the binary prints its last line.
+
 ```bash
 python -m fadden discover      # list every in-force title matching the tax keywords -> fadden/titles_all.json, fadden/titles_principal.json
 python -m fadden versions      # dedup titles and resolve each one's current version date -> fadden/acts_resolved.json

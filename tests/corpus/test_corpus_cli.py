@@ -7,6 +7,7 @@ import contextlib
 import importlib
 import io
 import unittest
+from pathlib import Path
 from unittest import mock
 
 from fadden import STAGES
@@ -30,8 +31,12 @@ class FaddenCliTests(unittest.TestCase):
         # The dispatcher imports fadden.<stage> for real; the mocked
         # forwarding test below cannot catch a stage whose bare imports only
         # resolve in the flat deployed layout. This one imports every stage
-        # the way `python -m fadden` does.
+        # the way `python -m fadden` does. Rust stages have no module.
+        from fadden.__main__ import RUST_STAGES
+
         for stage in STAGES:
+            if stage in RUST_STAGES:
+                continue
             with self.subTest(stage=stage):
                 importlib.import_module(f"fadden.{stage}")
 
@@ -52,8 +57,6 @@ class FaddenCliTests(unittest.TestCase):
             "export_publication_bundles",
             "capture_register",
             "export_live_evidence_bundles",
-            "as_at",
-            "compare_builds",
             "search",
         ):
             with self.subTest(stage=stage), mock.patch("importlib.import_module") as importer:
@@ -62,12 +65,34 @@ class FaddenCliTests(unittest.TestCase):
                 importer.return_value = module
                 forwarded = (
                     ["a.json", "--out", "out"]
-                    if stage in {"capture_register", "export_live_evidence_bundles", "as_at"}
+                    if stage in {"capture_register", "export_live_evidence_bundles"}
                     else ["a.json", "b.json", "--out", "out"]
                 )
                 self.assertEqual(main([stage, "--", *forwarded]), 0)
                 importer.assert_called_once_with(f"fadden.{stage}")
                 module.main.assert_called_once_with(forwarded)
+
+    def test_rust_stages_run_the_fadden_binary_with_their_arguments(self) -> None:
+        import fadden.__main__ as dispatcher
+
+        for stage in sorted(dispatcher.RUST_STAGES):
+            with self.subTest(stage=stage), \
+                    mock.patch.object(dispatcher, "rust_binary", return_value="fadden-bin"), \
+                    mock.patch.object(dispatcher.subprocess, "run") as run:
+                run.return_value.returncode = 3
+                self.assertEqual(main([stage, "--", "a", "--json"]), 3)
+                command = run.call_args.args[0]
+                self.assertEqual(command, ["fadden-bin", stage, "a", "--json"])
+                module_dir = run.call_args.kwargs["env"]["FADDEN_MODULE_DIR"]
+                self.assertEqual(Path(module_dir), Path(dispatcher.__file__).resolve().parent)
+
+    def test_a_rust_stage_without_a_built_binary_says_how_to_build_it(self) -> None:
+        import fadden.__main__ as dispatcher
+
+        with mock.patch.object(dispatcher, "rust_binary", return_value=None), \
+                mock.patch("sys.stderr", new_callable=io.StringIO) as stderr:
+            self.assertEqual(main(["as_at", "2026-08-01"]), 1)
+        self.assertIn("cargo build --locked --release", stderr.getvalue())
 
     def _dispatch(self, *argv: str) -> mock.Mock:
         with mock.patch("importlib.import_module") as importer:

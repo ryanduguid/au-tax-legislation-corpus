@@ -15,6 +15,10 @@ name = "tax_radar_au"
 name = "tax-radar-au"
 path = "src/main.rs"
 
+[[bin]]
+name = "fadden"
+path = "src/fadden_main.rs"
+
 [dependencies]
 getrandom = "0.3"
 num-bigint = "0.4.8"

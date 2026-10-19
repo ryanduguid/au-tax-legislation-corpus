@@ -50,7 +50,7 @@ does not require a new compilation for one. Read the Register's version
 history and endnotes for any question about a past date.
 
 A consumer that quotes a row should accept a quotation only when it appears
-in the row text. `fadden.as_at.quote_in_text` does that check after Unicode
+in the row text. `quote_in_text` in the Rust crate's `fadden::as_at` module does that check after Unicode
 NFKC normalisation of both, reading the Register's non-breaking hyphen as `-`.
 NFKC also folds other compatibility forms, such as ligatures and full-width
 letters, and compatibility punctuation such as a full-width comma, so a match

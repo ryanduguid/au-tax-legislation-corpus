@@ -188,7 +188,7 @@ class PathAndWriteTests(unittest.TestCase):
                 (hostile / (name + ".py")).write_text('raise AssertionError("bare helper imported")\n', encoding="utf-8")
             script = ("import sys, importlib; sys.path[:0] = " + repr([str(REPOSITORY), str(hostile)]) +
                       "; before = list(sys.path); from fadden import STAGES; import fadden.__main__; "
-                      "[importlib.import_module('fadden.' + name) for name in STAGES]; "
+                      "[importlib.import_module('fadden.' + name) for name in STAGES if name not in fadden.__main__.RUST_STAGES]; "
                       "assert sys.path == before; assert 'corpus_paths' not in sys.modules")
             # Fixed interpreter and test-owned script, with isolated import state.
             # nosemgrep: python.lang.security.audit.dangerous-subprocess-use-audit.dangerous-subprocess-use-audit

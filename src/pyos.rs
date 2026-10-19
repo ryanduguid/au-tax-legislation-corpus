@@ -48,6 +48,35 @@ impl OsError {
     pub fn not_found(&self) -> bool {
         self.kind == io::ErrorKind::NotFound
     }
+
+    /// The `OSError` subclass Python raises for this error.
+    pub fn class(&self) -> &'static str {
+        let number = |prefix: &str| {
+            self.text
+                .strip_prefix(prefix)
+                .and_then(|rest| rest.split(']').next())
+                .and_then(|n| n.parse::<i32>().ok())
+        };
+        // CPython's winerror_to_errno for the Win32 errors these calls report.
+        let errno = number("[Errno ").or_else(|| {
+            number("[WinError ").map(|winerror| match winerror {
+                2 | 3 | 15 | 53 | 67 | 161 | 206 => 2,
+                5 | 32 | 33 => 13,
+                80 | 183 => 17,
+                267 => 20,
+                _ => 0,
+            })
+        });
+        match errno {
+            Some(2) => "FileNotFoundError",
+            Some(1 | 13) => "PermissionError",
+            Some(17) => "FileExistsError",
+            Some(20) => "NotADirectoryError",
+            Some(21) => "IsADirectoryError",
+            Some(32) => "BrokenPipeError",
+            _ => "OSError",
+        }
+    }
 }
 
 impl From<Style> for py::OsStyle {

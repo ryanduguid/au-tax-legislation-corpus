@@ -20,7 +20,7 @@ pub enum PyStr {
 }
 
 impl PyStr {
-    fn from_code_points(points: Vec<u32>) -> PyStr {
+    pub fn from_code_points(points: Vec<u32>) -> PyStr {
         if points.iter().all(|&cp| char::from_u32(cp).is_some()) {
             PyStr::Text(points.into_iter().filter_map(char::from_u32).collect())
         } else {
@@ -147,6 +147,16 @@ enum Frame {
 
 /// `json.loads(text, object_pairs_hook=_reject_duplicate_json_members)`.
 pub fn loads(text: &str) -> Result<Json, DecodeError> {
+    decode(text, true)
+}
+
+/// `json.loads(text)`: a repeated member keeps its first position and takes
+/// the last value, as a `dict` built from the pairs does.
+pub fn loads_standard(text: &str) -> Result<Json, DecodeError> {
+    decode(text, false)
+}
+
+fn decode(text: &str, reject_duplicates: bool) -> Result<Json, DecodeError> {
     let s: Vec<char> = text.chars().collect();
     if s.first() == Some(&'\u{feff}') {
         return Err(decode_error(
@@ -292,11 +302,20 @@ pub fn loads(text: &str) -> Result<Json, DecodeError> {
                         let Some(Frame::Object(pairs, _)) = stack.pop() else {
                             unreachable!()
                         };
-                        let mut keys = std::collections::HashSet::with_capacity(pairs.len());
-                        if !pairs.iter().all(|(k, _)| keys.insert(k)) {
-                            return Err(DecodeError::Duplicate);
+                        let mut keys = std::collections::HashMap::with_capacity(pairs.len());
+                        let mut unique: Vec<(PyStr, Json)> = Vec::with_capacity(pairs.len());
+                        for (k, v) in pairs {
+                            if let Some(&at) = keys.get(&k) {
+                                if reject_duplicates {
+                                    return Err(DecodeError::Duplicate);
+                                }
+                                unique[at] = (k, v);
+                            } else {
+                                keys.insert(k.clone(), unique.len());
+                                unique.push((k, v));
+                            }
                         }
-                        value = Json::Object(pairs);
+                        value = Json::Object(unique);
                         continue;
                     }
                     if idx >= len || s[idx] != ',' {

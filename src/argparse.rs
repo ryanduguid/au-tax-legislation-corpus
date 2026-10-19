@@ -535,6 +535,13 @@ pub fn format_help(p: &Parser, t: &Theme) -> String {
     format!("{}\n", text.trim_matches('\n'))
 }
 
+impl Parser {
+    /// `parser.error(message)`: the usage and message for stderr, exit status 2.
+    pub fn error(&self, message: &str) -> Exit {
+        Exit::Error(error_text(self, message))
+    }
+}
+
 fn error_text(p: &Parser, message: &str) -> String {
     let usage = format!("{}\n", format_usage(p, argtheme::theme(Stream::Stderr)));
     let t = argtheme::theme(Stream::Stderr);
