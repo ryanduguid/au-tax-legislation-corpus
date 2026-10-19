@@ -9,6 +9,7 @@ pub mod as_at;
 pub mod cli;
 pub mod compare_builds;
 pub mod corpus_paths;
+pub mod search;
 
 use crate::pyos::OsError;
 
@@ -26,6 +27,9 @@ pub enum Exc {
     Key(String),
     Runtime(String),
     UnicodeEncode(String),
+    Overflow(String),
+    /// `sqlite3.Error`, which the stages catch.
+    Sqlite(String),
 }
 
 impl Exc {
@@ -46,6 +50,8 @@ impl Exc {
             Exc::Key(_) => "KeyError",
             Exc::Runtime(_) => "RuntimeError",
             Exc::UnicodeEncode(_) => "UnicodeEncodeError",
+            Exc::Overflow(_) => "OverflowError",
+            Exc::Sqlite(_) => "sqlite3.Error",
         }
     }
 
@@ -61,7 +67,9 @@ impl std::fmt::Display for Exc {
             | Exc::Type(message)
             | Exc::Attribute(message)
             | Exc::Runtime(message)
-            | Exc::UnicodeEncode(message) => f.write_str(message),
+            | Exc::UnicodeEncode(message)
+            | Exc::Overflow(message)
+            | Exc::Sqlite(message) => f.write_str(message),
             Exc::Key(message) => f.write_str(message),
             Exc::Os(error) => f.write_str(&error.text),
         }

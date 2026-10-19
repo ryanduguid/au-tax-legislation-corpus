@@ -54,6 +54,76 @@ pub fn decimal_value(c: char) -> Option<u32> {
     (cp - zero < 10).then_some(cp - zero)
 }
 
+/// Python's `\w` for one character in a `str` pattern.
+pub fn is_word(c: char) -> bool {
+    in_table(c as u32, tables::WORD)
+}
+
+/// Whether Python's `\w` and the regex crate's `\w` disagree about one character.
+pub fn word_diff(c: char) -> bool {
+    (c as u32) >= 0x80 && in_table(c as u32, tables::WORD_DIFF)
+}
+
+/// The ranges of a character class, without its brackets, for a `regex` pattern.
+pub fn class_body(table: &[(u32, u32)]) -> String {
+    let mut out = String::new();
+    for &(lo, hi) in table {
+        if lo == hi {
+            let _ = write!(out, "\\x{{{lo:X}}}");
+        } else {
+            let _ = write!(out, "\\x{{{lo:X}}}-\\x{{{hi:X}}}");
+        }
+    }
+    out
+}
+
+fn class(table: &[(u32, u32)]) -> String {
+    format!("[{}]", class_body(table))
+}
+
+/// Python's `\d` for a `str` pattern.
+pub static D: std::sync::LazyLock<String> = std::sync::LazyLock::new(|| class(tables::DECIMAL));
+/// Python's `\s` for a `str` pattern.
+pub static S: std::sync::LazyLock<String> = std::sync::LazyLock::new(|| class(tables::SPACE));
+/// Python's `\w` for a `str` pattern.
+pub static W: std::sync::LazyLock<String> = std::sync::LazyLock::new(|| class(tables::WORD));
+
+/// Python's `\b`, for a `fancy_regex` pattern.
+pub fn word_boundary() -> String {
+    let w = &*W;
+    format!("(?:(?<={w})(?!{w})|(?<!{w})(?={w}))")
+}
+
+/// What one ASCII letter matches in a Python pattern compiled with `re.IGNORECASE`.
+pub fn ignorecase_letter(letter: char) -> String {
+    let mut out = format!(
+        "[{}{}",
+        letter.to_ascii_lowercase(),
+        letter.to_ascii_uppercase()
+    );
+    for (base, extra) in tables::IGNORECASE_EXTRA {
+        if *base == letter.to_ascii_lowercase() {
+            for cp in *extra {
+                let _ = write!(out, "\\x{{{cp:X}}}");
+            }
+        }
+    }
+    out.push(']');
+    out
+}
+
+/// `str.casefold()`.
+pub fn casefold(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    for c in s.chars() {
+        match tables::CASEFOLD.binary_search_by_key(&(c as u32), |&(k, _)| k) {
+            Ok(i) => out.push_str(tables::CASEFOLD[i].1),
+            Err(_) => out.push(c),
+        }
+    }
+    out
+}
+
 /// `str.strip()`.
 pub fn strip(s: &str) -> &str {
     s.trim_matches(is_space)

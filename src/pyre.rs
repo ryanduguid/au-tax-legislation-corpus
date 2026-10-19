@@ -1,0 +1,576 @@
+//! Python `re` patterns run as `fancy_regex` patterns with Python's semantics.
+//!
+//! The scripts' patterns are written in Python syntax. [`re`] translates one
+//! with its flags, once, and caches it as `re.compile` does. Python's `\s`,
+//! `\w`, `\d` and `\b` follow `str.isspace`, `str.isalnum` and `str.isdecimal`,
+//! a non-multiline `$` also matches before a final newline, and `re.IGNORECASE`
+//! lets an ASCII letter match the non-ASCII letters Python pairs with it.
+use crate::py;
+use fancy_regex::{Captures, Regex, RegexBuilder};
+use std::collections::HashMap;
+use std::fmt::Write as _;
+use std::sync::{Arc, LazyLock, Mutex};
+
+pub const I: u8 = 1;
+pub const S: u8 = 2;
+pub const M: u8 = 4;
+
+/// A compiled pattern; matching never fails for lack of backtracking budget.
+///
+/// A pattern using `\b` or `\B` also gets a copy with the regex crate's own boundary,
+/// which lets the fast engine run. Its word characters differ from Python's only on
+/// the WORD_DIFF code points, so it gives the same matches on text without them.
+pub struct Re {
+    exact: Regex,
+    native: Option<Regex>,
+}
+
+fn build(pattern: &str, translated: &str) -> Regex {
+    RegexBuilder::new(translated)
+        .backtrack_limit(usize::MAX)
+        .build()
+        .unwrap_or_else(|e| panic!("pattern {pattern:?} as {translated:?}: {e}"))
+}
+
+type Cache = Mutex<HashMap<(String, u8), Arc<Re>>>;
+
+/// `re.compile(pattern, flags)`, cached.
+pub fn re(pattern: &str, flags: u8) -> Arc<Re> {
+    static CACHE: LazyLock<Cache> = LazyLock::new(Default::default);
+    let mut cache = CACHE.lock().unwrap_or_else(|e| e.into_inner());
+    cache
+        .entry((pattern.to_owned(), flags))
+        .or_insert_with(|| {
+            let translated = translate(pattern, flags);
+            let native = translate_with(pattern, flags, true);
+            Arc::new(Re {
+                native: (native != translated).then(|| build(pattern, &native)),
+                exact: build(pattern, &translated),
+            })
+        })
+        .clone()
+}
+
+/// `re.fullmatch(pattern, text, flags)`: the pattern anchored at both ends, so alternatives
+/// and quantifiers backtrack until the whole text matches.
+pub fn fullmatch(pattern: &str, flags: u8, text: &str) -> bool {
+    re(&format!(r"\A(?:{pattern})\Z"), flags).is_match(text)
+}
+
+/// `re.escape(text)`.
+pub fn escape(text: &str) -> String {
+    let mut out = String::with_capacity(text.len());
+    for c in text.chars() {
+        if c.is_ascii() && !c.is_ascii_alphanumeric() && c != '_' {
+            out.push('\\');
+        }
+        out.push(c);
+    }
+    out
+}
+
+impl Re {
+    fn engine(&self, text: &str) -> &Regex {
+        match &self.native {
+            Some(native) if text.is_ascii() || !text.chars().any(py::word_diff) => native,
+            _ => &self.exact,
+        }
+    }
+
+    pub fn search<'t>(&self, text: &'t str) -> Option<Captures<'t, str>> {
+        self.search_at(text, 0)
+    }
+
+    /// `pattern.search(text, pos)` with `pos` as a byte offset.
+    pub fn search_at<'t>(&self, text: &'t str, pos: usize) -> Option<Captures<'t, str>> {
+        self.engine(text)
+            .captures_from_pos(text, pos)
+            .expect("unbounded backtracking")
+    }
+
+    /// `pattern.match(text, pos)`: a match that starts at `pos`.
+    pub fn match_at<'t>(&self, text: &'t str, pos: usize) -> Option<Captures<'t, str>> {
+        self.search_at(text, pos)
+            .filter(|c| c.get(0).is_some_and(|m| m.start() == pos))
+    }
+
+    pub fn is_match(&self, text: &str) -> bool {
+        self.engine(text)
+            .is_match(text)
+            .expect("unbounded backtracking")
+    }
+
+    pub fn captures_iter<'r, 't>(
+        &'r self,
+        text: &'t str,
+    ) -> impl Iterator<Item = Captures<'t, str>> + use<'r, 't> {
+        self.engine(text)
+            .captures_iter(text)
+            .map(|c| c.expect("unbounded backtracking"))
+    }
+
+    /// `pattern.findall(text)` for a pattern with at most one group.
+    pub fn findall(&self, text: &str) -> Vec<String> {
+        self.captures_iter(text)
+            .map(|c| {
+                c.get(usize::from(c.len() > 1))
+                    .map_or(String::new(), |m| m.as_str().to_owned())
+            })
+            .collect()
+    }
+
+    /// `pattern.findall(text)` for a pattern with several groups: each group's text, or
+    /// an empty string for a group that did not take part, as Python returns them.
+    pub fn findall_groups(&self, text: &str) -> Vec<Vec<String>> {
+        self.captures_iter(text)
+            .map(|c| {
+                (1..c.len())
+                    .map(|g| c.get(g).map_or(String::new(), |m| m.as_str().to_owned()))
+                    .collect()
+            })
+            .collect()
+    }
+
+    /// `pattern.split(text)` for a pattern without groups.
+    pub fn split<'t>(&self, text: &'t str) -> Vec<&'t str> {
+        let mut pieces = Vec::new();
+        let mut last = 0;
+        for c in self.captures_iter(text) {
+            let m = c.get(0).expect("group 0");
+            pieces.push(&text[last..m.start()]);
+            last = m.end();
+        }
+        pieces.push(&text[last..]);
+        pieces
+    }
+
+    /// `pattern.sub(replacement, text)` with a literal replacement.
+    pub fn sub(&self, replacement: &str, text: &str) -> String {
+        self.sub_with(text, |_| replacement.to_owned())
+    }
+
+    /// `pattern.sub(function, text)`.
+    pub fn sub_with(&self, text: &str, mut f: impl FnMut(&Captures<'_, str>) -> String) -> String {
+        let mut out = String::with_capacity(text.len());
+        let mut last = 0;
+        for c in self.captures_iter(text) {
+            let m = c.get(0).expect("group 0");
+            out.push_str(&text[last..m.start()]);
+            out.push_str(&f(&c));
+            last = m.end();
+        }
+        out.push_str(&text[last..]);
+        out
+    }
+}
+
+fn hex_escape(out: &mut String, c: char) {
+    let _ = write!(out, "\\x{{{:X}}}", c as u32);
+}
+
+/// What one literal character matches, as class members (no brackets).
+fn members(out: &mut String, c: char, flags: u8) {
+    if flags & I != 0 && c.is_ascii_alphabetic() {
+        let letter = py::ignorecase_letter(c);
+        out.push_str(&letter[1..letter.len() - 1]);
+    } else if flags & I != 0 && c.is_alphabetic() {
+        // shortcut: a non-ASCII letter matches its own simple lower and upper case, which
+        // agrees with Python's lower()-based matching for the letters these patterns hold.
+        for variant in [c]
+            .into_iter()
+            .chain(c.to_lowercase())
+            .chain(c.to_uppercase())
+        {
+            hex_escape(out, variant);
+        }
+    } else {
+        hex_escape(out, c);
+    }
+}
+
+fn literal(out: &mut String, c: char, flags: u8) {
+    if flags & I != 0 && c.is_alphabetic() {
+        out.push('[');
+        members(out, c, flags);
+        out.push(']');
+    } else {
+        hex_escape(out, c);
+    }
+}
+
+fn class_body(class: &str) -> &str {
+    &class[1..class.len() - 1]
+}
+
+struct Parser<'p> {
+    chars: Vec<char>,
+    i: usize,
+    pattern: &'p str,
+    native: bool,
+}
+
+/// One escape or character, as Python reads it inside or outside a class.
+enum Atom {
+    Char(char),
+    Class(&'static str, bool),
+    Other(String),
+}
+
+impl Parser<'_> {
+    fn next(&mut self) -> char {
+        let c = *self
+            .chars
+            .get(self.i)
+            .unwrap_or_else(|| panic!("truncated {:?}", self.pattern));
+        self.i += 1;
+        c
+    }
+
+    fn peek(&self, offset: usize) -> Option<char> {
+        self.chars.get(self.i + offset).copied()
+    }
+
+    fn hex(&mut self, digits: usize) -> char {
+        let text: String = (0..digits).map(|_| self.next()).collect();
+        char::from_u32(u32::from_str_radix(&text, 16).expect("hex escape")).expect("code point")
+    }
+
+    fn atom(&mut self, in_class: bool) -> Atom {
+        let c = self.next();
+        if c != '\\' {
+            return Atom::Char(c);
+        }
+        let e = self.next();
+        let class =
+            |table: &'static LazyLock<String>, negated| Atom::Class(table.as_str(), negated);
+        match e {
+            's' => class(&py::S, false),
+            'w' => class(&py::W, false),
+            'd' => class(&py::D, false),
+            'S' => class(&py::S, true),
+            'W' => class(&py::W, true),
+            'D' => class(&py::D, true),
+            'x' => Atom::Char(self.hex(2)),
+            'u' => Atom::Char(self.hex(4)),
+            'U' => Atom::Char(self.hex(8)),
+            'n' => Atom::Char('\n'),
+            't' => Atom::Char('\t'),
+            'r' => Atom::Char('\r'),
+            'f' => Atom::Char('\x0c'),
+            'v' => Atom::Char('\x0b'),
+            'a' => Atom::Char('\x07'),
+            '0' => Atom::Char('\0'),
+            'b' if in_class => Atom::Char('\x08'),
+            'b' if self.native => Atom::Other("\\b".into()),
+            'B' if self.native => Atom::Other("\\B".into()),
+            'b' => Atom::Other(py::word_boundary()),
+            'B' => {
+                let w = &*py::W;
+                Atom::Other(format!("(?:(?<={w})(?={w})|(?<!{w})(?!{w}))"))
+            }
+            'A' => Atom::Other("\\A".into()),
+            'Z' | 'z' => Atom::Other("\\z".into()),
+            '1'..='9' => Atom::Other(format!("\\{e}")),
+            _ if e.is_ascii_alphanumeric() => {
+                panic!("unsupported escape \\{e} in {:?}", self.pattern)
+            }
+            _ => Atom::Char(e),
+        }
+    }
+
+    fn class(&mut self, out: &mut String, flags: u8) {
+        out.push('[');
+        if self.peek(0) == Some('^') {
+            self.i += 1;
+            out.push('^');
+        }
+        let mut first = true;
+        loop {
+            if self.peek(0) == Some(']') && !first {
+                self.i += 1;
+                break;
+            }
+            first = false;
+            match self.atom(true) {
+                Atom::Char(lo)
+                    if self.peek(0) == Some('-') && self.peek(1).is_some_and(|c| c != ']') =>
+                {
+                    self.i += 1;
+                    let Atom::Char(hi) = self.atom(true) else {
+                        panic!("bad range in {:?}", self.pattern)
+                    };
+                    hex_escape(out, lo);
+                    out.push('-');
+                    hex_escape(out, hi);
+                    if flags & I != 0 {
+                        for cp in (lo as u32)..=(hi as u32).min(0x7f) {
+                            let c = char::from_u32(cp).unwrap();
+                            if c.is_ascii_alphabetic() {
+                                members(out, c, flags);
+                            }
+                        }
+                    }
+                }
+                Atom::Char(c) => members(out, c, flags),
+                Atom::Class(table, false) => out.push_str(class_body(table)),
+                Atom::Class(table, true) => {
+                    // Rust classes nest, so a negated Python class becomes a nested one.
+                    let _ = write!(out, "[^{}]", class_body(table));
+                }
+                Atom::Other(_) => panic!("unsupported class escape in {:?}", self.pattern),
+            }
+        }
+        out.push(']');
+    }
+
+    /// Open a group and return the flags inside it: `(?i:...)` and `(?-i:...)`
+    /// scope flags to the group, as Python allows.
+    fn group(&mut self, out: &mut String, flags: u8) -> u8 {
+        if self.peek(0) == Some('?') {
+            let mut j = 1;
+            let mut on = 0u8;
+            let mut off = 0u8;
+            let mut negative = false;
+            while let Some(c) = self.peek(j) {
+                let bit = match c {
+                    'i' => I,
+                    'm' => M,
+                    's' => S,
+                    '-' if !negative => {
+                        negative = true;
+                        j += 1;
+                        continue;
+                    }
+                    _ => break,
+                };
+                if negative {
+                    off |= bit
+                } else {
+                    on |= bit
+                }
+                j += 1;
+            }
+            if j > 1 && self.peek(j) == Some(':') {
+                self.i += j + 1;
+                out.push_str("(?:");
+                return (flags | on) & !off;
+            }
+        }
+        self.plain_group(out, flags);
+        flags
+    }
+
+    fn plain_group(&mut self, out: &mut String, flags: u8) {
+        // (?P=name) is a named backreference, not a group.
+        if self.peek(0) == Some('?') && self.peek(1) == Some('P') && self.peek(2) == Some('=') {
+            self.i += 3;
+            let mut name = String::new();
+            loop {
+                let c = self.next();
+                if c == ')' {
+                    break;
+                }
+                name.push(c);
+            }
+            if flags & I != 0 {
+                let _ = write!(out, "(?i:\\k<{name}>)");
+            } else {
+                let _ = write!(out, "\\k<{name}>");
+            }
+            return;
+        }
+        out.push('(');
+        if self.peek(0) != Some('?') {
+            return;
+        }
+        self.i += 1;
+        out.push('?');
+        match self.next() {
+            c @ (':' | '=' | '!') => out.push(c),
+            '<' => {
+                let kind = self.next();
+                assert!(matches!(kind, '=' | '!'), "group in {:?}", self.pattern);
+                out.push('<');
+                out.push(kind);
+            }
+            'P' => {
+                assert_eq!(
+                    self.next(),
+                    '<',
+                    "named backreference in {:?}",
+                    self.pattern
+                );
+                out.push_str("P<");
+                loop {
+                    let c = self.next();
+                    out.push(c);
+                    if c == '>' {
+                        break;
+                    }
+                }
+            }
+            other => panic!("unsupported group (?{other} in {:?}", self.pattern),
+        }
+    }
+
+    /// A `{m,n}` quantifier, or a literal brace as Python reads a malformed one.
+    fn brace(&mut self, out: &mut String, flags: u8) {
+        let start = self.i;
+        let mut text = String::new();
+        while let Some(c) = self.peek(0) {
+            if c.is_ascii_digit() || c == ',' {
+                text.push(c);
+                self.i += 1;
+            } else {
+                break;
+            }
+        }
+        let valid = self.peek(0) == Some('}') && !text.is_empty() && text.matches(',').count() <= 1;
+        if valid {
+            self.i += 1;
+            let text = if text.starts_with(',') {
+                format!("0{text}")
+            } else {
+                text
+            };
+            let _ = write!(out, "{{{text}}}");
+        } else {
+            self.i = start;
+            literal(out, '{', flags);
+        }
+    }
+}
+
+/// Python pattern syntax and flags to a `fancy_regex` pattern.
+pub fn translate(pattern: &str, flags: u8) -> String {
+    translate_with(pattern, flags, false)
+}
+
+/// `translate`, with `\b` and `\B` left to the regex crate when `native` is set.
+fn translate_with(pattern: &str, flags: u8, native: bool) -> String {
+    // Global inline flags such as (?m) or (?si) may only open a Python pattern.
+    let mut flags = flags;
+    let mut pattern = pattern;
+    if let Some(rest) = pattern.strip_prefix("(?")
+        && let Some(end) = rest.find(')')
+        && end > 0
+        && rest[..end].chars().all(|c| "ims".contains(c))
+    {
+        for c in rest[..end].chars() {
+            flags |= match c {
+                'i' => I,
+                'm' => M,
+                _ => S,
+            };
+        }
+        pattern = &rest[end + 1..];
+    }
+    let mut p = Parser {
+        chars: pattern.chars().collect(),
+        i: 0,
+        pattern,
+        native,
+    };
+    let mut out = String::with_capacity(pattern.len() * 2);
+    let mut scopes: Vec<u8> = Vec::new();
+    while let Some(c) = p.peek(0) {
+        match c {
+            '[' => {
+                p.i += 1;
+                p.class(&mut out, flags);
+            }
+            '(' => {
+                p.i += 1;
+                scopes.push(flags);
+                flags = p.group(&mut out, flags);
+            }
+            '{' => {
+                p.i += 1;
+                p.brace(&mut out, flags);
+            }
+            ')' => {
+                p.i += 1;
+                out.push(c);
+                flags = scopes.pop().unwrap_or(flags);
+            }
+            '|' | '*' | '+' | '?' => {
+                p.i += 1;
+                out.push(c);
+            }
+            '.' => {
+                p.i += 1;
+                out.push_str(if flags & S != 0 { "(?s:.)" } else { "." });
+            }
+            '^' => {
+                p.i += 1;
+                out.push_str(if flags & M != 0 { "(?m:^)" } else { "^" });
+            }
+            '$' => {
+                p.i += 1;
+                out.push_str(if flags & M != 0 {
+                    "(?m:$)"
+                } else {
+                    "(?=\\n?\\z)"
+                });
+            }
+            _ => match p.atom(false) {
+                Atom::Char(c) => literal(&mut out, c, flags),
+                Atom::Class(table, false) => out.push_str(table),
+                Atom::Class(table, true) => {
+                    let _ = write!(out, "[^{}]", class_body(table));
+                }
+                // Under IGNORECASE a backreference matches the group's text in any case.
+                Atom::Other(text)
+                    if flags & I != 0 && text.as_bytes().get(1).is_some_and(u8::is_ascii_digit) =>
+                {
+                    let _ = write!(out, "(?i:{text})");
+                }
+                Atom::Other(text) => out.push_str(&text),
+            },
+        }
+    }
+    out
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn python_classes_boundaries_and_anchors() {
+        assert!(re(r"a\sb", 0).is_match("a\x1cb"));
+        assert!(!re(r"a\sb", 0).is_match("a\u{200b}b"));
+        assert!(re(r"<tr\b", 0).is_match("<tr\u{301}"));
+        assert!(re(r"^x$", 0).is_match("x\n"));
+        assert!(!re(r"^x$", 0).is_match("x\n\n"));
+        assert!(re(r"^b$", M).is_match("a\nb\nc"));
+        assert!(re(r"a.b", S).is_match("a\nb"));
+        assert!(!re(r"a.b", 0).is_match("a\nb"));
+        assert!(re(r"[\s/]x", 0).is_match("\x1fx"));
+        assert!(re(r"[^\S]", 0).is_match("\x1c"));
+        assert_eq!(
+            re(r"\Z", 0).search("ab\n").unwrap().get(0).unwrap().start(),
+            3
+        );
+        assert!(re(r"a{2}", 0).is_match("aa") && re(r"a{", 0).is_match("a{"));
+        assert!(re(r"(?P<x>a)(?=b)", 0).is_match("ab"));
+    }
+
+    #[test]
+    fn ignorecase_pairs_ascii_letters_with_python_extras() {
+        assert!(re("script", I).is_match("SCR\u{130}PT"));
+        assert!(re("^[a-z]+$", I).is_match("\u{17f}\u{212a}AB"));
+        assert!(re("^[^a-z]$", I).is_match("1"));
+        assert!(!re("^[^a-z]$", I).is_match("\u{212a}"));
+        assert!(!re("k", 0).is_match("K"));
+        assert!(re(r"(?P<name>[a-z][\w:-]*)", I).is_match("Ab"));
+        assert!(re(r"<(script)>.*?</\1>", I | S).is_match("<SCRIPT>x</script>"));
+        assert!(!re(r"<(script)>.*?</\1>", S).is_match("<SCRIPT>x</script>"));
+    }
+
+    #[test]
+    fn escape_matches_re_escape() {
+        assert_eq!(escape("a.b-c_d/é"), "a\\.b\\-c_d\\/é");
+        assert!(re(&format!("^{}$", escape("a.b(c)")), 0).is_match("a.b(c)"));
+    }
+}

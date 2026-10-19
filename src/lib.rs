@@ -10,6 +10,7 @@ pub mod pyio;
 pub mod pyjson;
 pub mod pyos;
 pub mod pypath;
+pub mod pyre;
 mod pytext;
 mod pyunicode;
 pub mod pyurl;

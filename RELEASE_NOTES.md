@@ -5,6 +5,10 @@
   - stdout and stderr are always UTF-8. Python on a non-UTF-8 Windows code page printed an unencodable `--out` path backslash-escaped with a note on stderr; Python 3.15's UTF-8 mode behaves like the binary.
   - An argument that is not valid Unicode (possible on Windows) is refused with `tax-radar-au: blocked: every argument must be valid Unicode.` and exit 2, where Python accepted it and failed later on the path.
   - Resolving an output path whose existing component cannot be opened (access denied, sharing violation) keeps that component's letter case as given; Python asked Windows for its stored name.
+- The `as_at`, `compare_builds` and `search` corpus stages are the Rust `fadden` binary. `python -m fadden` runs it with the same arguments, and it keeps their command lines, output bytes and exit statuses. Documented differences:
+  - An exception the Python stage did not catch printed a traceback; the binary prints only its last line, with the same exit status 1.
+  - A search index records the bundled SQLite's version (3.53.2) in its file header, so the file differs from Python's in those 4 header bytes only.
+  - An argument that is not valid Unicode (possible on Windows) is refused with `fadden: every argument must be valid Unicode.` and exit 2, as the radar does.
 
 # v0.3.0
 

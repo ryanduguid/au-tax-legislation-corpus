@@ -32,6 +32,8 @@ pub enum Nargs {
     Optional,
     Zero,
     Parser,
+    /// `nargs="+"`.
+    OneOrMore,
 }
 
 #[derive(Clone, Debug)]
@@ -45,6 +47,7 @@ pub struct Action {
     pub choices: Option<Vec<String>>,
     pub int: bool,
     pub help: Option<String>,
+    pub metavar: Option<String>,
 }
 
 pub struct Parser {
@@ -68,6 +71,7 @@ impl Action {
             choices: None,
             int: false,
             help: None,
+            metavar: None,
         }
     }
     /// `nargs="?"` with a default.
@@ -91,6 +95,7 @@ impl Action {
             choices: None,
             int: false,
             help: None,
+            metavar: None,
         }
     }
     pub fn flag(flag: &str) -> Self {
@@ -124,6 +129,15 @@ impl Action {
         self.help = Some(text.into());
         self
     }
+    /// `nargs="+"`.
+    pub fn one_or_more(mut self) -> Self {
+        self.nargs = Nargs::OneOrMore;
+        self
+    }
+    pub fn metavar(mut self, text: &str) -> Self {
+        self.metavar = Some(text.into());
+        self
+    }
     pub fn choices(mut self, choices: &[&str]) -> Self {
         self.choices = Some(choices.iter().map(|s| s.to_string()).collect());
         self
@@ -139,6 +153,7 @@ impl Action {
             choices: None,
             int: false,
             help: Some("show this help message and exit".into()),
+            metavar: None,
         }
     }
 }
@@ -172,6 +187,7 @@ impl Parser {
             choices: Some(vec![]),
             int: false,
             help: None,
+            metavar: None,
         });
         self
     }
@@ -245,6 +261,9 @@ fn is_long(option: &str) -> bool {
 }
 
 fn metavar(action: &Action, default: &str) -> String {
+    if let Some(metavar) = &action.metavar {
+        return metavar.clone();
+    }
     match &action.choices {
         Some(choices) => format!("{{{}}}", choices.join(",")),
         None => default.to_string(),
@@ -257,6 +276,7 @@ fn format_args(action: &Action, default: &str) -> String {
         Nargs::One => m,
         Nargs::Optional => format!("[{m}]"),
         Nargs::Parser => format!("{m} ..."),
+        Nargs::OneOrMore => format!("{m} [{m} ...]"),
         Nargs::Zero => String::new(),
     }
 }
@@ -687,6 +707,8 @@ impl Parser {
             (Nargs::Optional, false) => "(-*A?-*)",
             (Nargs::Parser, true) => "(A[AO]*)",
             (Nargs::Parser, false) => "(-*A[-AO]*)",
+            (Nargs::OneOrMore, true) => "(A[A]*)",
+            (Nargs::OneOrMore, false) => "(-*A[A-]*)",
             (Nargs::Zero, true) => "()",
             (Nargs::Zero, false) => "(-*)",
         }
@@ -700,6 +722,7 @@ impl Parser {
                 Some(action_name(action)),
                 match action.nargs {
                     Nargs::Optional => "expected at most one argument".into(),
+                    Nargs::OneOrMore => "expected at least one argument".into(),
                     _ => "expected one argument".into(),
                 },
             )),
@@ -749,6 +772,18 @@ impl Parser {
         if choices.iter().any(|c| c == value) {
             return Ok(());
         }
+        // Integer choices compare the converted value, with no suggestion.
+        if action.int {
+            let quoted: Vec<String> = choices.iter().map(|c| pytext::repr(c)).collect();
+            return Err(ArgError(
+                Some(action_name(action)),
+                format!(
+                    "invalid choice: {} (choose from {})",
+                    pytext::repr(value),
+                    quoted.join(", ")
+                ),
+            ));
+        }
         let quoted: Vec<String> = choices.iter().map(|c| pytext::repr(c)).collect();
         let names: Vec<&str> = choices.iter().map(String::as_str).collect();
         let suggestion = close_match(value, &names)
@@ -773,8 +808,22 @@ impl Parser {
         }
         if args.len() == 1 && matches!(action.nargs, Nargs::One | Nargs::Optional) {
             let value = Self::convert(action, &args[0])?;
-            Self::check(action, &args[0])?;
+            match &value {
+                Value::Int(n) => Self::check(action, &n.to_string())?,
+                _ => Self::check(action, &args[0])?,
+            }
             return Ok(value);
+        }
+        if action.nargs == Nargs::OneOrMore {
+            let values = args
+                .iter()
+                .map(|a| Self::convert(action, a))
+                .collect::<Result<Vec<_>, _>>()?;
+            for arg in args {
+                Self::check(action, arg)?;
+            }
+            drop(values);
+            return Ok(Value::List(args.to_vec()));
         }
         if action.nargs == Nargs::Parser {
             Self::check(action, &args[0])?;

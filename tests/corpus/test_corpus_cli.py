@@ -57,7 +57,6 @@ class FaddenCliTests(unittest.TestCase):
             "export_publication_bundles",
             "capture_register",
             "export_live_evidence_bundles",
-            "search",
         ):
             with self.subTest(stage=stage), mock.patch("importlib.import_module") as importer:
                 module = mock.Mock()

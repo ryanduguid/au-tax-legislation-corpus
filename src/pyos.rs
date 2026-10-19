@@ -22,6 +22,8 @@ pub enum Style {
 pub struct OsError {
     pub kind: io::ErrorKind,
     pub text: String,
+    /// `error.strerror`.
+    pub strerror: String,
 }
 
 impl OsError {
@@ -33,6 +35,7 @@ impl OsError {
         OsError {
             kind: error.kind(),
             text,
+            strerror: strerror(error, style),
         }
     }
 
@@ -42,6 +45,7 @@ impl OsError {
         OsError {
             kind: error.kind(),
             text: format!("{one} -> {}", py::repr_str(dst)),
+            strerror: strerror(error, style),
         }
     }
 
@@ -91,6 +95,18 @@ impl From<Style> for py::OsStyle {
 impl std::fmt::Display for OsError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.write_str(&self.text)
+    }
+}
+
+/// `OSError.strerror`: the message without its number or filename.
+fn strerror(error: &io::Error, style: Style) -> String {
+    let text = without_filename(error, style);
+    match text
+        .strip_prefix('[')
+        .and_then(|rest| rest.split_once("] "))
+    {
+        Some((_, message)) => message.to_string(),
+        None => text,
     }
 }
 
@@ -261,7 +277,13 @@ pub fn is_reparse_point(meta: &Metadata) -> bool {
 
 /// Twelve lower-case hex digits, as `uuid.uuid4().hex[:12]` gives.
 pub fn random_hex12() -> String {
-    let mut bytes = [0u8; 6];
+    random_hex(12)
+}
+
+/// `count` random lower-case hex digits.
+pub fn random_hex(count: usize) -> String {
+    let mut bytes = vec![0u8; count.div_ceil(2)];
     getrandom::fill(&mut bytes).expect("operating system random source");
-    bytes.iter().map(|b| format!("{b:02x}")).collect()
+    let text: String = bytes.iter().map(|b| format!("{b:02x}")).collect();
+    text[..count].to_string()
 }

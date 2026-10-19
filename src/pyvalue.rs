@@ -134,7 +134,7 @@ fn number(value: &Json, nan_id: usize) -> Option<Number> {
 }
 
 /// The exact integer value of an integral finite float.
-fn float_to_int(f: f64) -> BigInt {
+pub fn float_to_int(f: f64) -> BigInt {
     let bits = f.to_bits();
     let exponent = ((bits >> 52) & 0x7ff) as i64;
     let mantissa = if exponent == 0 {

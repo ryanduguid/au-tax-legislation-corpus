@@ -21,10 +21,13 @@ path = "src/fadden_main.rs"
 
 [dependencies]
 getrandom = "0.3"
+fancy-regex = "0.19.2"
 num-bigint = "0.4.8"
 regex = "1.13.1"
+rusqlite = { version = "0.40.2", features = ["bundled"] }
 sha2 = "0.11.1"
-unicode-normalization = "0.1.25"
+# Unicode 17, the version CPython 3.15 normalises with.
+unicode-normalization = "=0.1.25"
 
 [target."cfg(unix)".dependencies]
 libc = "0.2"
