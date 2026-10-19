@@ -451,7 +451,8 @@ fn symlink(target: &Path, link: &Path, dir: bool) -> bool {
     };
     match made {
         Ok(()) => true,
-        Err(error) if cfg!(windows) => {
+        // ERROR_PRIVILEGE_NOT_HELD: any other failure is a broken test.
+        Err(error) if cfg!(windows) && error.raw_os_error() == Some(1314) => {
             eprintln!("skipped: symbolic links are unavailable to this account ({error})");
             false
         }
@@ -1711,10 +1712,10 @@ fn make_reparse_point(path: &Path) -> bool {
         )
     };
     if ok == 0 {
-        eprintln!(
-            "skipped: cannot set a reparse point ({})",
-            std::io::Error::last_os_error()
-        );
+        let error = std::io::Error::last_os_error();
+        // ERROR_PRIVILEGE_NOT_HELD: any other failure is a broken test.
+        assert_eq!(error.raw_os_error(), Some(1314), "{error}");
+        eprintln!("skipped: cannot set a reparse point ({error})");
     }
     ok != 0
 }
@@ -1736,4 +1737,144 @@ fn a_top_level_reparse_point_is_a_named_failure() {
         (1, "FAIL".into())
     );
     assert!(out.contains("F2026N00003 [reparse point]"), "{out}");
+}
+
+// --------------------------------------------- repair-review regressions
+
+/// The managed stage beside `dist`, which exists by the time the source gate runs.
+fn stage_dir(root: &Path) -> PathBuf {
+    std::fs::read_dir(root)
+        .unwrap()
+        .map(|e| e.unwrap().path())
+        .find(|p| {
+            p.file_name()
+                .unwrap()
+                .to_string_lossy()
+                .starts_with(".dist.stage-")
+        })
+        .unwrap()
+}
+
+#[test]
+fn a_staged_licence_linked_to_its_source_is_refused_before_truncation() {
+    let f = fixture();
+    let marker = with_existing_dist(&f);
+    let source = f.root.join("LICENCE-NOTICE.md");
+    let (root, notice) = (f.root.clone(), source.clone());
+    dist::set_preflight_hook(move || {
+        std::fs::hard_link(&notice, stage_dir(&root).join("LICENCE-NOTICE.md")).unwrap();
+    });
+    let error = publish_in_process(&f).unwrap_err();
+    dist::set_preflight_hook(|| {});
+    assert!(
+        error.starts_with("shutil.SameFileError: '") && error.ends_with("' are the same file"),
+        "{error}"
+    );
+    assert_eq!(std::fs::read_to_string(&source).unwrap(), "licence\n");
+    assert_eq!(std::fs::read_to_string(&marker).unwrap(), "keep me");
+    assert!(managed_paths(&f).is_empty());
+}
+
+#[test]
+fn a_directory_licence_notice_is_refused_naming_it() {
+    let f = fixture();
+    let marker = with_existing_dist(&f);
+    let notice = f.root.join("LICENCE-NOTICE.md");
+    std::fs::remove_file(&notice).unwrap();
+    std::fs::create_dir(&notice).unwrap();
+    let expected = if cfg!(windows) {
+        "PermissionError: [Errno 13] Permission denied: "
+    } else {
+        "IsADirectoryError: [Errno 21] Is a directory: "
+    };
+    let err = refused(&f, expected);
+    assert!(err.trim_end().ends_with("LICENCE-NOTICE.md'"), "{err}");
+    assert_eq!(std::fs::read_to_string(&marker).unwrap(), "keep me");
+    assert!(managed_paths(&f).is_empty());
+}
+
+/// `sources.json` with an unused `padding` member nested `depth` arrays deep.
+fn pad_sources(f: &Fixture, depth: usize) {
+    let path = f.root.join("sources.json");
+    let text = std::fs::read_to_string(&path).unwrap();
+    let body = text.trim_end().strip_suffix('}').unwrap();
+    let padding = format!("{}{}", "[".repeat(depth), "]".repeat(depth));
+    std::fs::write(&path, format!("{body}, \"padding\": {padding}}}")).unwrap();
+}
+
+#[test]
+fn metadata_nested_past_the_encoder_depth_is_refused_as_python_refuses_it() {
+    // The object and its padding: ENCODE_DEPTH containers are written, one more is not.
+    let limit = tax_radar_au::fadden::ENCODE_DEPTH;
+    let f = fixture();
+    pad_sources(&f, limit - 1);
+    publish(&f);
+    let f = fixture();
+    let marker = with_existing_dist(&f);
+    pad_sources(&f, limit);
+    refused(&f, "RecursionError: maximum recursion depth exceeded");
+    assert_eq!(std::fs::read_to_string(&marker).unwrap(), "keep me");
+    assert!(managed_paths(&f).is_empty());
+}
+
+#[test]
+fn a_row_file_that_changes_after_its_privacy_scan_is_unreadable() {
+    let f = fixture();
+    let output = publish(&f);
+    std::fs::write(
+        output
+            .join("markdown")
+            .join(PUBLIC_ID)
+            .join("sections.jsonl"),
+        b"\xff\n",
+    )
+    .unwrap();
+    // The scan sees the file as it was; the row read then meets invalid UTF-8.
+    dist_verify::set_privacy_hook(|_| Some((false, Vec::new())));
+    let mut run = tax_radar_au::fadden::Run::default();
+    let result = dist_verify::verify_distribution(&s(&output), &policy(&f), &mut run);
+    dist_verify::set_privacy_hook(|_| None);
+    let fails = result.unwrap();
+    let label = "all distributed title files are validated UTF-8 text";
+    assert!(fails.iter().any(|l| l == label), "{fails:?}");
+    assert_eq!(status(&String::from_utf8_lossy(&run.stdout), label), "FAIL");
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn copied_files_keep_their_extended_attributes() {
+    let f = fixture();
+    let source = f
+        .root
+        .join("markdown")
+        .join(PUBLIC_ID)
+        .join(format!("{PUBLIC_ID}.md"));
+    let path = std::ffi::CString::new(s(&source)).unwrap();
+    let name = std::ffi::CString::new("user.review").unwrap();
+    // SAFETY: NUL-terminated path and name, and a value of the length passed.
+    let set =
+        unsafe { libc::setxattr(path.as_ptr(), name.as_ptr(), b"kept".as_ptr().cast(), 4, 0) };
+    if set != 0 {
+        let error = std::io::Error::last_os_error();
+        assert_eq!(error.raw_os_error(), Some(libc::ENOTSUP), "{error}");
+        eprintln!("skipped: this filesystem has no user attributes");
+        return;
+    }
+    let output = publish(&f);
+    let copied = std::ffi::CString::new(s(&output
+        .join("markdown")
+        .join(PUBLIC_ID)
+        .join(format!("{PUBLIC_ID}.md"))))
+    .unwrap();
+    let mut value = [0u8; 16];
+    // SAFETY: NUL-terminated path and name, and a buffer of the length passed.
+    let got = unsafe {
+        libc::getxattr(
+            copied.as_ptr(),
+            name.as_ptr(),
+            value.as_mut_ptr().cast(),
+            value.len(),
+        )
+    };
+    assert_eq!(&value[..usize::try_from(got).unwrap()], b"kept");
 }

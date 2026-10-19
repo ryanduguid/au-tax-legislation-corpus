@@ -14,7 +14,8 @@
   - An argument that is not valid Unicode (possible on Windows) is refused with `fadden: every argument must be valid Unicode.` and exit 2, as the radar does.
   - A file or directory name that is not valid Unicode (bytes that are not UTF-8 on Linux, a lone surrogate on Windows) in a tree a stage lists stops the stage with `ValueError: file name is not valid Unicode: '<path>'`, exit 1, or exit 2 from `dist_verify`. Python carried such a name through as a surrogate-escaped string.
   - JSON nested more than 1,000 levels deep raises `RecursionError: maximum recursion depth exceeded while decoding a JSON array from a unicode string` (or `object`). CPython 3.15 raises it only where its C stack runs low, above 13,000 levels on Windows, and words the message by the stack used.
-  - `dist` copies each title's files with their data, times and permission bits, as `shutil.copy2` does, but not Linux extended attributes.
+  - Writing JSON nested more than 900 containers deep (`dist`'s `sources.json`, `pii_scan`'s `pii_flagged.json`, `probe13.json`) raises `RecursionError: maximum recursion depth exceeded`. Python's encoder stops at its recursion limit, about 995 containers in a bare script and fewer under a deeper call stack. `pii_scan` leaves `pii_flagged.json` empty where Python left the part written before it stopped.
+  - Sorts follow CPython 3.15. Where 64 or more items include values that do not order (or NaNs), CPython 3.14 forms its runs differently and can meet a different pair of types, or leave NaNs elsewhere, as 3.14 and 3.15 differ from each other.
 
 # v0.3.0
 

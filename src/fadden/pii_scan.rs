@@ -195,10 +195,14 @@ fn first_scan(run: &mut Run) -> Result<(), Exc> {
             })
             .collect(),
     );
-    write_text(
-        &pypath::join(&scratch, "pii_flagged.json"),
-        &dumps_with(&document, Some(1), true, false),
-    )
+    let path = pypath::join(&scratch, "pii_flagged.json");
+    if let Err(error) = super::refuse_deep(&document) {
+        // Python opened the file before its encoder stopped.
+        std::fs::File::create(&path)
+            .map_err(|e| crate::pyos::OsError::new(&e, Some(&path), crate::pyos::Style::Errno))?;
+        return Err(error);
+    }
+    write_text(&path, &dumps_with(&document, Some(1), true, false))
 }
 
 /// `python -m fadden pii_scan`: the stage takes no arguments.

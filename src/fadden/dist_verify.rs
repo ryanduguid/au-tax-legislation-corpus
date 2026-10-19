@@ -38,6 +38,20 @@ pub const LICENCE_EXCLUDED: [&str; 5] = [
 
 type P = Vec<u32>;
 
+type PrivacyHook = Box<dyn FnMut(&str) -> Option<(bool, Vec<pii::Unapproved>)>>;
+
+thread_local! {
+    static PRIVACY_HOOK: std::cell::RefCell<Option<PrivacyHook>> =
+        const { std::cell::RefCell::new(None) };
+}
+
+/// Run `hook(title_file)` before each title file's privacy scan on this
+/// thread; findings it returns replace the scan. For tests.
+#[doc(hidden)]
+pub fn set_privacy_hook(hook: impl FnMut(&str) -> Option<(bool, Vec<pii::Unapproved>)> + 'static) {
+    PRIVACY_HOOK.with(|h| *h.borrow_mut() = Some(Box::new(hook)));
+}
+
 fn pts(text: &str) -> P {
     text.chars().map(u32::from).collect()
 }
@@ -345,7 +359,13 @@ pub fn verify_distribution(
         }
         let mut unreadable_paths = BTreeSet::new();
         for title_file in &title_files {
-            match pii::privacy_findings_in_file(title_file, rid, &approved) {
+            let injected =
+                PRIVACY_HOOK.with(|h| h.borrow_mut().as_mut().and_then(|hook| hook(title_file)));
+            let scanned = match injected {
+                Some(found) => Ok(found),
+                None => pii::privacy_findings_in_file(title_file, rid, &approved),
+            };
+            match scanned {
                 Err(error) if pii::unreadable(&error) => {
                     unreadable_title_files.insert(rid.clone());
                     unreadable_paths.insert(pypath::normcase(title_file));

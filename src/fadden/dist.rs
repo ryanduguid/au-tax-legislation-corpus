@@ -854,37 +854,52 @@ fn int(n: usize) -> Json {
 }
 
 /// `json.dump(value, f, indent=1, ensure_ascii=False)` through a text-mode
-/// file: the encoder writes each string as its own chunk, so a lone surrogate
-/// fails with a position inside that quoted string.
+/// file, which it opens first: the encoder writes each string as its own
+/// chunk, so a lone surrogate fails with a position inside that quoted string,
+/// and nesting past `ENCODE_DEPTH` stops it, whichever it reaches first.
 fn dump_json(path: &str, value: &Json) -> Result<(), Exc> {
-    fn first_surrogate(value: &Json) -> Option<P> {
+    fn first_stop(value: &Json, level: usize) -> Option<Exc> {
         let check = |s: &PyStr| match s {
-            PyStr::Lone(_) => Some(dumps_line(&Json::Str(s.clone()), false)),
+            PyStr::Lone(_) => Some(Exc::UnicodeEncode(
+                pyvalue::utf8_strict_error(&dumps_line(&Json::Str(s.clone()), false))
+                    .unwrap_or_default(),
+            )),
             PyStr::Text(_) => None,
         };
         match value {
             Json::Str(s) => check(s),
-            Json::Array(items) => items.iter().find_map(first_surrogate),
+            Json::Array(_) | Json::Object(_) if level >= super::ENCODE_DEPTH => {
+                Some(super::too_deep())
+            }
+            Json::Array(items) => items.iter().find_map(|v| first_stop(v, level + 1)),
             Json::Object(pairs) => pairs
                 .iter()
-                .find_map(|(k, v)| check(k).or_else(|| first_surrogate(v))),
+                .find_map(|(k, v)| check(k).or_else(|| first_stop(v, level + 1))),
             _ => None,
         }
     }
-    if let Some(chunk) = first_surrogate(value) {
+    if let Some(error) = first_stop(value, 0) {
         std::fs::File::create(path).map_err(|e| OsError::new(&e, Some(path), Style::Errno))?;
-        return Err(Exc::UnicodeEncode(
-            pyvalue::utf8_strict_error(&chunk).unwrap_or_default(),
-        ));
+        return Err(error);
     }
     write_text(path, &dumps_with(value, Some(1), false, false))
 }
 
-/// One failure `shutil.copytree` collects: source, destination, `str(error)`.
-type CopyError = (String, String, String);
+/// One item of the list `shutil.copytree` collects, as its `repr`: usually a
+/// `(source, destination, str(error))` tuple.
+type CopyError = String;
 
-/// Why copying one entry failed: an `OSError` (its text), a nested
-/// `copytree`'s collected failures, or an exception copytree does not catch.
+fn copy_error(from: &str, to: &str, text: &str) -> CopyError {
+    format!(
+        "({}, {}, {})",
+        py::repr_str(from),
+        py::repr_str(to),
+        py::repr_str(text)
+    )
+}
+
+/// Why copying one entry failed: an `OSError` (its text), the items of a
+/// `shutil.Error`, or an exception copytree does not catch.
 enum CopyFailure {
     Os(String),
     Nested(Vec<CopyError>),
@@ -906,6 +921,17 @@ impl From<Exc> for CopyFailure {
                 class: "shutil.SpecialFileError",
                 message,
             } => CopyFailure::Os(message),
+            // SameFileError is a shutil.Error: copytree extends its list with
+            // `err.args[0]`, here the message, one character at a time.
+            Exc::Shutil {
+                class: "shutil.SameFileError",
+                message,
+            } => CopyFailure::Nested(
+                message
+                    .chars()
+                    .map(|c| py::repr_str(&c.to_string()))
+                    .collect(),
+            ),
             other => CopyFailure::Other(other),
         }
     }
@@ -919,20 +945,9 @@ fn copytree(src: &str, dst: &str) -> Result<(), Exc> {
     if errors.is_empty() {
         return Ok(());
     }
-    let shown: Vec<String> = errors
-        .iter()
-        .map(|(a, b, c)| {
-            format!(
-                "({}, {}, {})",
-                py::repr_str(a),
-                py::repr_str(b),
-                py::repr_str(c)
-            )
-        })
-        .collect();
     Err(Exc::Shutil {
         class: "shutil.Error",
-        message: format!("[{}]", shown.join(", ")),
+        message: format!("[{}]", errors.join(", ")),
     })
 }
 
@@ -948,7 +963,7 @@ fn copytree_errors(src: &str, dst: &str) -> Result<Vec<CopyError>, Exc> {
         let (from, to) = (pypath::join(src, &name), pypath::join(dst, &name));
         match copy_entry(&from, &to) {
             Ok(()) => {}
-            Err(CopyFailure::Os(text)) => errors.push((from, to, text)),
+            Err(CopyFailure::Os(text)) => errors.push(copy_error(&from, &to, &text)),
             Err(CopyFailure::Nested(nested)) => errors.extend(nested),
             Err(CopyFailure::Other(error)) => return Err(error),
         }
@@ -957,7 +972,7 @@ fn copytree_errors(src: &str, dst: &str) -> Result<Vec<CopyError>, Exc> {
     if let Err(error) = copystat(src, dst)
         && cfg!(not(windows))
     {
-        errors.push((src.to_string(), dst.to_string(), error.text));
+        errors.push(copy_error(src, dst, &error.text));
     }
     Ok(errors)
 }
@@ -1002,15 +1017,26 @@ fn copy2(from: &str, to: &str) -> Result<(), CopyFailure> {
     }
     #[cfg(not(windows))]
     {
-        copyfile(from, to)?;
+        // copytree hands copy2 the DirEntry, which the same-file message shows.
+        let name = pypath::split(from).1;
+        copyfile(from, to, &format!("<DirEntry {}>", py::repr_str(&name)))?;
         copystat(from, to)?;
     }
     Ok(())
 }
 
-/// `shutil.copyfile(src, dst)` to a new destination: a named pipe on either
-/// side is refused before anything is opened.
-fn copyfile(src: &str, dst: &str) -> Result<(), Exc> {
+/// `shutil.copyfile(src, dst)`, `src` shown as `shown`: the same file or a
+/// named pipe on either side is refused before anything is opened, so a
+/// destination linked to its source is never truncated.
+fn copyfile(src: &str, dst: &str, shown: &str) -> Result<(), Exc> {
+    if let (Ok(a), Ok(b)) = (pyos::file_id(src), pyos::file_id(dst))
+        && a == b
+    {
+        return Err(Exc::Shutil {
+            class: "shutil.SameFileError",
+            message: format!("{shown} and {} are the same file", py::repr_str(dst)),
+        });
+    }
     #[cfg(unix)]
     for path in [src, dst] {
         use std::os::unix::fs::FileTypeExt;
@@ -1021,37 +1047,141 @@ fn copyfile(src: &str, dst: &str) -> Result<(), Exc> {
             });
         }
     }
-    let mut input =
-        std::fs::File::open(src).map_err(|e| OsError::new(&e, Some(src), Style::Errno))?;
+    let mut input = crate::pyio::open(src)?;
     let mut output =
         std::fs::File::create(dst).map_err(|e| OsError::new(&e, Some(dst), Style::Errno))?;
-    std::io::copy(&mut input, &mut output).map_err(|e| OsError::new(&e, None, Style::Errno))?;
+    std::io::copy(&mut input, &mut output).map_err(|e| OsError::two(&e, src, dst, Style::Errno))?;
     Ok(())
 }
 
-/// `shutil.copystat(src, dst)`: access and modification times, then the
-/// permission bits. shortcut: Linux extended attributes are not copied; the
-/// corpus's title files carry none, and a copy without them publishes less.
+/// `shutil.copystat(src, dst)`: access and modification times, set by path,
+/// then on Linux the extended attributes, then the permission bits.
 fn copystat(src: &str, dst: &str) -> Result<(), OsError> {
     let source = |e: std::io::Error| OsError::new(&e, Some(src), Style::Native);
     let target = |e: std::io::Error| OsError::new(&e, Some(dst), Style::Native);
     let meta = std::fs::metadata(src).map_err(source)?;
-    let times = std::fs::FileTimes::new()
-        .set_accessed(meta.accessed().map_err(source)?)
-        .set_modified(meta.modified().map_err(source)?);
     #[cfg(unix)]
-    let handle = std::fs::File::open(dst);
+    {
+        use std::os::unix::fs::MetadataExt;
+        let path = std::ffi::CString::new(dst)
+            .map_err(|_| target(std::io::ErrorKind::InvalidInput.into()))?;
+        let times = [
+            libc::timespec {
+                tv_sec: meta.atime(),
+                tv_nsec: meta.atime_nsec(),
+            },
+            libc::timespec {
+                tv_sec: meta.mtime(),
+                tv_nsec: meta.mtime_nsec(),
+            },
+        ];
+        // SAFETY: a NUL-terminated path and two timespecs, as utimensat takes.
+        if unsafe { libc::utimensat(libc::AT_FDCWD, path.as_ptr(), times.as_ptr(), 0) } != 0 {
+            return Err(target(std::io::Error::last_os_error()));
+        }
+    }
     #[cfg(windows)]
-    let handle = {
+    {
         use std::os::windows::fs::OpenOptionsExt;
+        let times = std::fs::FileTimes::new()
+            .set_accessed(meta.accessed().map_err(source)?)
+            .set_modified(meta.modified().map_err(source)?);
         // FILE_WRITE_ATTRIBUTES, with FILE_FLAG_BACKUP_SEMANTICS so a directory opens.
         std::fs::OpenOptions::new()
             .access_mode(0x100)
             .custom_flags(0x0200_0000)
             .open(dst)
-    };
-    handle.and_then(|f| f.set_times(times)).map_err(target)?;
+            .and_then(|f| f.set_times(times))
+            .map_err(target)?;
+    }
+    #[cfg(target_os = "linux")]
+    copyxattr(src, dst)?;
     std::fs::set_permissions(dst, meta.permissions()).map_err(target)
+}
+
+/// `shutil._copyxattr(src, dst)`: every extended attribute, ignoring the
+/// errors Python ignores (unsupported or absent attributes, and attributes
+/// this account may not read or write).
+#[cfg(target_os = "linux")]
+fn copyxattr(src: &str, dst: &str) -> Result<(), OsError> {
+    use std::ffi::CString;
+    use std::io::Error;
+    let c = |p: &str| {
+        CString::new(p).map_err(|_| {
+            OsError::new(
+                &Error::from_raw_os_error(libc::EINVAL),
+                Some(p),
+                Style::Native,
+            )
+        })
+    };
+    let (s, d) = (c(src)?, c(dst)?);
+    // Read a size-queried buffer, retrying if it grew in between.
+    let read = |fill: &dyn Fn(*mut libc::c_char, usize) -> isize| -> Result<Vec<u8>, Error> {
+        loop {
+            let size = fill(std::ptr::null_mut(), 0);
+            if size < 0 {
+                return Err(Error::last_os_error());
+            }
+            let mut buffer = vec![0u8; size as usize];
+            let got = fill(buffer.as_mut_ptr().cast(), buffer.len());
+            if got >= 0 {
+                buffer.truncate(got as usize);
+                return Ok(buffer);
+            }
+            let error = Error::last_os_error();
+            if error.raw_os_error() != Some(libc::ERANGE) {
+                return Err(error);
+            }
+        }
+    };
+    // SAFETY (each call below): NUL-terminated paths and names, and a buffer
+    // of the length passed, or null with length 0 to query the size.
+    let names = match read(&|buf, len| unsafe { libc::listxattr(s.as_ptr(), buf, len) }) {
+        Ok(names) => names,
+        Err(e)
+            if matches!(
+                e.raw_os_error(),
+                Some(libc::ENOTSUP | libc::ENODATA | libc::EINVAL)
+            ) =>
+        {
+            return Ok(());
+        }
+        Err(e) => return Err(OsError::new(&e, Some(src), Style::Native)),
+    };
+    for name in names.split(|&b| b == 0).filter(|n| !n.is_empty()) {
+        let Ok(name) = CString::new(name) else {
+            continue;
+        };
+        let copied =
+            read(&|buf, len| unsafe { libc::getxattr(s.as_ptr(), name.as_ptr(), buf.cast(), len) })
+                .map_err(|e| (e, src))
+                .and_then(|value| {
+                    let set = unsafe {
+                        libc::setxattr(
+                            d.as_ptr(),
+                            name.as_ptr(),
+                            value.as_ptr().cast(),
+                            value.len(),
+                            0,
+                        )
+                    };
+                    if set == 0 {
+                        Ok(())
+                    } else {
+                        Err((Error::last_os_error(), dst))
+                    }
+                });
+        if let Err((e, path)) = copied
+            && !matches!(
+                e.raw_os_error(),
+                Some(libc::EPERM | libc::ENOTSUP | libc::ENODATA | libc::EINVAL | libc::EACCES)
+            )
+        {
+            return Err(OsError::new(&e, Some(path), Style::Native));
+        }
+    }
+    Ok(())
 }
 
 /// `len(text.split())` on a row's text, or the AttributeError a non-str raises.
@@ -1408,7 +1538,7 @@ fn build_distribution(paths: &Paths, staging: &str, run: &mut Run) -> Result<(),
     let licence_src = child(&paths.root, &["LICENCE-NOTICE.md"])?;
     let licence_dst = child(staging, &["LICENCE-NOTICE.md"])?;
     // `shutil.copy`: the data, then the permission bits.
-    copyfile(&licence_src, &licence_dst)?;
+    copyfile(&licence_src, &licence_dst, &py::repr_str(&licence_src))?;
     let mode = std::fs::metadata(&licence_src)
         .map_err(|e| OsError::new(&e, Some(&licence_src), Style::Native))?
         .permissions();
