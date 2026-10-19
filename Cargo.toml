@@ -43,6 +43,9 @@ windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_Storage
 # src/fadden/http.rs. Release builds leave it off.
 fake-http = []
 
+[target."cfg(unix)".dev-dependencies]
+libc = "0.2"
+
 [dev-dependencies]
 serde_json = { version = "1.0.145", features = ["preserve_order"] }
 tempfile = "3.27.0"

@@ -160,6 +160,31 @@ pub fn normpath(p: &str) -> String {
     format!("{drive}{root}{}", comps.join("\\"))
 }
 
+/// `os.path.normpath(p)` (POSIX): two leading slashes are kept, three or more
+/// become one.
+#[cfg(not(windows))]
+pub fn normpath(p: &str) -> String {
+    let leading = p.len() - p.trim_start_matches('/').len();
+    let prefix = match leading {
+        0 => "",
+        2 => "//",
+        _ => "/",
+    };
+    let mut comps: Vec<&str> = Vec::new();
+    for comp in p.split('/') {
+        if comp.is_empty() || comp == "." {
+            continue;
+        }
+        if comp != ".." || (prefix.is_empty() && comps.is_empty()) || comps.last() == Some(&"..") {
+            comps.push(comp);
+        } else if !comps.is_empty() {
+            comps.pop();
+        }
+    }
+    let path = format!("{prefix}{}", comps.join("/"));
+    if path.is_empty() { ".".into() } else { path }
+}
+
 impl PyPath {
     /// `Path(text)`.
     pub fn new(text: &str) -> Self {
