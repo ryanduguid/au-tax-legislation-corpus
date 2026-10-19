@@ -763,10 +763,20 @@ pub fn run(
         }
     }
 
-    crate::pyos::makedirs(&out.parent())?;
-    std::fs::create_dir(out.fs()).map_err(|e| {
-        crate::pyos::OsError::new(&e, Some(&out.display()), crate::pyos::Style::Native)
-    })?;
+    // `out.mkdir(parents=True)`: only a missing parent is created; any other
+    // failure, such as a parent that is a file on POSIX, is the output's own.
+    let mkdir_out = || {
+        std::fs::create_dir(out.fs()).map_err(|e| {
+            crate::pyos::OsError::new(&e, Some(&out.display()), crate::pyos::Style::Native)
+        })
+    };
+    if let Err(error) = mkdir_out() {
+        if error.kind != std::io::ErrorKind::NotFound {
+            return Err(error.into());
+        }
+        crate::pyos::makedirs(&out.parent())?;
+        mkdir_out()?;
+    }
     let raw_dir = out.join("raw");
     std::fs::create_dir(raw_dir.fs()).map_err(|e| {
         crate::pyos::OsError::new(&e, Some(&raw_dir.display()), crate::pyos::Style::Native)
