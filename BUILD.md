@@ -236,7 +236,7 @@ is ambiguous, the 119 batch attempts and 946 singleton retries make 1,065 resolu
 requests, costing more than serial resolution. These figures are arithmetic, not
 measured full-build times; network latency and retries add time.
 
-`extract.py`, `finalize.py` and `rates.py` are local: about 3 minutes for all 3
+`extract.py`, `finalize.py` and the `rates` stage are local: about 3 minutes for all 3
 over 946 titles.
 
 `check_current.py` is 946 API calls at 1.5 seconds, so allow half an hour. It
@@ -488,7 +488,7 @@ From an empty checkout, run the stages in order. Stage names are unchanged;
 the dispatcher lives at `python -m fadden <stage>`. Intermediate JSON files
 are written beside the stage modules under `fadden/`.
 
-The `as_at`, `compare_builds` and `search` stages are the Rust `fadden` binary, built
+The `as_at`, `compare_builds`, `rates` and `search` stages are the Rust `fadden` binary, built
 with `cargo build --locked --release`; the dispatcher runs it with the same
 arguments and the binary keeps their command lines, messages and exit
 statuses. `FADDEN_BIN` names another build of it. An exception those Python
@@ -520,7 +520,7 @@ reports the scan's totals; `finalize.py` refuses to run without
 A rebuild that drops a title leaves its `markdown/<id>/` directory behind, and
 the rates index and MCP search would go on reading it as in force. `finalize.py`
 therefore stops before writing anything when `markdown/` holds a title entry
-that `manifest_md.json` does not list, and `rates.py` does the same against the
+that `manifest_md.json` does not list, and the `rates` stage does the same against the
 titles in `sources.json`. Dot-directories are ignored. Neither stage deletes
 anything: move the listed directories out of the corpus, then re-run.
 

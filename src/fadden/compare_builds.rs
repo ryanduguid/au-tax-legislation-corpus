@@ -80,7 +80,6 @@ fn prefixed(prefix: &str, value: &Json) -> Vec<u32> {
 fn keyed(rows: &[Json]) -> Result<Vec<(Key, usize)>, Exc> {
     let mut seen: HashMap<(Key, Key), usize> = HashMap::new();
     let mut result = Vec::with_capacity(rows.len());
-    let mut nan_id = 0;
     for (index, row) in rows.iter().enumerate() {
         let label = if field(row, "section").truthy() {
             prefixed("s ", field(row, "section"))
@@ -102,7 +101,7 @@ fn keyed(rows: &[Json]) -> Result<Vec<(Key, usize)>, Exc> {
             Json::str("")
         };
         let base = (
-            pyvalue::key(&container, &mut nan_id)
+            pyvalue::key(&container)
                 .map_err(|m| Exc::Type(format!("cannot use 'tuple' as a dict key ({m})")))?,
             Key::Str(label),
         );

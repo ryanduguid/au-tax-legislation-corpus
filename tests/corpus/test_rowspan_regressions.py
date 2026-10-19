@@ -2,7 +2,8 @@
 import contextlib
 import io
 import json
-import shutil
+import os
+import subprocess
 import tempfile
 import unittest
 import zipfile
@@ -10,9 +11,10 @@ from pathlib import Path
 from unittest import mock
 
 from fadden import extract
+from fadden.__main__ import rust_binary
 
 from tests.corpus import test_regressions as fixtures
-from tests.corpus.test_regressions import STAGE, load_module
+from tests.corpus.test_regressions import load_module
 
 LEADING = (
     '<table><thead><tr><th>Category</th><th>Rate</th></tr></thead>'
@@ -312,15 +314,20 @@ class RowspanPipelineTests(unittest.TestCase):
             self.assertIn(expected, section["text"])
             self.assertIs(section["authorised"], False)
             self.assertEqual(section["compilation_number"], "1")
-            shutil.copy2(STAGE / "rates.py", build / "rates.py")
             (root / "sources.json").write_text(json.dumps({
                 "titles": [{"register_id": fixture.REGISTER_ID}],
             }), encoding="utf-8")
-            rates = load_module("rowspan_rates", build / "rates.py")
-            with contextlib.redirect_stdout(io.StringIO()):
-                rates.main()
+            # The rates stage is the Rust fadden binary; deployed in build/, it
+            # writes beside it.
+            binary = rust_binary()
+            if binary is None:
+                self.skipTest("the Rust fadden binary is not built")
+            done = subprocess.run(  # noqa: S603 - this checkout's build
+                [binary, "rates"], env=dict(os.environ, FADDEN_MODULE_DIR=str(build)),
+                capture_output=True, check=False)
+            self.assertEqual(done.returncode, 0, done.stderr)
             indexed = [json.loads(line) for line in
-                       (Path(rates.OUT) / "rates.jsonl").read_text(encoding="utf-8").splitlines()]
+                       (root / "rates" / "rates.jsonl").read_text(encoding="utf-8").splitlines()]
             record = next(row for row in indexed if row["kind"] == "table")
             self.assertIn(expected, record["content"])
             self.assertEqual(record["content"].count("5%"), 1)

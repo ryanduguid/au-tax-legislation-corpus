@@ -9,9 +9,12 @@ pub mod as_at;
 pub mod cli;
 pub mod compare_builds;
 pub mod corpus_paths;
+pub mod rates;
 pub mod search;
 
+use crate::pyjson::Json;
 use crate::pyos::OsError;
+use crate::pyvalue::type_name;
 
 /// A Python exception a stage raises.
 #[derive(Debug)]
@@ -141,5 +144,53 @@ impl Run {
     pub fn uncaught(&mut self, error: &Exc) -> i32 {
         self.eprint(&format!("{}: {error}", error.class()));
         1
+    }
+}
+
+/// `value.get(field)` on a dict, or the AttributeError `.get` raises otherwise.
+pub fn get<'a>(title: &'a Json, field: &str) -> Result<Option<&'a Json>, Exc> {
+    match title {
+        Json::Object(_) => Ok(title.get(field)),
+        other => Err(Exc::Attribute(format!(
+            "'{}' object has no attribute 'get'",
+            type_name(other)
+        ))),
+    }
+}
+
+/// The items `for item in value` sees.
+pub fn iterate(titles: &Json) -> Result<Vec<Json>, Exc> {
+    match titles {
+        Json::Array(items) => Ok(items.clone()),
+        // A dict iterates its keys and a str its characters, all strs.
+        Json::Object(pairs) => Ok(pairs.iter().map(|(k, _)| Json::Str(k.clone())).collect()),
+        Json::Str(s) => Ok(s
+            .code_points()
+            .into_iter()
+            .map(|cp| Json::Str(crate::pyjson::PyStr::from_code_points(vec![cp])))
+            .collect()),
+        other => Err(Exc::Type(format!(
+            "'{}' object is not iterable",
+            type_name(other)
+        ))),
+    }
+}
+
+/// `value[key]` for a str key, with the exception Python raises otherwise.
+pub fn getitem<'a>(value: &'a Json, key: &str) -> Result<&'a Json, Exc> {
+    match value {
+        Json::Object(_) => value
+            .get(key)
+            .ok_or_else(|| Exc::Key(crate::py::repr_str(key))),
+        Json::Array(_) => Err(Exc::Type(
+            "list indices must be integers or slices, not str".into(),
+        )),
+        Json::Str(_) => Err(Exc::Type(
+            "string indices must be integers, not 'str'".into(),
+        )),
+        other => Err(Exc::Type(format!(
+            "'{}' object is not subscriptable",
+            type_name(other)
+        ))),
     }
 }

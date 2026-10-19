@@ -117,7 +117,7 @@ pub enum Number {
     /// A non-integral finite float, by its bits.
     Fraction(u64),
     Infinite(bool),
-    /// NaN, which equals nothing; each one is its own object.
+    /// NaN, which equals nothing under `==`; the id tells identical objects apart.
     Nan(usize),
 }
 
@@ -155,22 +155,34 @@ pub fn float_to_int(f: f64) -> BigInt {
     }
 }
 
-/// `a == b` for decoded JSON values (distinct objects, so NaN equals nothing).
+/// `a == b` for decoded JSON values. `json` decodes every NaN to one shared
+/// object: NaN equals nothing under `==`, but inside a list or dict the
+/// comparison checks identity first, so a nested NaN equals another.
 pub fn py_eq(a: &Json, b: &Json) -> bool {
-    if let (Some(x), Some(y)) = (number(a, 0), number(b, 1)) {
+    eq(a, b, false)
+}
+
+/// `a == b` as a tuple, list or dict compares its items: identity first, so a
+/// NaN from `json` equals itself.
+pub fn item_eq(a: &Json, b: &Json) -> bool {
+    eq(a, b, true)
+}
+
+fn eq(a: &Json, b: &Json, nested: bool) -> bool {
+    if let (Some(x), Some(y)) = (number(a, 0), number(b, usize::from(!nested))) {
         return x == y;
     }
     match (a, b) {
         (Json::Null, Json::Null) => true,
         (Json::Str(x), Json::Str(y)) => x.code_points() == y.code_points(),
         (Json::Array(x), Json::Array(y)) => {
-            x.len() == y.len() && x.iter().zip(y).all(|(p, q)| py_eq(p, q))
+            x.len() == y.len() && x.iter().zip(y).all(|(p, q)| eq(p, q, true))
         }
         (Json::Object(x), Json::Object(y)) => {
             x.len() == y.len()
                 && x.iter().all(|(k, v)| {
                     y.iter()
-                        .any(|(k2, v2)| k.code_points() == k2.code_points() && py_eq(v, v2))
+                        .any(|(k2, v2)| k.code_points() == k2.code_points() && eq(v, v2, true))
                 })
         }
         _ => false,
@@ -188,10 +200,9 @@ pub enum Key {
 
 /// `hash(value)`'s equivalence class, or Python's `TypeError` for a list or dict.
 ///
-/// `nan_id` must be unique per NaN object.
-pub fn key(value: &Json, nan_id: &mut usize) -> Result<Key, String> {
-    *nan_id += 1;
-    if let Some(n) = number(value, *nan_id) {
+/// Every NaN `json` decodes is one object, so a dict finds it by identity.
+pub fn key(value: &Json) -> Result<Key, String> {
+    if let Some(n) = number(value, 0) {
         return Ok(Key::Number(n));
     }
     match value {
@@ -319,6 +330,25 @@ pub fn encode_print(points: &[u32]) -> Result<Vec<u8>, String> {
     Ok(out)
 }
 
+/// A strict UTF-8 encoding error for code points, as `str.encode()` words it.
+pub fn utf8_strict_error(points: &[u32]) -> Option<String> {
+    let start = points.iter().position(|&cp| char::from_u32(cp).is_none())?;
+    let end = (start..points.len())
+        .find(|&j| char::from_u32(points[j]).is_some())
+        .unwrap_or(points.len());
+    Some(if end - start == 1 {
+        format!(
+            "'utf-8' codec can't encode character '\\u{:04x}' in position {start}: surrogates not allowed",
+            points[start]
+        )
+    } else {
+        format!(
+            "'utf-8' codec can't encode characters in position {start}-{}: surrogates not allowed",
+            end - 1
+        )
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -346,13 +376,11 @@ mod tests {
         assert!(py_eq(&j("[1, {\"a\": 2.0}]"), &j("[true, {\"a\": 2}]")));
         assert!(!py_eq(&j("NaN"), &j("NaN")));
         assert!(!py_eq(&j("9007199254740993"), &j("9007199254740992.0")));
-        let mut id = 0;
-        assert_eq!(key(&j("1"), &mut id), key(&j("1.0"), &mut id));
-        assert_ne!(key(&j("NaN"), &mut id), key(&j("NaN"), &mut id));
-        assert_eq!(
-            key(&j("[]"), &mut id).unwrap_err(),
-            "unhashable type: 'list'"
-        );
+        assert_eq!(key(&j("1")), key(&j("1.0")));
+        assert_eq!(key(&j("NaN")), key(&j("NaN")));
+        assert!(!py_eq(&j("NaN"), &j("NaN")));
+        assert!(py_eq(&j("[NaN]"), &j("[NaN]")));
+        assert_eq!(key(&j("[]")).unwrap_err(), "unhashable type: 'list'");
     }
 
     #[test]

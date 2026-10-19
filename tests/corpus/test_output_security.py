@@ -128,19 +128,6 @@ class PathAndWriteTests(unittest.TestCase):
                 fetch.assert_not_called()
                 self.assertEqual(list((root / "epub").glob("*")), [])
 
-    def test_rate_rows_must_belong_to_their_directory_even_without_rate_content(self):
-        with tempfile.TemporaryDirectory() as temporary:
-            root = Path(temporary)
-            module = regressions.load_module("rate_identity", STAGE / "rates.py")
-            module.ROOT, module.OUT = str(root), str(root / "rates")
-            title = root / "markdown" / "C2099A00001"
-            title.mkdir(parents=True)
-            (root / "sources.json").write_text(json.dumps({"titles": [{"register_id": title.name}]}), encoding="utf-8")
-            (title / "sections.jsonl").write_text(json.dumps({"register_id": "C2099A00002", "text": "No rate here."}) + "\n", encoding="utf-8")
-            with self.assertRaisesRegex(ValueError, "does not match"):
-                module.main()
-            self.assertEqual(list((root / "rates").iterdir()), [])
-
     def test_identifiers_and_complete_dates_are_checked(self):
         for value in ("C2099A00001' or true", "C２０９９A00001", "../C2099A00001", None):
             with self.subTest(value=value), self.assertRaises(ValueError):
@@ -170,7 +157,7 @@ class PathAndWriteTests(unittest.TestCase):
 
     def test_installed_locations_refuse_legacy_stages_before_side_effects(self):
         for name in ("discover", "versions", "download", "probe13", "retry13", "extract",
-                     "finalize", "rates", "check_current", "pii_scan", "pii_scan2", "dist"):
+                     "finalize", "check_current", "pii_scan", "pii_scan2", "dist"):
             module = regressions.load_module("installed_guard_" + name, STAGE / (name + ".py"))
             with self.subTest(stage=name), tempfile.TemporaryDirectory() as temporary, \
                     mock.patch.object(module, "__file__", str(Path(temporary) / "fadden" / (name + ".py"))):

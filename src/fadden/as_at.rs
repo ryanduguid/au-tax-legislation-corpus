@@ -9,12 +9,12 @@
 //! finding that the text was the law on the date.
 use unicode_normalization::UnicodeNormalization;
 
-use super::{Exc, Run, json_error};
+use super::{Exc, Run, get, iterate, json_error};
 use crate::argparse::{Action, Exit, Get, Parser};
 use crate::py;
 use crate::pyjson::{self, Json};
 use crate::pypath;
-use crate::pyvalue::{self, dumps_line, repr, type_name};
+use crate::pyvalue::{self, dumps_line, repr};
 
 pub const CAPTURED: &str = "captured";
 pub const BEFORE_COMPILATION: &str = "before_compilation";
@@ -34,17 +34,6 @@ fn action(status: &str) -> Option<&'static str> {
 /// `date.fromisoformat(value).isoformat() == value`: a canonical `YYYY-MM-DD`.
 pub fn is_date(value: &str) -> bool {
     py::Date::fromisoformat(value).is_some_and(|d| d.isoformat() == value)
-}
-
-/// `title.get(field)` on a dict, or the AttributeError `.get` raises otherwise.
-fn get<'a>(title: &'a Json, field: &str) -> Result<Option<&'a Json>, Exc> {
-    match title {
-        Json::Object(_) => Ok(title.get(field)),
-        other => Err(Exc::Attribute(format!(
-            "'{}' object has no attribute 'get'",
-            type_name(other)
-        ))),
-    }
 }
 
 /// `title.get('id', '?')` as an f-string shows it.
@@ -148,24 +137,6 @@ pub fn quote_in_text(quote: &str, text: &str) -> Result<bool, Exc> {
         return Err(Exc::value("a blank quotation matches every text"));
     }
     Ok(literal(text).contains(&literal(quote)))
-}
-
-/// The titles a manifest iterates over, as `for title in titles` sees them.
-fn iterate(titles: &Json) -> Result<Vec<Json>, Exc> {
-    match titles {
-        Json::Array(items) => Ok(items.clone()),
-        // A dict iterates its keys and a str its characters, all strs.
-        Json::Object(pairs) => Ok(pairs.iter().map(|(k, _)| Json::Str(k.clone())).collect()),
-        Json::Str(s) => Ok(s
-            .code_points()
-            .into_iter()
-            .map(|cp| Json::Str(crate::pyjson::PyStr::from_code_points(vec![cp])))
-            .collect()),
-        other => Err(Exc::Type(format!(
-            "'{}' object is not iterable",
-            type_name(other)
-        ))),
-    }
 }
 
 /// The manifest path the module's own directory supplies.

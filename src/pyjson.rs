@@ -447,7 +447,7 @@ fn scanstring(s: &[char], end: usize) -> Result<(PyStr, usize), DecodeError> {
         }
         next += 1;
         end = next + 4;
-        if end >= len {
+        if end > len {
             return Err(decode_error("Invalid \\uXXXX escape", s, next - 1));
         }
         let hex = |from: usize, end: usize| -> Result<u32, DecodeError> {
@@ -461,8 +461,13 @@ fn scanstring(s: &[char], end: usize) -> Result<(PyStr, usize), DecodeError> {
             Ok(value)
         };
         let mut code = hex(next, end)?;
-        if (0xd800..=0xdbff).contains(&code) && end + 6 < len && s[end] == '\\' && s[end + 1] == 'u'
+        // CPython 3.15 reads a following `\u` as the low half, and refuses it
+        // there when fewer than 4 hex digits follow.
+        if (0xd800..=0xdbff).contains(&code) && end + 1 < len && s[end] == '\\' && s[end + 1] == 'u'
         {
+            if end + 6 > len {
+                return Err(decode_error("Invalid \\uXXXX escape", s, end + 1));
+            }
             let low = hex(end + 2, end + 6)?;
             if (0xdc00..=0xdfff).contains(&low) {
                 code = 0x10000 + (((code - 0xd800) << 10) | (low - 0xdc00));
@@ -627,6 +632,39 @@ mod tests {
         assert_eq!(
             dumps(&value, Layout::Canonical),
             "{\"a\":{},\"b\":[1,2.5,\"\\u00e9\\n\\u0001\\ud83d\\ude00\"],\"c\":[]}"
+        );
+    }
+
+    /// Probed against CPython 3.15's scanner (tools/json_escape_probe.py in the
+    /// port's evidence).
+    #[test]
+    fn truncated_escapes_fail_where_cpython_315_fails() {
+        let unterminated = "Unterminated string starting at: line 1 column 1 (char 0)";
+        let invalid = |at: usize| {
+            format!(
+                "Invalid \\uXXXX escape: line 1 column {} (char {at})",
+                at + 1
+            )
+        };
+        let cases: [(&str, String); 11] = [
+            (r#""\ud83d"#, unterminated.into()),
+            (r#""é"#, unterminated.into()),
+            (r#""\u00e"#, invalid(2)),
+            (r#""\ud83d\"#, unterminated.into()),
+            (r#""\ud83d\u"#, invalid(8)),
+            (r#""\ud83d\ude0"#, invalid(8)),
+            (r#""😀"#, unterminated.into()),
+            (r#""\ud83d\u12""#, invalid(8)),
+            (r#""\ud83d\uzzzz""#, invalid(8)),
+            (r#""\ud83dx"#, unterminated.into()),
+            (r#""😀x"#, unterminated.into()),
+        ];
+        for (text, message) in cases {
+            assert_eq!(err(text), DecodeError::Invalid(message), "{text}");
+        }
+        assert_eq!(
+            loads(r#""\ud83d\ud83d""#).unwrap(),
+            Json::Str(PyStr::Lone(vec![0xd83d, 0xd83d]))
         );
     }
 }

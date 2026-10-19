@@ -321,10 +321,6 @@ fn get<'a>(value: &'a Json, key: &str) -> &'a Json {
 }
 
 /// `"%s" % value`: `str()`, with a lone surrogate kept for binding to refuse.
-fn percent_s(value: &Json) -> String {
-    pyvalue::py_str(value)
-}
-
 fn read_title(root: &str, title: &Json) -> Result<Title, Exc> {
     let rid = register_id(get(title, "register_id"))?;
     let data = read_bytes(root, &rid, "sections.jsonl")?;
@@ -361,20 +357,24 @@ fn read_title(root: &str, title: &Json) -> Result<Title, Exc> {
         }
         let ordinal = rows.len() + 1;
         let section = get(&row, "section");
-        let shown = if section.truthy() {
-            percent_s(section)
+        let mut expected: Vec<u32> = format!("{rid}:{ordinal:04}:")
+            .chars()
+            .map(u32::from)
+            .collect();
+        if section.truthy() {
+            expected.extend(pyvalue::str_points(section));
         } else {
-            "-".into()
-        };
-        let expected = format!("{rid}:{ordinal:04}:{shown}");
+            expected.push(u32::from('-'));
+        }
+        let expected = Json::Str(PyStr::from_code_points(expected));
         if !py_eq(get(&row, "register_id"), &Json::str(&rid)) {
             return Err(refused(format!("{place} names another title")));
         }
-        if !py_eq(get(&row, "row_id"), &Json::str(&expected)) {
+        if !py_eq(get(&row, "row_id"), &expected) {
             return Err(refused(format!(
                 "{place} has row_id {}, expected {}",
                 repr(get(&row, "row_id")),
-                crate::py::repr_str(&expected)
+                repr(&expected)
             )));
         }
         for field in ["compilation_number", "compilation_date"] {
@@ -548,39 +548,15 @@ fn read_corpus(root: &str) -> Result<(Vec<u8>, Json, Vec<Title>), Exc> {
         .iter()
         .map(|t| register_id(get(t, "register_id")))
         .collect::<Result<BTreeSet<String>, Exc>>()?;
-    refuse_unlisted_titles(root, &ids)?;
+    super::corpus_paths::refuse_unlisted_titles(root, &ids).map_err(|e| match e {
+        Exc::Runtime(message) => refused(message),
+        other => other,
+    })?;
     let read = listed
         .iter()
         .map(|title| read_title(root, title))
         .collect::<Result<Vec<_>, _>>()?;
     Ok((sources_bytes, sources, read))
-}
-
-/// `refuse_unlisted_titles(root, listed)`.
-fn refuse_unlisted_titles(root: &str, listed: &BTreeSet<String>) -> Result<(), Exc> {
-    let base = child(root, &["markdown"])?;
-    if !crate::pyos::isdir(&base) {
-        return Ok(());
-    }
-    let entries =
-        std::fs::read_dir(&base).map_err(|e| OsError::new(&e, Some(&base), Style::Native))?;
-    let mut stale = Vec::new();
-    for entry in entries {
-        let entry = entry.map_err(|e| OsError::new(&e, Some(&base), Style::Native))?;
-        let name = entry.file_name().to_string_lossy().into_owned();
-        if !name.starts_with('.') && !listed.contains(&name) {
-            stale.push(name);
-        }
-    }
-    stale.sort();
-    if stale.is_empty() {
-        return Ok(());
-    }
-    Err(refused(format!(
-        "markdown/ holds entries this build does not list, which would stay searchable as in force: {}. \
-         Move them out of the corpus and re-run; nothing was written or deleted.",
-        stale.join(", ")
-    )))
 }
 
 const SCHEMA_SQL: &str = "
@@ -611,25 +587,6 @@ CREATE INDEX refs_to ON refs (to_register_id, kind, to_key);
 CREATE INDEX refs_from ON refs (from_row_id);
 ";
 
-/// A strict UTF-8 encoding error for code points, as `str.encode()` words it.
-fn utf8_strict_error(points: &[u32]) -> Option<String> {
-    let start = points.iter().position(|&cp| char::from_u32(cp).is_none())?;
-    let end = (start..points.len())
-        .find(|&j| char::from_u32(points[j]).is_some())
-        .unwrap_or(points.len());
-    Some(if end - start == 1 {
-        format!(
-            "'utf-8' codec can't encode character '\\u{:04x}' in position {start}: surrogates not allowed",
-            points[start]
-        )
-    } else {
-        format!(
-            "'utf-8' codec can't encode characters in position {start}-{}: surrogates not allowed",
-            end - 1
-        )
-    })
-}
-
 /// How `sqlite3` binds one parameter (1-based `index`).
 fn bind(value: &Json, index: usize) -> Result<Sql, Exc> {
     Ok(match value {
@@ -642,7 +599,7 @@ fn bind(value: &Json, index: usize) -> Result<Sql, Exc> {
         Json::Str(PyStr::Text(s)) => Sql::Text(s.clone()),
         Json::Str(PyStr::Lone(points)) => {
             return Err(Exc::UnicodeEncode(
-                utf8_strict_error(points).unwrap_or_default(),
+                crate::pyvalue::utf8_strict_error(points).unwrap_or_default(),
             ));
         }
         other => {
@@ -711,13 +668,12 @@ pub fn build(root: &str, out: &str) -> Result<[usize; 4], Exc> {
     let (sources_bytes, sources, read) = read_corpus(root)?;
     // Two titles sharing a name leave a citation of that name unresolved.
     let mut names: Vec<(pyvalue::Key, Option<String>)> = Vec::new();
-    let mut nan_id = 0;
     for entry in &read {
         let name = entry
             .title
             .get("name")
             .ok_or_else(|| Exc::Key("'name'".into()))?;
-        let key = pyvalue::key(name, &mut nan_id).map_err(|m| {
+        let key = pyvalue::key(name).map_err(|m| {
             Exc::Type(format!(
                 "cannot use '{}' as a dict key ({m})",
                 type_name(name)

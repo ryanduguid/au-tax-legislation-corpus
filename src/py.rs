@@ -43,6 +43,11 @@ pub fn is_decimal(c: char) -> bool {
     in_table(c as u32, tables::DECIMAL)
 }
 
+/// `str.isalpha` for one code point; a lone surrogate is not a letter.
+pub fn is_alpha(cp: u32) -> bool {
+    in_table(cp, tables::ALPHA)
+}
+
 /// The value `int()` gives a decimal digit, ASCII or not.
 pub fn decimal_value(c: char) -> Option<u32> {
     if !is_decimal(c) {

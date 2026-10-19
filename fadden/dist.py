@@ -34,6 +34,7 @@ if TYPE_CHECKING or __package__:
         child,
         corpus_root,
         is_reparse_point,
+        markdown_text,
         register_id,
         reject_symlinks,
         require_builder_layout,
@@ -41,12 +42,12 @@ if TYPE_CHECKING or __package__:
     from .dist_verify import LICENCE_EXCLUDED, _expected_title_files, verify_distribution
     from .dist_verify import _title_tree as _verifier_title_tree
     from .pii_patterns import load_contact_allowlist, privacy_findings_in_file
-    from .rates import stale_source_lines
 else:
     from corpus_paths import (
         child,
         corpus_root,
         is_reparse_point,
+        markdown_text,
         register_id,
         reject_symlinks,
         require_builder_layout,
@@ -54,7 +55,6 @@ else:
     from dist_verify import LICENCE_EXCLUDED, _expected_title_files, verify_distribution
     from dist_verify import _title_tree as _verifier_title_tree
     from pii_patterns import load_contact_allowlist, privacy_findings_in_file
-    from rates import stale_source_lines
 
 
 ROOT = corpus_root(__file__)
@@ -254,6 +254,34 @@ def reject_unapproved_contacts(titles, approved):
             "unapproved contact identifiers: %d (%s)" %
             (total, ", ".join(examples))
         )
+
+
+def stale_source_lines(records):
+    """Return the readable warning for rows taken from a stale compilation.
+
+    A rate row carries `version_is_current: false` when the Register recorded a
+    later commencement without publishing a compilation for it. The number is
+    still the last published one, so the warning names the title and keeps its
+    compilation reference rather than hiding the row.
+    """
+    stale = {}
+    for r in records:
+        if r.get("version_is_current") is False:
+            stale.setdefault(r.get("register_id") or "unknown", r)
+    if not stale:
+        return []
+    lines = ["> **Some entries come from a source that is already stale.** For "
+             "the titles below the Register records a later commencement with "
+             "no published compilation, so these entries are the last "
+             "published text and do not reflect that change. Check the "
+             "provision on the Register before relying on a number.", ""]
+    for register_id_value, r in sorted(stale.items()):
+        lines.append("- %s (%s): compilation %s of %s, `version_is_current: false`"
+                     % (markdown_text(r.get("act") or "-"), markdown_text(register_id_value),
+                        markdown_text(r.get("compilation_number") or "-"),
+                        markdown_text(r.get("compilation_date") or "-")))
+    lines.append("")
+    return lines
 
 
 def render_rates_markdown(records):
