@@ -406,138 +406,15 @@ fn read_title(root: &str, title: &Json) -> Result<Title, Exc> {
     })
 }
 
-/// `json.loads(bytes)`: the encoding `json.detect_encoding` picks, decoded with
-/// `surrogatepass`; None where Python raises.
-fn json_bytes(data: &[u8]) -> Option<Json> {
-    let points: Vec<u32> =
-        if data.starts_with(&[0, 0, 0xfe, 0xff]) || data.starts_with(&[0xff, 0xfe, 0, 0]) {
-            utf32(data, None)?
-        } else if data.starts_with(&[0xfe, 0xff]) || data.starts_with(&[0xff, 0xfe]) {
-            utf16(data, None)?
-        } else if let Some(rest) = data.strip_prefix(b"\xef\xbb\xbf") {
-            utf8_surrogatepass(rest)?
-        } else if data.len() >= 4 && data[0] == 0 {
-            if data[1] != 0 {
-                utf16(data, Some(true))?
-            } else {
-                utf32(data, Some(true))?
-            }
-        } else if data.len() >= 4 && data[1] == 0 {
-            if data[2] != 0 || data[3] != 0 {
-                utf16(data, Some(false))?
-            } else {
-                utf32(data, Some(false))?
-            }
-        } else if data.len() == 2 && data[0] == 0 {
-            utf16(data, Some(true))?
-        } else if data.len() == 2 && data[1] == 0 {
-            utf16(data, Some(false))?
-        } else {
-            utf8_surrogatepass(data)?
-        };
-    // A raw lone surrogate becomes an escape, which the scanner turns back into one.
-    let mut text = String::with_capacity(points.len());
-    for cp in points {
-        match char::from_u32(cp) {
-            Some(c) => text.push(c),
-            None => text.push_str(&format!("\\u{cp:04x}")),
-        }
-    }
-    pyjson::loads_standard(&text).ok()
-}
-
-fn utf8_surrogatepass(data: &[u8]) -> Option<Vec<u32>> {
-    let mut out = Vec::with_capacity(data.len());
-    let mut i = 0;
-    while i < data.len() {
-        // An encoded surrogate (ED A0..BF xx) is accepted as a lone code point.
-        if data[i] == 0xed
-            && i + 2 < data.len()
-            && (0xa0..=0xbf).contains(&data[i + 1])
-            && (0x80..=0xbf).contains(&data[i + 2])
-        {
-            out.push(0xd000 | (u32::from(data[i + 1] & 0x3f) << 6) | u32::from(data[i + 2] & 0x3f));
-            i += 3;
-            continue;
-        }
-        let end = (i + 4).min(data.len());
-        let chunk = match std::str::from_utf8(&data[i..end]) {
-            Ok(s) => s,
-            Err(e) if e.valid_up_to() > 0 => {
-                std::str::from_utf8(&data[i..i + e.valid_up_to()]).ok()?
-            }
-            Err(_) => return None,
-        };
-        let c = chunk.chars().next()?;
-        out.push(u32::from(c));
-        i += c.len_utf8();
-    }
-    Some(out)
-}
-
-fn utf16(data: &[u8], big: Option<bool>) -> Option<Vec<u32>> {
-    let (big, body) = match big {
-        Some(b) => (b, data),
-        None => (data[0] == 0xfe, &data[2..]),
-    };
-    if body.len() % 2 != 0 {
-        return None;
-    }
-    let units: Vec<u16> = body
-        .chunks(2)
-        .map(|c| {
-            if big {
-                u16::from_be_bytes([c[0], c[1]])
-            } else {
-                u16::from_le_bytes([c[0], c[1]])
-            }
-        })
-        .collect();
-    let mut out = Vec::with_capacity(units.len());
-    let mut i = 0;
-    while i < units.len() {
-        let u = u32::from(units[i]);
-        if (0xd800..0xdc00).contains(&u)
-            && i + 1 < units.len()
-            && (0xdc00..0xe000).contains(&u32::from(units[i + 1]))
-        {
-            out.push(0x10000 + ((u - 0xd800) << 10) + (u32::from(units[i + 1]) - 0xdc00));
-            i += 2;
-        } else {
-            out.push(u);
-            i += 1;
-        }
-    }
-    Some(out)
-}
-
-fn utf32(data: &[u8], big: Option<bool>) -> Option<Vec<u32>> {
-    let (big, body) = match big {
-        Some(b) => (b, data),
-        None => (data[0] == 0, &data[4..]),
-    };
-    if body.len() % 4 != 0 {
-        return None;
-    }
-    body.chunks(4)
-        .map(|c| {
-            let v = if big {
-                u32::from_be_bytes([c[0], c[1], c[2], c[3]])
-            } else {
-                u32::from_le_bytes([c[0], c[1], c[2], c[3]])
-            };
-            (v <= 0x10ffff).then_some(v)
-        })
-        .collect()
-}
-
 fn read_corpus(root: &str) -> Result<(Vec<u8>, Json, Vec<Title>), Exc> {
     let path = child(root, &["sources.json"])?;
     let sources_bytes = crate::pyio::open(&path)
         .and_then(|file| read_all(file, &path))
         .map_err(|e| refused(format!("cannot read sources.json ({})", strerror(&e))))?;
     let not_finished = || refused("sources.json is not a finished corpus inventory");
-    let sources = json_bytes(&sources_bytes).ok_or_else(not_finished)?;
+    let sources = pyjson::loads_bytes(&sources_bytes)
+        .ok()
+        .ok_or_else(not_finished)?;
     let listed = match sources.get("titles") {
         Some(Json::Array(items)) if items.iter().all(|t| matches!(t, Json::Object(_))) => {
             items.clone()

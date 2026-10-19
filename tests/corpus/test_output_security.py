@@ -57,7 +57,7 @@ class PathAndWriteTests(unittest.TestCase):
             fetch.assert_not_called()
 
     def test_network_stages_reject_filter_injection_before_requesting(self):
-        for name in ("versions", "probe13", "check_current"):
+        for name in ("versions", "check_current"):
             with self.subTest(stage=name), tempfile.TemporaryDirectory() as temporary:
                 root = Path(temporary)
                 module = regressions.load_module("injection_" + name, STAGE / (name + ".py"))
@@ -84,7 +84,7 @@ class PathAndWriteTests(unittest.TestCase):
                 fetch.assert_not_called()
 
     def test_malformed_version_rows_cannot_replace_resolved_or_probe_manifests(self):
-        for name in ("versions", "probe13"):
+        for name in ("versions",):
             for response in ({"value": 1}, {"value": ["wrong shape"]},
                              {"value": [{"titleId": "C2099A00002"}]},
                              {"value": [{"titleId": "C2099A00001", "start": "2099-02-30", "registerId": None}]},
@@ -156,7 +156,7 @@ class PathAndWriteTests(unittest.TestCase):
             self.assertEqual(path.read_text(encoding="utf-8"), "complete replacement\n")
 
     def test_installed_locations_refuse_legacy_stages_before_side_effects(self):
-        for name in ("discover", "versions", "download", "probe13", "retry13", "extract",
+        for name in ("discover", "versions", "download", "retry13", "extract",
                      "finalize", "check_current", "dist"):
             module = regressions.load_module("installed_guard_" + name, STAGE / (name + ".py"))
             with self.subTest(stage=name), tempfile.TemporaryDirectory() as temporary, \

@@ -85,7 +85,12 @@ pub fn module_dir() -> String {
 
 /// `Path(<module>/<file>).resolve().parent`.
 pub fn script_dir(file: &str) -> Result<PyPath, Exc> {
-    let resolved = pypath::realpath(&pypath::join(&module_dir(), file))?;
+    script_dir_in(&module_dir(), file)
+}
+
+/// `Path(<module>/<file>).resolve().parent` for a given module directory.
+pub fn script_dir_in(module: &str, file: &str) -> Result<PyPath, Exc> {
+    let resolved = pypath::realpath(&pypath::join(module, file))?;
     Ok(PyPath::new(&resolved).parent())
 }
 
@@ -264,4 +269,95 @@ pub fn write_text(path: &str, text: &[u32]) -> Result<(), Exc> {
     file.write_all(&bytes)
         .map_err(|e| OsError::new(&e, None, Style::Errno))?;
     Ok(())
+}
+
+/// `iso_date(value)`: a `YYYY-MM-DD` calendar date before it becomes a URL part.
+pub fn iso_date(value: &str) -> Result<String, Exc> {
+    let shaped = value.len() == 10
+        && value.bytes().enumerate().all(|(i, b)| {
+            if i == 4 || i == 7 {
+                b == b'-'
+            } else {
+                b.is_ascii_digit()
+            }
+        });
+    if !shaped {
+        return Err(Exc::value("invalid ISO calendar date"));
+    }
+    let number = |range: std::ops::Range<usize>| value[range].parse::<i64>().unwrap_or_default();
+    crate::py::Date::new(number(0..4), number(5..7), number(8..10)).map_err(Exc::value)?;
+    Ok(value.to_string())
+}
+
+/// `version_date(value)`: the Register's date or timestamp, validated, as its
+/// calendar day.
+pub fn version_date(value: Option<&Json>) -> Result<String, Exc> {
+    const START: &str = "[0-9]{4}-[0-9]{2}-[0-9]{2}(?:T[0-9]{2}:[0-9]{2}:[0-9]{2}(?:[.][0-9]{1,7})?(?:Z|[+-][0-9]{2}:[0-9]{2})?)?";
+    let text = value
+        .and_then(Json::as_str)
+        .filter(|t| crate::pyre::fullmatch(START, 0, t))
+        .ok_or_else(|| Exc::value("invalid Register version start"))?;
+    if text.len() > 10 {
+        let tail = &text[text.len().saturating_sub(6)..];
+        let offset = tail.starts_with(['+', '-']) && tail.as_bytes()[3] == b':';
+        if offset
+            && (tail[1..3].parse::<u32>().unwrap_or(0) > 23
+                || tail[4..6].parse::<u32>().unwrap_or(0) > 59)
+        {
+            return Err(Exc::value("invalid Register timestamp offset"));
+        }
+        // `datetime.time(hour, minute, second)`.
+        for (range, name, top) in [
+            (11..13, "hour", 23),
+            (14..16, "minute", 59),
+            (17..19, "second", 59),
+        ] {
+            let n: u32 = text[range].parse().unwrap_or_default();
+            if n > top {
+                return Err(Exc::value(format!("{name} must be in 0..{top}, not {n}")));
+            }
+        }
+    }
+    iso_date(&text[..10])
+}
+
+/// `version_rows(payload, title_id)`: the rows of a versions response, each
+/// for `title_id`.
+pub fn version_rows(payload: &Json, title_id: &str) -> Result<Vec<Json>, Exc> {
+    let Some(Json::Array(rows)) = payload.get("value") else {
+        return Err(Exc::value("invalid Register versions response"));
+    };
+    for row in rows {
+        let ours = matches!(row, Json::Object(_))
+            && crate::pyvalue::py_eq(
+                row.get("titleId").unwrap_or(&Json::Null),
+                &Json::str(title_id),
+            );
+        if !ours {
+            return Err(Exc::value(
+                "Register version belongs to another or unknown title",
+            ));
+        }
+    }
+    Ok(rows.clone())
+}
+
+/// `compilation_id(row)`: None for an explicit null; a missing field is an API failure.
+pub fn compilation_id(row: &Json) -> Result<Option<String>, Exc> {
+    match row.get("registerId") {
+        None => Err(Exc::value(
+            "Register version has no document identity field",
+        )),
+        Some(Json::Null) => Ok(None),
+        Some(value) => register_id(value).map(Some),
+    }
+}
+
+/// `write_json_atomic(path, value, indent=indent)`: `json.dump` with its
+/// defaults through the atomic writer.
+pub fn write_json_atomic(path: &str, value: &Json, indent: Option<usize>) -> Result<(), Exc> {
+    write_text_atomic(
+        path,
+        &[crate::pyvalue::dumps_with(value, indent, true, false)],
+    )
 }

@@ -16,6 +16,9 @@
 use std::io::Read;
 use std::time::Duration;
 
+use super::Exc;
+use crate::pyjson::{self, DecodeError, Json};
+
 pub const UA: &str =
     "au-tax-legislation-corpus (+https://github.com/ryanduguid/au-tax-legislation-corpus)";
 const TIMEOUT: Duration = Duration::from_secs(90);
@@ -62,6 +65,32 @@ pub fn attempt(http: &mut dyn Http, number: u32) {
     if number > 1 {
         http.sleep(RETRY_DELAY);
     }
+}
+
+/// `http_fetch.fetch_json(url)`: the decoded JSON object, or None after
+/// `TRIES` attempts. A failed request, a body that does not decode or parse,
+/// a non-object and an object with an `"error"` member are all retried; only
+/// the int digit limit's `ValueError`, which urllib's callers do not catch,
+/// stops the stage.
+pub fn fetch_json(http: &mut dyn Http, url: &str) -> Result<Option<Json>, Exc> {
+    for number in 1..=TRIES {
+        attempt(http, number);
+        let Ok(response) = http.get(url, None) else {
+            continue;
+        };
+        match pyjson::loads_bytes(&response.body) {
+            Ok(document @ Json::Object(_)) if document.get("error").is_none() => {
+                return Ok(Some(document));
+            }
+            Err(Some(DecodeError::Invalid(message)))
+                if message.starts_with("Exceeds the limit") =>
+            {
+                return Err(Exc::value(message));
+            }
+            _ => {}
+        }
+    }
+    Ok(None)
 }
 
 struct Net {

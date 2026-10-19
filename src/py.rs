@@ -661,7 +661,7 @@ impl Date {
             return Err(format!("year must be in 1..9999, not {year}"));
         }
         if !(1..=12).contains(&month) {
-            return Err("month must be in 1..12".into());
+            return Err(format!("month must be in 1..12, not {month}"));
         }
         let dim = i64::from(days_in_month(year as i32, month as u32));
         if !(1..=dim).contains(&day) {

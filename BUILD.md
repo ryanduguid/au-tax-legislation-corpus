@@ -488,7 +488,7 @@ From an empty checkout, run the stages in order. Stage names are unchanged;
 the dispatcher lives at `python -m fadden <stage>`. Intermediate JSON files
 are written beside the stage modules under `fadden/`.
 
-The `as_at`, `compare_builds`, `pii_scan`, `pii_scan2`, `rates`, `rulings` and `search` stages are the Rust `fadden` binary, built
+The `as_at`, `compare_builds`, `pii_scan`, `pii_scan2`, `probe13`, `rates`, `rulings` and `search` stages are the Rust `fadden` binary, built
 with `cargo build --locked --release`; the dispatcher runs it with the same
 arguments and the binary keeps their command lines, messages and exit
 statuses. `FADDEN_BIN` names another build of it. An exception those Python

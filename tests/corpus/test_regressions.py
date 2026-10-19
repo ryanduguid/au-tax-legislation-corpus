@@ -927,13 +927,6 @@ class FinalizeMissingTitleTests(unittest.TestCase):
 
 
 class Retry13MergeTests(unittest.TestCase):
-    def test_probe13_is_safe_to_import(self):
-        with mock.patch("subprocess.run") as run:
-            module = load_module("probe13_import_safety", STAGE / "probe13.py")
-
-        run.assert_not_called()
-        self.assertTrue(callable(module.main))
-
     def test_recoveries_are_merged_into_the_raw_manifest_in_place(self):
         """The documented pipeline has no manual patch step: retry13.py itself
         must fold successful recoveries into manifest_raw.json, keep

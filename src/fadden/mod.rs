@@ -12,6 +12,7 @@ pub mod corpus_paths;
 pub mod http;
 pub mod pii;
 pub mod pii_scan;
+pub mod probe13;
 pub mod rates;
 pub mod rulings;
 pub mod search;

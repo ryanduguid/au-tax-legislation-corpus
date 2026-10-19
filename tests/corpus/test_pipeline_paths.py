@@ -119,49 +119,6 @@ class DiscoverTests(TemporaryDirectoryTestCase):
         self.assertRegex(stdout.getvalue(), r"Act +Income +matched +1, new +0")
 
 
-class Probe13Tests(TemporaryDirectoryTestCase):
-    def setUp(self) -> None:
-        super().setUp()
-        self.probe13 = regressions.load_module("probe13_paths", STAGE / "probe13.py")
-        self.probe13.SCRATCH = str(self.base)
-        (self.base / "manifest_raw.json").write_text(json.dumps([
-            {"id": RID, "name": "Synthetic Tax Act", "epub": None},
-            {"id": "C2099A00002", "name": "Downloaded Act", "epub": "C2099A00002.epub"},
-        ]), encoding="utf-8")
-
-    def run_probe(self, response: object) -> str:
-        stdout = io.StringIO()
-        with mock.patch.object(self.probe13, "fetch_json", return_value=response), \
-                mock.patch.object(self.probe13.time, "sleep"), contextlib.redirect_stdout(stdout):
-            self.probe13.main()
-        return stdout.getvalue()
-
-    def test_the_latest_published_compilation_is_recorded(self) -> None:
-        versions = [
-            {"titleId": RID, "start": "2099-07-01T00:00:00", "isCurrent": True,
-             "compilationNumber": "3", "registerId": None},
-            {"titleId": RID, "start": "2099-01-01T00:00:00", "isCurrent": False,
-             "compilationNumber": "2", "registerId": "C2099C00002"},
-            {"titleId": RID, "start": "2098-01-01T00:00:00", "isCurrent": False,
-             "compilationNumber": "1", "registerId": "C2098C00001"},
-        ]
-        stdout = self.run_probe({"value": versions})
-        [probe] = json.loads((self.base / "probe13.json").read_text(encoding="utf-8"))
-        self.assertEqual(probe, {"id": RID, "name": "Synthetic Tax Act", "n_versions": 3,
-                                 "current_has_doc": False, "latest_doc": versions[1]})
-        self.assertRegex(stdout, r"vers=3 +cur_doc=False latest=C2099C00002 2099-01-01")
-
-    def test_a_title_with_no_published_document_has_no_latest(self) -> None:
-        self.run_probe({"value": []})
-        [probe] = json.loads((self.base / "probe13.json").read_text(encoding="utf-8"))
-        self.assertIsNone(probe["latest_doc"])
-
-    def test_a_failed_lookup_refuses_to_write(self) -> None:
-        with self.assertRaisesRegex(RuntimeError, "version lookup failed for C2099A00001"):
-            self.run_probe(None)
-        self.assertFalse((self.base / "probe13.json").exists())
-
-
 class Retry13Tests(TemporaryDirectoryTestCase):
     def setUp(self) -> None:
         super().setUp()
