@@ -63,7 +63,7 @@ uv run --locked --extra dev --python 3.14 python -m build
 python -m venv /tmp/venv && /tmp/venv/bin/pip install --no-index dist/tax_radar_au-*.whl && cd /tmp && /tmp/venv/bin/python -c "import fadden.source_snapshot"
 rustup toolchain install
 cargo fmt --check
-cargo clippy --locked --all-targets -- -D warnings
+cargo clippy --locked --all-targets --all-features -- -D warnings
 cargo test --locked
 cargo build --locked --release
 cargo install cargo-audit --locked --version 0.22.2 && cargo audit

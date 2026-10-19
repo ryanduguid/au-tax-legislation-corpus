@@ -1345,25 +1345,19 @@ fn outputs_write_relative_to_the_current_directory() {
 
 #[test]
 fn the_radar_has_no_network_client() {
-    // The Python suite walked the package's imports; here the crate's sources
-    // and its manifest are checked for any network client.
+    // The Python suite walked the radar package's imports. The crate also
+    // holds the fadden binary, whose rulings stage fetches ATO pages through
+    // src/fadden/http.rs; the radar's own sources must not reach that module,
+    // an HTTP client or a socket, and nothing else in the crate may use one.
     let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
     let manifest = std::fs::read_to_string(root.join("Cargo.toml")).unwrap();
-    for client in [
-        "reqwest",
-        "ureq",
-        "hyper",
-        "tokio",
-        "curl",
-        "native-tls",
-        "rustls",
-        "mio",
-    ] {
+    for client in ["reqwest", "hyper", "tokio", "curl", "native-tls", "mio"] {
         assert!(
             !manifest.contains(&format!("\n{client} ")),
             "Cargo.toml depends on {client}"
         );
     }
+    let http = root.join("src").join("fadden").join("http.rs");
     let mut stack = vec![root.join("src")];
     while let Some(dir) = stack.pop() {
         for entry in std::fs::read_dir(dir).unwrap() {
@@ -1372,14 +1366,19 @@ fn the_radar_has_no_network_client() {
                 stack.push(path);
             } else if path.extension().is_some_and(|e| e == "rs") {
                 let source = std::fs::read_to_string(&path).unwrap();
+                let radar = path.starts_with(root.join("src").join("radar"))
+                    || path == root.join("src").join("main.rs");
                 // std::net's address types parse bracketed URL hosts, as
                 // Python's ipaddress did for urllib.parse; sockets are refused.
-                for forbidden in ["TcpStream", "UdpSocket", "TcpListener", "ToSocketAddrs"] {
-                    assert!(
-                        !source.contains(forbidden),
-                        "{} uses {forbidden}",
-                        path.display()
-                    );
+                let mut forbidden = vec!["TcpStream", "UdpSocket", "TcpListener", "ToSocketAddrs"];
+                if path != http {
+                    forbidden.extend(["ureq", "rustls"]);
+                }
+                if radar {
+                    forbidden.extend(["fadden", "http::"]);
+                }
+                for word in forbidden {
+                    assert!(!source.contains(word), "{} uses {word}", path.display());
                 }
             }
         }

@@ -293,6 +293,53 @@ fn dump(value: &Json, ensure_ascii: bool, out: &mut Vec<u32>) {
 
 /// The bytes `print(text)` writes to a UTF-8 `surrogateescape` stream, or the
 /// `UnicodeEncodeError` message for a surrogate that handler cannot map.
+/// `json.dumps(value, indent=indent, ensure_ascii=False, sort_keys=True)`.
+pub fn dumps_sorted(value: &Json, indent: Option<usize>) -> Vec<u32> {
+    fn walk(value: &Json, indent: Option<usize>, level: usize, out: &mut Vec<u32>) {
+        let newline = |out: &mut Vec<u32>, level: usize| {
+            if let Some(width) = indent {
+                out.push(u32::from('\n'));
+                out.extend(std::iter::repeat_n(u32::from(' '), width * level));
+            }
+        };
+        let separator = if indent.is_some() { "," } else { ", " };
+        match value {
+            Json::Array(items) if !items.is_empty() => {
+                out.push(u32::from('['));
+                for (i, item) in items.iter().enumerate() {
+                    if i > 0 {
+                        push(out, separator);
+                    }
+                    newline(out, level + 1);
+                    walk(item, indent, level + 1, out);
+                }
+                newline(out, level);
+                out.push(u32::from(']'));
+            }
+            Json::Object(pairs) if !pairs.is_empty() => {
+                let mut sorted: Vec<&(PyStr, Json)> = pairs.iter().collect();
+                sorted.sort_by_key(|(k, _)| k.code_points());
+                out.push(u32::from('{'));
+                for (i, (k, v)) in sorted.into_iter().enumerate() {
+                    if i > 0 {
+                        push(out, separator);
+                    }
+                    newline(out, level + 1);
+                    dump_str(&k.code_points(), false, out);
+                    push(out, ": ");
+                    walk(v, indent, level + 1, out);
+                }
+                newline(out, level);
+                out.push(u32::from('}'));
+            }
+            other => dump(other, false, out),
+        }
+    }
+    let mut out = Vec::new();
+    walk(value, indent, 0, &mut out);
+    out
+}
+
 pub fn encode_print(points: &[u32]) -> Result<Vec<u8>, String> {
     let mut out = Vec::with_capacity(points.len());
     let mut i = 0;

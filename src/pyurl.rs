@@ -353,6 +353,35 @@ pub fn hostname(netloc: &str) -> Option<String> {
     })
 }
 
+/// `.port` of a split URL, or the ValueError's message: the text after the
+/// host's `:`, which must be ASCII digits within 0-65535.
+pub fn port(netloc: &str) -> Result<Option<u32>, String> {
+    let hostinfo = netloc.rsplit_once('@').map_or(netloc, |(_, h)| h);
+    let port = match hostinfo.split_once('[') {
+        Some((_, bracketed)) => bracketed
+            .split_once(']')
+            .and_then(|(_, rest)| rest.split_once(':'))
+            .map_or("", |(_, p)| p),
+        None => hostinfo.split_once(':').map_or("", |(_, p)| p),
+    };
+    if port.is_empty() {
+        return Ok(None);
+    }
+    if !port.bytes().all(|b| b.is_ascii_digit()) {
+        return Err(format!(
+            "Port could not be cast to integer value as {}",
+            crate::py::repr_str(port)
+        ));
+    }
+    match port.trim_start_matches('0') {
+        "" => Ok(Some(0)),
+        digits => match digits.parse::<u32>() {
+            Ok(value) if value <= 65535 => Ok(Some(value)),
+            _ => Err("Port out of range 0-65535".into()),
+        },
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

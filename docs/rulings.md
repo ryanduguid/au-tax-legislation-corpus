@@ -60,7 +60,7 @@ Keep it with any copy of the rows.
   port. The page's `ato.reference.id` must equal the target, ignoring case and a
   trailing slash. The ATO site header and footer sit outside the document region
   and are not scanned: they carry the ATO's published phone numbers. An HTTP 429 or 5xx, a transport error or a dropped response
-  is retried with the shared `http_fetch` budget; any other HTTP error stops that
+  is retried within the shared budget of 3 attempts, 6 seconds apart; any other HTTP error stops that
   document, and a failed document never stops the run.
 - **Not committed, not published.** Like the rest of the corpus, run output stays
   out of git. Publishing it is a separate decision a person makes.

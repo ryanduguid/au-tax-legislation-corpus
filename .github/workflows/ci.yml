@@ -180,7 +180,7 @@ jobs:
       # rust-toolchain.toml pins the channel and its clippy and rustfmt components.
       - run: rustup toolchain install
       - run: cargo fmt --check
-      - run: cargo clippy --locked --all-targets -- -D warnings
+      - run: cargo clippy --locked --all-targets --all-features -- -D warnings
       - run: cargo test --locked
       - run: cargo build --locked --release
       # The samples ship in the repository beside the binary; run the demo

@@ -9,7 +9,10 @@ pub mod as_at;
 pub mod cli;
 pub mod compare_builds;
 pub mod corpus_paths;
+pub mod http;
+pub mod pii;
 pub mod rates;
+pub mod rulings;
 pub mod search;
 
 use crate::pyjson::Json;

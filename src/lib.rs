@@ -5,6 +5,8 @@
 pub mod argparse;
 mod argtheme;
 pub mod fadden;
+pub mod html;
+pub mod htmlparser;
 pub mod py;
 pub mod pyio;
 pub mod pyjson;
