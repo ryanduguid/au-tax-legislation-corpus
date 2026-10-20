@@ -15,20 +15,32 @@ use crate::pyvalue;
 const TOKEN: &str = "[A-Z][A-Za-z'\u{2019}-]{1,20}";
 const REGNO: &str = r"\b\d{8}\b";
 const EMAIL: &str = r"\b[\w.+-]+@[\w-]+(?:\.[\w-]+)+\b";
-const PHONE: &str = concat!(
-    r"(?<!\d)(?<!\d\.)(?:",
-    r"\(0\d\)[\s-]?\d{4}[\s-]?\d{4}",
-    r"|0[2-8][\s-]?\d{4}[\s-]?\d{4}",
-    r"|04\d{2}[\s-]?\d{3}[\s-]?\d{3}",
-    r"|\+61[\s-]?(?:\(0\)[\s-]?)?\d(?:[\s-]?\d){8}",
-    r"|\+61[\s-]?\(0?\d\)[\s-]?\d(?:[\s-]?\d){7}",
-    r"|1[38]00[\s-]?\d{3}[\s-]?\d{3}",
-    r"|13[\s-]?\d{2}[\s-]?\d{2}",
-    r")(?!\d)",
-);
+macro_rules! phone_numbers {
+    () => {
+        concat!(
+            r"\(0\d\)[\s-]?\d{4}[\s-]?\d{4}",
+            r"|0[2-8][\s-]?\d{4}[\s-]?\d{4}",
+            r"|04\d{2}[\s-]?\d{3}[\s-]?\d{3}",
+            r"|\+61[\s-]?(?:\(0\)[\s-]?)?\d(?:[\s-]?\d){8}",
+            r"|\+61[\s-]?\(0?\d\)[\s-]?\d(?:[\s-]?\d){7}",
+            r"|1[38]00[\s-]?\d{3}[\s-]?\d{3}",
+            r"|13[\s-]?\d{2}[\s-]?\d{2}",
+        )
+    };
+}
+const PHONE: &str = concat!(r"(?<!\d)(?<!\d\.)(?:", phone_numbers!(), r")(?!\d)");
 const TFN: &str =
     "\\b(?:tax file number|TFN)\\b\\s*(?:[.:\u{2013}-]\\s*)?(\\d(?:[\\s-]?\\d){7,8})(?![\\s-]?\\d)";
 const TFN_BARE: &str = r"(?<![\d$])(?<![\d$][\s-])(\d{3}([\s-]?)\d{3}\2\d{3})(?![\s-]?\d)";
+
+/// Each contact pattern without its lookarounds and backreference, so it
+/// matches wherever the exact pattern could, and more. Lookaround keeps the
+/// exact patterns off the regex crate's fast engines; these supersets run on
+/// them, and text none of them matches, nearly all of the corpus, skips the
+/// exact pattern. The matches found are unchanged.
+const PHONE_ANY: &str = concat!("(?:", phone_numbers!(), ")");
+const TFN_ANY: &str = "tax file number|TFN";
+const TFN_BARE_ANY: &str = r"\d{3}[\s-]?\d{3}[\s-]?\d{3}";
 const STATUTORY: &str = concat!(
     r"\b(Act|Regulation|Schedule|Division|Subdivision|Part|Chapter|Section|",
     r"Commissioner|Minister|Treasurer|Commonwealth|Australian|Australia|Board|",
@@ -58,11 +70,14 @@ fn is_statutory(candidate: &str) -> bool {
 /// the statutory filter, and the 8-digit registration numbers.
 pub fn private_person_registration_details(text: &str) -> (BTreeSet<String>, BTreeSet<String>) {
     let names = pyre::re(&name_pattern(), 0)
-        .captures_iter(text)
-        .map(|c| c.get(0).map_or("", |m| m.as_str()).to_string())
+        .find_iter(text)
         .filter(|name| !is_statutory(name))
+        .map(str::to_string)
         .collect();
-    let numbers = pyre::re(REGNO, 0).findall(text).into_iter().collect();
+    let numbers = pyre::re(REGNO, 0)
+        .find_iter(text)
+        .map(str::to_string)
+        .collect();
     (names, numbers)
 }
 
@@ -106,17 +121,26 @@ fn contact_value(kind: &str, value: &str) -> String {
 /// pattern order, never the identifier. A bare nine-digit run counts only
 /// outside a labelled TFN and with a valid check digit.
 pub fn contact_fingerprints(text: &str) -> Vec<(&'static str, String)> {
-    let labelled: Vec<(usize, usize)> = pyre::re(TFN, pyre::I)
-        .captures_iter(text)
-        .filter_map(|c| c.get(1).map(|m| (m.start(), m.end())))
-        .collect();
+    let possible = |any: &str, flags| pyre::re(any, flags).is_match(text);
+    let labelling = possible(TFN_ANY, pyre::I);
+    let labelled: Vec<(usize, usize)> = if labelling {
+        pyre::re(TFN, pyre::I)
+            .captures_iter(text)
+            .filter_map(|c| c.get(1).map(|m| (m.start(), m.end())))
+            .collect()
+    } else {
+        Vec::new()
+    };
     let mut found = Vec::new();
-    for (kind, pattern, flags) in [
-        ("email", EMAIL, 0),
-        ("phone", PHONE, 0),
-        ("tfn", TFN, pyre::I),
-        ("tfn", TFN_BARE, 0),
+    for (kind, pattern, flags, possible) in [
+        ("email", EMAIL, 0, text.contains('@')),
+        ("phone", PHONE, 0, possible(PHONE_ANY, 0)),
+        ("tfn", TFN, pyre::I, labelling),
+        ("tfn", TFN_BARE, 0, possible(TFN_BARE_ANY, 0)),
     ] {
+        if !possible {
+            continue;
+        }
         for c in pyre::re(pattern, flags).captures_iter(text) {
             let whole = c.get(0).expect("group 0");
             let value = if kind == "tfn" {

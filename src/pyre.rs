@@ -23,6 +23,12 @@ pub const M: u8 = 4;
 pub struct Re {
     exact: Regex,
     native: Option<Regex>,
+    /// The same patterns compiled by the regex crate itself, where they need no
+    /// lookaround or backreference. `fancy_regex` hands such a pattern to the
+    /// regex crate anyway, but its own search loop around it is many times
+    /// slower, so matching without groups goes to these directly.
+    plain_exact: Option<regex::Regex>,
+    plain_native: Option<regex::Regex>,
 }
 
 fn build(pattern: &str, translated: &str) -> Regex {
@@ -43,7 +49,10 @@ pub fn re(pattern: &str, flags: u8) -> Arc<Re> {
         .or_insert_with(|| {
             let translated = translate(pattern, flags);
             let native = translate_with(pattern, flags, true);
+            let plain = |p: &str| regex::Regex::new(p).ok();
             Arc::new(Re {
+                plain_native: (native != translated).then(|| plain(&native)).flatten(),
+                plain_exact: plain(&translated),
                 native: (native != translated).then(|| build(pattern, &native)),
                 exact: build(pattern, &translated),
             })
@@ -70,10 +79,24 @@ pub fn escape(text: &str) -> String {
 }
 
 impl Re {
+    /// Whether `text` lets the regex crate's own `\b` stand in for Python's.
+    fn native_fits(&self, text: &str) -> bool {
+        self.native.is_some() && (text.is_ascii() || !text.chars().any(py::word_diff))
+    }
+
     fn engine(&self, text: &str) -> &Regex {
         match &self.native {
-            Some(native) if text.is_ascii() || !text.chars().any(py::word_diff) => native,
+            Some(native) if self.native_fits(text) => native,
             _ => &self.exact,
+        }
+    }
+
+    /// The regex crate's compilation of the engine `text` gets, if it has one.
+    fn plain(&self, text: &str) -> Option<&regex::Regex> {
+        if self.native_fits(text) {
+            self.plain_native.as_ref()
+        } else {
+            self.plain_exact.as_ref()
         }
     }
 
@@ -95,6 +118,9 @@ impl Re {
     }
 
     pub fn is_match(&self, text: &str) -> bool {
+        if let Some(plain) = self.plain(text) {
+            return plain.is_match(text);
+        }
         self.engine(text)
             .is_match(text)
             .expect("unbounded backtracking")
@@ -107,6 +133,22 @@ impl Re {
         self.engine(text)
             .captures_iter(text)
             .map(|c| c.expect("unbounded backtracking"))
+    }
+
+    /// `pattern.finditer(text)` as the text of each whole match. Without
+    /// groups to fill, a pattern with no lookaround runs on the regex crate.
+    pub fn find_iter<'r, 't>(&'r self, text: &'t str) -> Box<dyn Iterator<Item = &'t str> + 'r>
+    where
+        't: 'r,
+    {
+        match self.plain(text) {
+            Some(plain) => Box::new(plain.find_iter(text).map(|m| m.as_str())),
+            None => Box::new(
+                self.engine(text)
+                    .find_iter(text)
+                    .map(|m| m.expect("unbounded backtracking").as_str()),
+            ),
+        }
     }
 
     /// `pattern.findall(text)` for a pattern with at most one group.
