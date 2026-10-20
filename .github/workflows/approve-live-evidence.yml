@@ -37,9 +37,18 @@ jobs:
             throw 'Select an existing live-evidence v2 draft tag.'
           }
 
+          # 2.102.0 fixed --signer-workflow prefix matching, case-insensitive
+          # --source-ref and symlinked release download destinations.
+          $versionText = & gh --version
+          if ($LASTEXITCODE -ne 0) { throw 'The GitHub CLI version could not be read.' }
+          if ([string](@($versionText)[0]) -cnotmatch '^gh version (\d+)\.(\d+)\.(\d+)(?: |$)' -or
+              [version]"$($Matches[1]).$($Matches[2]).$($Matches[3])" -lt [version]'2.102.0') {
+            throw 'GitHub CLI 2.102.0 or later is required.'
+          }
+
           # Returns the draft's assets as an ordinal name -> SHA-256 map.
           function Read-DraftAssets {
-            $raw = & gh release view $releaseTag --repo ryanduguid/au-tax-legislation-corpus --json tagName,isDraft,assets,body
+            $raw = & gh release view $releaseTag --repo ryanduguid/au-tax-legislation-corpus --json 'tagName,isDraft,assets,body'
             if ($LASTEXITCODE -ne 0) { throw 'The selected draft could not be read.' }
             $release = $raw | ConvertFrom-Json
             if ($release.tagName -cne $releaseTag -or $release.isDraft -ne $true) {
@@ -63,16 +72,19 @@ jobs:
             return ,$assets
           }
 
-          $assets = Read-DraftAssets
-
           # The producer creates the tag at its run's commit, so the attestation must
           # name that commit as its source.
-          $tagTarget = & gh api "repos/ryanduguid/au-tax-legislation-corpus/git/ref/tags/$releaseTag" --jq '.object.type + " " + .object.sha'
-          if ($LASTEXITCODE -ne 0) { throw 'The selected draft tag could not be read.' }
-          if ([string]$tagTarget -cnotmatch '^commit ([0-9a-f]{40})$') {
-            throw 'The selected draft tag must point directly at a commit.'
+          function Read-TagCommit {
+            $tagTarget = & gh api "repos/ryanduguid/au-tax-legislation-corpus/git/ref/tags/$releaseTag" --jq '.object.type + " " + .object.sha'
+            if ($LASTEXITCODE -ne 0) { throw 'The selected draft tag could not be read.' }
+            if ([string]$tagTarget -cnotmatch '^commit ([0-9a-f]{40})$') {
+              throw 'The selected draft tag must point directly at a commit.'
+            }
+            return $Matches[1]
           }
-          $sourceDigest = $Matches[1]
+
+          $assets = Read-DraftAssets
+          $sourceDigest = Read-TagCommit
 
           $downloadDir = Join-Path $env:RUNNER_TEMP 'reviewed-live-evidence'
           New-Item -ItemType Directory -Path $downloadDir | Out-Null
@@ -114,13 +126,17 @@ jobs:
             throw 'The draft assets do not match the attested candidate set.'
           }
 
-          # Re-read so an asset replaced since the download also stops publication.
+          # Re-read so a changed asset name or digest, or a moved tag, since the
+          # first reads also stops publication.
           $current = Read-DraftAssets
           if ($current.Count -ne $assets.Count) { throw 'The draft changed during verification.' }
           foreach ($name in $assets.Keys) {
             if (-not $current.ContainsKey($name) -or $current[$name] -cne $assets[$name]) {
               throw 'The draft changed during verification.'
             }
+          }
+          if ((Read-TagCommit) -cne $sourceDigest) {
+            throw 'The draft tag moved during verification.'
           }
 
           & gh release edit $releaseTag --repo ryanduguid/au-tax-legislation-corpus --draft=false --latest=false

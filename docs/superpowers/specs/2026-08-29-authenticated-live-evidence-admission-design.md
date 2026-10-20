@@ -531,46 +531,55 @@ permissions:
 Its one PowerShell step checks every `gh` exit immediately and, in order:
 
 1. requires the input to match `^live-evidence-v2-[0-9a-f]{64}$`;
-2. reads the release and requires an existing draft for that exact tag with
+2. requires `gh --version` to report GitHub CLI 2.102.0 or later, which fixed
+   `--signer-workflow` prefix matching, case-insensitive `--source-ref`
+   comparison and symlinked `gh release download` destinations;
+3. reads the release and requires an existing draft for that exact tag with
    between 1 and 1,000 assets, a `Candidates: N` line equal to the asset count,
    and every asset a non-empty, `uploaded` `.json` file whose REST `digest` is
    `sha256:` followed by 64 lowercase hexadecimal characters;
-3. requires the tag ref to point directly at a commit, whose SHA becomes the
+4. requires the tag ref to point directly at a commit, whose SHA becomes the
    expected attestation source digest;
-4. downloads every asset into a new private directory under
+5. downloads every asset into a new private directory under
    `$env:RUNNER_TEMP`, requires the downloaded files to be exactly the asset
    names, and requires each file's SHA-256 to equal that asset's REST digest;
-5. runs, on one downloaded asset:
+6. runs, on one downloaded asset:
 
    ```text
-   gh attestation verify <asset-path> \
-     --repo ryanduguid/au-tax-legislation-corpus \
-     --signer-workflow ryanduguid/au-tax-legislation-corpus/.github/workflows/publish-live-evidence.yml \
-     --source-ref refs/heads/main \
-     --source-digest <tag-commit-sha> \
-     --predicate-type https://slsa.dev/provenance/v1 \
-     --deny-self-hosted-runners \
-     --format json
+   gh attestation verify <asset-path>      --repo ryanduguid/au-tax-legislation-corpus      --signer-workflow ryanduguid/au-tax-legislation-corpus/.github/workflows/publish-live-evidence.yml      --source-ref refs/heads/main      --source-digest <tag-commit-sha>      --predicate-type https://slsa.dev/provenance/v1      --deny-self-hosted-runners      --format json      --jq '.[].verificationResult.statement.subject | tojson'
    ```
 
    and requires at least one verified attestation whose subjects are exactly
    the draft's assets: the same number, each subject name an asset, each
    subject SHA-256 equal to that asset's verified bytes, and every asset
-   covered once. Because the producer attests all candidates in one statement,
-   a missing, extra or changed asset fails this step;
-6. reads the release again and requires the same asset names and digests, so
-   an asset replaced after the download also stops publication; and
-7. only then runs `& gh release edit <tag> --draft=false --latest=false`.
+   covered once. Subjects from different attestations are never combined.
+   Because the producer attests all candidates in one statement, a missing,
+   extra or changed asset fails this step;
+7. reads the release and the tag again and requires the same asset names and
+   digests and the same tag commit, so a change to either that is visible in
+   those reads also stops publication; and
+8. only then runs `& gh release edit <tag> --draft=false --latest=false`.
    Publishing under the repository's immutable-releases setting freezes the
    release and creates the GitHub release attestation used by
    `gh release verify`.
 
-Any failure leaves the draft unpublished and unmodified. The approval workflow
-never creates, uploads, deletes or replaces a tag, draft, asset or
-attestation. The second read narrows, but cannot close, the interval in which a
-maintainer with write access could replace an asset before `gh release edit`
-freezes the release; the publisher's own `gh release verify-asset` and
-`gh attestation verify` checks remain the admission authority.
+A failure before step 8 leaves the draft unpublished and unmodified. If the
+publication command itself fails, GitHub may still have published the
+release; check the release state before any retry. The approval workflow never
+creates, uploads, deletes or replaces a tag, draft, asset or attestation.
+
+The check is existential: any verified attestation from the producer workflow
+on `main` at the tag's commit whose subjects equal the draft's assets suffices.
+It does not bind the draft to the particular producer run that created it, and
+a byte-identical re-upload under the same name passes. The CLI fetches at most
+30 attestations for the chosen asset by default, so a qualifying attestation
+beyond them would refuse a valid draft rather than publish an invalid one.
+
+The final reads narrow, but cannot close, the interval in which a maintainer
+with write access could replace an asset or move the tag before
+`gh release edit` freezes the release; the publisher's own
+`gh release verify-asset` and `gh attestation verify` checks remain the
+admission authority.
 
 ### Release notes and rights
 
@@ -935,13 +944,16 @@ including ref creation and each upload batch.
 
 Approval workflow tests require its exact permissions, its `gh` command order
 with an immediate exit check after each, and the verification flags above.
-Where PowerShell 7 is available they also run its script against a stub `gh`
-and require publication only when every asset matches the attested subjects,
-and refusal for an unattested extra asset, an attested asset missing from the
-draft, changed bytes, a repeated subject, downloaded bytes that differ from the
-REST digest, a download outside the asset list, an asset replaced after
-verification, a failed verification, a tag that is not a commit and an asset
-without a digest.
+Where PowerShell 7 is available they also run its script against a stub `gh`.
+They require the exact runtime call order and arguments, and publication of
+one-asset and two-asset drafts that match an attestation. They require refusal
+before `gh release edit` for: an unattested extra asset, an attested asset
+missing from the draft, changed bytes, a case-only rename, a repeated subject,
+a repeated draft asset name, partial attestations, empty, null or malformed
+verification output, downloaded bytes that differ from the REST digest, a
+download outside the asset list, a draft or tag changed after verification, a
+tag that is not a commit, an asset without a digest, a failed `gh` call at each
+step and a GitHub CLI older than 2.102.0 or with an unrecognised version.
 
 ### Publisher tests
 

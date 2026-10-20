@@ -19,33 +19,37 @@ TAG = "live-evidence-v2-" + "a" * 64
 SOURCE_SHA = "1" * 40
 
 # Replaces the GitHub CLI for the approval script. The fixture supplies each
-# response; every call is logged so a test can see whether publication ran.
+# response in call order, and `fail` lists calls ("<command>" or "<command>#<n>")
+# that exit 1 after printing their normal output. Every call is logged so a test
+# can see the order and whether publication ran.
 FAKE_GH = r"""
 function gh {
   $callArgs = $args
   $fixture = Get-Content -Raw -LiteralPath $env:FAKE_GH_FIXTURE | ConvertFrom-Json -AsHashtable
   Add-Content -LiteralPath $env:FAKE_GH_LOG -Value ($callArgs -join ' ')
-  $global:LASTEXITCODE = 0
-  if ($callArgs[0] -eq 'api') { return $fixture.tag }
-  switch ("$($callArgs[0]) $($callArgs[1])") {
-    'release view' {
-      $calls = @(Get-Content -LiteralPath $env:FAKE_GH_LOG | Where-Object { $_.StartsWith('release view ') }).Count
-      return $fixture.views[[Math]::Min($calls, $fixture.views.Count) - 1]
-    }
+  $key = if ($callArgs[0] -in @('api', '--version')) { $callArgs[0] } else { "$($callArgs[0]) $($callArgs[1])" }
+  $calls = @(Get-Content -LiteralPath $env:FAKE_GH_LOG | Where-Object { "$_ ".StartsWith("$key ") }).Count
+  $failed = $fixture.fail -contains $key -or $fixture.fail -contains "$key#$calls"
+  $global:LASTEXITCODE = if ($failed) { 1 } else { 0 }
+  switch ($key) {
+    '--version' { return $fixture.version }
+    'api' { return $fixture.tags[[Math]::Min($calls, $fixture.tags.Count) - 1] }
+    'release view' { return $fixture.views[[Math]::Min($calls, $fixture.views.Count) - 1] }
     'release download' {
       $dir = $callArgs[[Array]::IndexOf($callArgs, '--dir') + 1]
       Copy-Item -Path (Join-Path $fixture.files '*') -Destination $dir
       return
     }
-    'attestation verify' {
-      if ($null -eq $fixture.attestations) { $global:LASTEXITCODE = 1; return }
-      return $fixture.attestations
-    }
+    'attestation verify' { return $fixture.attestations }
     'release edit' { return }
   }
   throw "unexpected gh call: $callArgs"
 }
 """
+TAG_LOOKUP = (
+    f"api repos/ryanduguid/au-tax-legislation-corpus/git/ref/tags/{TAG} "
+    "--jq .object.type + \" \" + .object.sha"
+)
 
 
 def _digest(data: bytes) -> str:
@@ -79,10 +83,12 @@ class ApproveLiveEvidenceScriptTests(unittest.TestCase):
     def _approve(
         self,
         *,
-        views: list[str],
-        attestations: list[str] | None,
+        views: list[str] | None = None,
+        attestations: list[str] | None = None,
         files: dict[str, bytes] | None = None,
-        tag: str = f"commit {SOURCE_SHA}",
+        tags: list[str] | None = None,
+        version: str = "gh version 2.102.0 (2026-09-30)",
+        fail: list[str] | None = None,
     ) -> tuple[int, list[str], str]:
         lines = APPROVAL.read_text(encoding="utf-8").splitlines()
         script = "\n".join(line[10:] for line in lines[lines.index("        run: |") + 1 :])
@@ -96,7 +102,14 @@ class ApproveLiveEvidenceScriptTests(unittest.TestCase):
             fixture = root / "fixture.json"
             fixture.write_text(
                 json.dumps(
-                    {"views": views, "attestations": attestations, "files": str(assets), "tag": tag}
+                    {
+                        "views": [_draft(self.DIGESTS)] if views is None else views,
+                        "attestations": [_subjects(self.DIGESTS)] if attestations is None else attestations,
+                        "files": str(assets),
+                        "tags": [f"commit {SOURCE_SHA}"] if tags is None else tags,
+                        "version": version,
+                        "fail": fail or [],
+                    }
                 ),
                 encoding="utf-8",
             )
@@ -120,57 +133,100 @@ class ApproveLiveEvidenceScriptTests(unittest.TestCase):
                 timeout=120,
                 check=False,
             )
-            return result.returncode, log.read_text(encoding="utf-8").splitlines(), result.stdout + result.stderr
+            calls = log.read_text(encoding="utf-8").splitlines()
+            return result.returncode, calls, result.stdout + result.stderr
 
-    def _assert_refused(self, outcome: tuple[int, list[str], str], message: str) -> None:
+    def _assert_refused(self, outcome: tuple[int, list[str], str], message: str = "") -> None:
         status, calls, output = outcome
         self.assertNotEqual(status, 0, output)
         self.assertIn(message, output)
         self.assertFalse([call for call in calls if call.startswith("release edit ")])
 
     def test_publishes_when_every_asset_matches_the_attestation(self) -> None:
-        status, calls, output = self._approve(
-            views=[_draft(self.DIGESTS)], attestations=[_subjects(self.DIGESTS)]
+        status, calls, output = self._approve()
+        self.assertEqual(status, 0, output)
+        words = [call.split() for call in calls]
+        self.assertEqual(
+            [w[0] if w[0] in ("api", "--version") else f"{w[0]} {w[1]}" for w in words],
+            [
+                "--version",
+                "release view",
+                "api",
+                "release download",
+                "attestation verify",
+                "release view",
+                "api",
+                "release edit",
+            ],
+        )
+        self.assertEqual(calls[2], TAG_LOOKUP)
+        self.assertEqual(calls[6], TAG_LOOKUP)
+        self.assertEqual(
+            calls[1], f"release view {TAG} --repo ryanduguid/au-tax-legislation-corpus --json tagName,isDraft,assets,body"
+        )
+        self.assertRegex(
+            calls[3], rf"^release download {TAG} --repo ryanduguid/au-tax-legislation-corpus --dir .+reviewed-live-evidence$"
+        )
+        self.assertRegex(calls[4], r"^attestation verify .+reviewed-live-evidence[\\/]a\.json ")
+        self.assertTrue(
+            calls[4].endswith(
+                " --repo ryanduguid/au-tax-legislation-corpus"
+                " --signer-workflow ryanduguid/au-tax-legislation-corpus/.github/workflows/publish-live-evidence.yml"
+                " --source-ref refs/heads/main"
+                f" --source-digest {SOURCE_SHA}"
+                " --predicate-type https://slsa.dev/provenance/v1"
+                " --deny-self-hosted-runners"
+                " --format json --jq .[].verificationResult.statement.subject | tojson"
+            ),
+            calls[4],
+        )
+        self.assertEqual(
+            calls[7], f"release edit {TAG} --repo ryanduguid/au-tax-legislation-corpus --draft=false --latest=false"
+        )
+
+    def test_publishes_a_single_asset_draft(self) -> None:
+        files = {"a.json": self.FILES["a.json"]}
+        digests = {"a.json": self.DIGESTS["a.json"]}
+        status, _, output = self._approve(
+            views=[_draft(digests)], attestations=[_subjects(digests)], files=files
         )
         self.assertEqual(status, 0, output)
-        self.assertEqual(
-            calls[-1], f"release edit {TAG} --repo ryanduguid/au-tax-legislation-corpus --draft=false --latest=false"
-        )
-        verify = [call for call in calls if call.startswith("attestation verify ")]
-        self.assertEqual(len(verify), 1)
-        for flag in (
-            "--repo ryanduguid/au-tax-legislation-corpus",
-            "--signer-workflow ryanduguid/au-tax-legislation-corpus/.github/workflows/publish-live-evidence.yml",
-            "--source-ref refs/heads/main",
-            f"--source-digest {SOURCE_SHA}",
-            "--predicate-type https://slsa.dev/provenance/v1",
-            "--deny-self-hosted-runners",
-        ):
-            self.assertIn(flag, verify[0])
-        self.assertEqual(len([call for call in calls if call.startswith("release view ")]), 2)
 
     def test_any_verified_attestation_with_the_exact_subject_set_suffices(self) -> None:
         other = _subjects({"a.json": self.DIGESTS["a.json"]})
-        status, _, output = self._approve(
-            views=[_draft(self.DIGESTS)], attestations=[other, _subjects(self.DIGESTS)]
-        )
+        status, _, output = self._approve(attestations=[other, _subjects(self.DIGESTS)])
         self.assertEqual(status, 0, output)
+
+    def test_partial_attestations_are_not_combined(self) -> None:
+        self._assert_refused(
+            self._approve(
+                attestations=[_subjects({name: digest}) for name, digest in self.DIGESTS.items()]
+            ),
+            "do not match the attested candidate set",
+        )
+
+    def test_empty_or_null_verification_output_stops_publication(self) -> None:
+        for output in ([], ["[]"], ["null"]):
+            with self.subTest(output=output):
+                self._assert_refused(
+                    self._approve(attestations=output), "do not match the attested candidate set"
+                )
+        with self.subTest(output="malformed"):
+            self._assert_refused(self._approve(attestations=["{"]))
 
     def test_an_unattested_extra_asset_stops_publication(self) -> None:
         files = {**self.FILES, "c.json": b'{"c":3}\n'}
         digests = {name: _digest(data) for name, data in files.items()}
         self._assert_refused(
-            self._approve(views=[_draft(digests)], attestations=[_subjects(self.DIGESTS)], files=files),
+            self._approve(views=[_draft(digests)], files=files),
             "do not match the attested candidate set",
         )
 
     def test_an_attested_asset_missing_from_the_draft_stops_publication(self) -> None:
-        files = {"a.json": self.FILES["a.json"]}
         self._assert_refused(
             self._approve(
                 views=[_draft({"a.json": self.DIGESTS["a.json"]})],
-                attestations=[_subjects(self.DIGESTS)],
-                files=files,
+                files={"a.json": self.FILES["a.json"]},
             ),
             "do not match the attested candidate set",
         )
@@ -178,7 +234,14 @@ class ApproveLiveEvidenceScriptTests(unittest.TestCase):
     def test_changed_asset_bytes_stop_publication(self) -> None:
         attested = {**self.DIGESTS, "b.json": _digest(b"other")}
         self._assert_refused(
-            self._approve(views=[_draft(self.DIGESTS)], attestations=[_subjects(attested)]),
+            self._approve(attestations=[_subjects(attested)]),
+            "do not match the attested candidate set",
+        )
+
+    def test_a_case_only_rename_stops_publication(self) -> None:
+        attested = {"a.json": self.DIGESTS["a.json"], "B.json": self.DIGESTS["b.json"]}
+        self._assert_refused(
+            self._approve(attestations=[_subjects(attested)]),
             "do not match the attested candidate set",
         )
 
@@ -187,9 +250,13 @@ class ApproveLiveEvidenceScriptTests(unittest.TestCase):
             [{"name": "a.json", "digest": {"sha256": self.DIGESTS["a.json"]}}] * 2
         )
         self._assert_refused(
-            self._approve(views=[_draft(self.DIGESTS)], attestations=[repeated]),
-            "do not match the attested candidate set",
+            self._approve(attestations=[repeated]), "do not match the attested candidate set"
         )
+
+    def test_a_repeated_draft_asset_name_stops_publication(self) -> None:
+        draft = json.loads(_draft(self.DIGESTS))
+        draft["assets"][1]["name"] = "a.json"
+        self._assert_refused(self._approve(views=[json.dumps(draft)]))
 
     def test_downloaded_bytes_must_match_the_draft_digest(self) -> None:
         reported = {**self.DIGESTS, "b.json": _digest(b"other")}
@@ -201,42 +268,82 @@ class ApproveLiveEvidenceScriptTests(unittest.TestCase):
     def test_a_download_outside_the_asset_list_stops_publication(self) -> None:
         files = {"a.json": self.FILES["a.json"], "c.json": self.FILES["b.json"]}
         self._assert_refused(
-            self._approve(views=[_draft(self.DIGESTS)], attestations=[_subjects(self.DIGESTS)], files=files),
-            "downloaded draft assets do not match the draft",
+            self._approve(files=files), "downloaded draft assets do not match the draft"
         )
 
-    def test_an_asset_replaced_after_verification_stops_publication(self) -> None:
-        replaced = {**self.DIGESTS, "b.json": _digest(b"other")}
-        self._assert_refused(
-            self._approve(
-                views=[_draft(self.DIGESTS), _draft(replaced)], attestations=[_subjects(self.DIGESTS)]
-            ),
-            "draft changed during verification",
-        )
+    def test_a_draft_changed_after_verification_stops_publication(self) -> None:
+        replaced = _draft({**self.DIGESTS, "b.json": _digest(b"other")})
+        renamed = _draft({"a.json": self.DIGESTS["a.json"], "c.json": self.DIGESTS["b.json"]})
+        extra = _draft({**self.DIGESTS, "c.json": _digest(b"c")}, candidates=3)
+        published = json.loads(_draft(self.DIGESTS))
+        published["isDraft"] = False
+        undigested = json.loads(_draft(self.DIGESTS))
+        del undigested["assets"][0]["digest"]
+        for name, later, message in (
+            ("digest", replaced, "draft changed during verification"),
+            ("name", renamed, "draft changed during verification"),
+            ("count", extra, "draft changed during verification"),
+            ("published", json.dumps(published), "must be an existing draft"),
+            ("digest removed", json.dumps(undigested), "incomplete candidate asset"),
+        ):
+            with self.subTest(change=name):
+                self._assert_refused(
+                    self._approve(views=[_draft(self.DIGESTS), later]), message
+                )
 
-    def test_failed_attestation_verification_stops_publication(self) -> None:
-        self._assert_refused(
-            self._approve(views=[_draft(self.DIGESTS)], attestations=None),
-            "no verified artifact attestation",
-        )
+    def test_a_tag_moved_after_verification_stops_publication(self) -> None:
+        for later, message in (
+            (f"commit {'2' * 40}", "draft tag moved during verification"),
+            (f"tag {SOURCE_SHA}", "must point directly at a commit"),
+        ):
+            with self.subTest(later=later):
+                self._assert_refused(
+                    self._approve(tags=[f"commit {SOURCE_SHA}", later]), message
+                )
+
+    def test_the_tag_commit_is_the_required_source_digest(self) -> None:
+        other = "f" * 40
+        status, calls, output = self._approve(tags=[f"commit {other}"])
+        self.assertEqual(status, 0, output)
+        self.assertIn(f" --source-digest {other} ", calls[4])
 
     def test_a_tag_that_is_not_a_commit_stops_publication(self) -> None:
         self._assert_refused(
-            self._approve(
-                views=[_draft(self.DIGESTS)],
-                attestations=[_subjects(self.DIGESTS)],
-                tag=f"tag {SOURCE_SHA}",
-            ),
-            "must point directly at a commit",
+            self._approve(tags=[f"tag {SOURCE_SHA}"]), "must point directly at a commit"
         )
 
     def test_an_asset_without_a_digest_stops_publication(self) -> None:
         draft = json.loads(_draft(self.DIGESTS))
         del draft["assets"][1]["digest"]
-        self._assert_refused(
-            self._approve(views=[json.dumps(draft)], attestations=[_subjects(self.DIGESTS)]),
-            "incomplete candidate asset",
-        )
+        self._assert_refused(self._approve(views=[json.dumps(draft)]), "incomplete candidate asset")
+
+    def test_every_failed_gh_call_stops_publication(self) -> None:
+        for call, message in (
+            ("--version", "version could not be read"),
+            ("release view#1", "draft could not be read"),
+            ("api#1", "draft tag could not be read"),
+            ("release download", "could not be downloaded"),
+            ("attestation verify", "no verified artifact attestation"),
+            ("release view#2", "draft could not be read"),
+            ("api#2", "draft tag could not be read"),
+        ):
+            with self.subTest(call=call):
+                self._assert_refused(self._approve(fail=[call]), message)
+        status, calls, output = self._approve(fail=["release edit"])
+        self.assertNotEqual(status, 0, output)
+        self.assertIn("Publication failed", output)
+        self.assertTrue(calls[-1].startswith("release edit "))
+
+    def test_an_unsupported_gh_version_stops_before_any_release_call(self) -> None:
+        for version in ("gh version 2.101.0 (2026-09-01)", "gh version 2.99", "", "something else"):
+            with self.subTest(version=version):
+                outcome = self._approve(version=version)
+                self._assert_refused(outcome, "2.102.0 or later is required")
+                self.assertEqual(outcome[1], ["--version"])
+        for version in ("gh version 2.102.0 (2026-09-30)", "gh version 2.110.3", "gh version 3.0.0 (2027-01-01)"):
+            with self.subTest(version=version):
+                status, _, output = self._approve(version=version)
+                self.assertEqual(status, 0, output)
 
 
 class LiveEvidenceWorkflowPolicyTests(unittest.TestCase):
@@ -266,6 +373,7 @@ class LiveEvidenceWorkflowPolicyTests(unittest.TestCase):
         self.assertEqual(
             [lines[index].split(" gh ", 1)[1].split()[:2] for index in gh_indexes],
             [
+                ["--version"],
                 ["release", "view"],
                 ["api", '"repos/ryanduguid/au-tax-legislation-corpus/git/ref/tags/$releaseTag"'],
                 ["release", "download"],
