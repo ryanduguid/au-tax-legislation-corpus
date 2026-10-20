@@ -29,15 +29,16 @@ tests also disagreed with the design.
 1. **With the current identity, the reuse path almost never runs.** The tag is
    the SHA-256 of `register-observation.json`, which contains `observed_at` to
    the second (`fadden/capture_register.py` lines 150-155 and 1371). Every run,
-   including a job re-run, captures again, so a retry gets a new tag and does not
-   collide with an earlier failed attempt. The path runs only if identical
-   observation bytes recur, for example after a future change that reuses a
+   including a job re-run, captures again, so a retry normally gets a new tag
+   and does not collide with an earlier failed attempt. The path runs only if
+   identical observation bytes recur, for example after a future change that reuses a
    cached capture or drops `observed_at` from the identity.
 2. **When it runs, it does not recover a partial upload.** The retry uploads
    every candidate again without `--clobber`. `gh release upload` refuses an
    existing asset name without `--clobber` (gh source behaviour; not exercised
    here), so the retry fails at the first batch that holds an already uploaded
-   asset. It recovers only a failure between tag creation and draft creation.
+   asset. It can recover only when no candidate asset was uploaded, including
+   after creation of an empty draft.
 3. **Nothing compares bytes, only counts.** The publish workflow checks the
    candidate file count before attestation (line 126) and before upload
    (line 168). It never compares an existing draft's assets with this run's
@@ -59,8 +60,9 @@ that behaviour. The design needs no amendment.
 
 - Small diff; restores conformance with the reviewed design.
 - Retries still work because each run has a new tag.
-- An orphan tag (its name can never be reused) and a private draft remain for
-  an operator to handle by hand, as the design already states.
+- A failed attempt may leave an orphan tag and possibly a private draft for an
+  operator to handle by hand, as the design already states; the workflow never
+  reuses them.
 
 ### B. Amend the design to allow guarded reuse
 
