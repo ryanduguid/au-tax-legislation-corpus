@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import argparse
 import contextlib
-import importlib
+import importlib.util
 import io
 import unittest
 from pathlib import Path
@@ -31,11 +31,10 @@ class FaddenCliTests(unittest.TestCase):
         # The dispatcher imports fadden.<stage> for real; the mocked
         # forwarding test below cannot catch a stage whose bare imports only
         # resolve in the flat deployed layout. This one imports every stage
-        # the way `python -m fadden` does. Rust stages have no module.
-        from fadden.__main__ import RUST_STAGES
-
+        # the way `python -m fadden` does. Most Rust stages have no module;
+        # discover and versions keep theirs because finalize copies them.
         for stage in STAGES:
-            if stage in RUST_STAGES:
+            if importlib.util.find_spec(f"fadden.{stage}") is None:
                 continue
             with self.subTest(stage=stage):
                 importlib.import_module(f"fadden.{stage}")
@@ -83,6 +82,28 @@ class FaddenCliTests(unittest.TestCase):
                 mock.patch("sys.stderr", new_callable=io.StringIO) as stderr:
             self.assertEqual(main(["as_at", "2026-08-01"]), 1)
         self.assertIn("cargo build --locked --release", stderr.getvalue())
+
+    def test_the_binary_is_fadden_bin_then_a_cargo_build_then_path(self) -> None:
+        import fadden.__main__ as dispatcher
+
+        with mock.patch.dict(dispatcher.os.environ, {"FADDEN_BIN": "/opt/fadden"}):
+            self.assertEqual(dispatcher.rust_binary(), "/opt/fadden")
+        with mock.patch.dict(dispatcher.os.environ, {"FADDEN_BIN": ""}):
+            with mock.patch.object(
+                dispatcher.Path,
+                "is_file",
+                autospec=True,
+                side_effect=lambda candidate: candidate.parent.name == "debug",
+            ):
+                found = Path(dispatcher.rust_binary() or "")
+            self.assertEqual(found.parent.name, "debug")
+            self.assertEqual(found.parent.parent.name, "target")
+            with (
+                mock.patch.object(dispatcher.Path, "is_file", return_value=False),
+                mock.patch.object(dispatcher.shutil, "which", return_value="/usr/bin/fadden") as which,
+            ):
+                self.assertEqual(dispatcher.rust_binary(), "/usr/bin/fadden")
+            which.assert_called_once_with("fadden")
 
     def _dispatch(self, *argv: str) -> mock.Mock:
         with mock.patch("importlib.import_module") as importer:

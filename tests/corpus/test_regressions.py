@@ -1997,6 +1997,14 @@ class PathBoundaryTests(unittest.TestCase):
                 paths.reject_symlinks("corpus")
         walk.assert_not_called()
 
+    def test_distribution_boundary_accepts_an_ordinary_tree(self):
+        paths = load_module("corpus_paths_ordinary", STAGE / "corpus_paths.py")
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp) / "corpus"
+            (root / "nested").mkdir(parents=True)
+            (root / "nested" / "file.txt").write_bytes(b"x")
+            self.assertIsNone(paths.reject_symlinks(root))
+
     def test_register_id_and_contained_child_reject_traversal(self):
         paths = load_module("corpus_paths_regression", STAGE / "corpus_paths.py")
         with tempfile.TemporaryDirectory() as tmp:

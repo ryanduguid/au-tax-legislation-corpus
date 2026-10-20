@@ -59,8 +59,11 @@ core = "ctrace"
 
 [tool.coverage.report]
 # The ubuntu coverage leg cannot run the Windows-only live-evidence publication
-# transaction (ctypes.WinDLL, msvcrt), so the floor sits below 100.
-fail_under = 96
+# transaction (ctypes.WinDLL, msvcrt), so the floor sits below 100. Those 182
+# lines (181 before the UTF-16 name-length fix) predate the Rust port; moving
+# stages to the Rust fadden binary removed about 2,500 covered Python
+# statements, which lowered the total from 97% to 94%.
+fail_under = 94
 exclude_also = ['if __name__ == "__main__":']
 
 [tool.mypy]

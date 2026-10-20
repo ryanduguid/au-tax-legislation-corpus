@@ -486,6 +486,15 @@ class OutputBoundaryTests(unittest.TestCase):
         self.assertEqual(list(target.iterdir()), [])
         self.assertEqual((source / "file").read_bytes(), b"new")
 
+    def test_promotion_off_linux_is_a_plain_rename(self) -> None:
+        source, target = self.root / "source", self.root / "target"
+        source.mkdir()
+        (source / "file").write_bytes(b"new")
+        with mock.patch.object(capture_module, "sys", mock.Mock(platform="darwin")):
+            capture_module._rename_no_replace(source, target)
+        self.assertFalse(source.exists())
+        self.assertEqual((target / "file").read_bytes(), b"new")
+
     @unittest.skipUnless(capture_module.sys.platform == "linux", "renameat2 is Linux-only")
     def test_promotion_fails_closed_without_renameat2(self) -> None:
         source, target = self.root / "source", self.root / "target"
