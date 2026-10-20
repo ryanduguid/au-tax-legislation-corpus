@@ -13,7 +13,7 @@
 use std::cell::RefCell;
 
 use super::corpus_paths::{
-    child, corpus_root, markdown_text, module_dir, register_id, reject_symlinks, relative,
+    child, corpus_root, linked, markdown_text, module_dir, register_id, reject_symlinks, relative,
     require_builder_layout, script_dir_in, write_text,
 };
 use super::dist_verify::{self, LICENCE_EXCLUDED, expected_title_files, verify_distribution};
@@ -41,16 +41,6 @@ fn exists(path: &str) -> bool {
     std::fs::symlink_metadata(path).is_ok()
 }
 
-/// `islink(path) or is_junction(path) or is_reparse_point(path)`: the last
-/// `lstat`s the path and raises if it cannot.
-fn linked(path: &str) -> Result<bool, Exc> {
-    let injected = PROBE_HOOK.with(|h| h.borrow_mut().as_mut().and_then(|hook| hook(path)));
-    if let Some(error) = injected {
-        return Err(Exc::Os(error));
-    }
-    Ok(pyos::islink(path) || pyos::isjunction(path) || pyos::is_reparse_point_at(path)?)
-}
-
 /// `os.path.realpath(path)`, as the managed-sibling check resolves parents.
 fn realpath(path: &str) -> Result<String, Exc> {
     let injected = REALPATH_HOOK.with(|h| h.borrow_mut().as_mut().and_then(|hook| hook(path)));
@@ -72,13 +62,11 @@ fn abspath(path: &str) -> String {
 // ----------------------------------------------------------- test hooks
 
 type RenameHook = Box<dyn FnMut(&str, &str) -> Option<OsError>>;
-type ProbeHook = Box<dyn FnMut(&str) -> Option<OsError>>;
 type RealpathHook = Box<dyn FnMut(&str) -> Option<String>>;
 type PreflightHook = Box<dyn FnMut()>;
 
 thread_local! {
     static RENAME_HOOK: RefCell<Option<RenameHook>> = const { RefCell::new(None) };
-    static PROBE_HOOK: RefCell<Option<ProbeHook>> = const { RefCell::new(None) };
     static REALPATH_HOOK: RefCell<Option<RealpathHook>> = const { RefCell::new(None) };
     static PREFLIGHT_HOOK: RefCell<Option<PreflightHook>> = const { RefCell::new(None) };
 }
@@ -90,12 +78,8 @@ pub fn set_rename_hook(hook: impl FnMut(&str, &str) -> Option<OsError> + 'static
     RENAME_HOOK.with(|h| *h.borrow_mut() = Some(Box::new(hook)));
 }
 
-/// Run `hook(path)` before every link and reparse-point probe of a managed
-/// path on this thread; an error it returns is the probe's. For tests.
 #[doc(hidden)]
-pub fn set_probe_hook(hook: impl FnMut(&str) -> Option<OsError> + 'static) {
-    PROBE_HOOK.with(|h| *h.borrow_mut() = Some(Box::new(hook)));
-}
+pub use super::corpus_paths::set_probe_hook;
 
 /// Run `hook(path)` before every managed-sibling parent lookup on this
 /// thread; a path it returns replaces the resolved one. For tests.
@@ -144,8 +128,7 @@ pub fn validated_distribution_target(path: &str) -> Result<String, Exc> {
         return Err(Exc::value("distribution target parent does not exist"));
     }
     if exists(&target) {
-        if pyos::islink(&target) || pyos::isjunction(&target) || pyos::is_reparse_point_at(&target)?
-        {
+        if linked(&target)? {
             return Err(Exc::value(
                 "distribution target must not be a link or reparse point",
             ));

@@ -1343,6 +1343,14 @@ fn a_title_listed_twice_is_refused_as_python_copytree_refuses_it() {
     assert!(managed_paths(&f).is_empty());
 }
 
+/// Whether `path` is a managed stage or backup directory itself, not a path
+/// inside one: every link gate probes, but these guards probe only the root.
+fn is_managed(path: &str, kind: &str) -> bool {
+    Path::new(path)
+        .file_name()
+        .is_some_and(|n| n.to_string_lossy().starts_with(&format!(".dist.{kind}-")))
+}
+
 #[test]
 fn a_failed_stage_probe_stops_promotion() {
     let f = fixture();
@@ -1355,7 +1363,7 @@ fn a_failed_stage_probe_stops_promotion() {
     });
     let mut failed = false;
     dist::set_probe_hook(move |path| {
-        if path.contains(".dist.stage-") && !failed {
+        if is_managed(path, "stage") && !failed {
             failed = true;
             return Some(access_denied(path));
         }
@@ -1380,7 +1388,7 @@ fn a_failed_backup_probe_stops_restoration() {
         counter.set(counter.get() + 1);
         (counter.get() == 2).then(|| access_denied(src))
     });
-    dist::set_probe_hook(|path| path.contains(".dist.backup-").then(|| access_denied(path)));
+    dist::set_probe_hook(|path| is_managed(path, "backup").then(|| access_denied(path)));
     let error = publish_in_process(&f).unwrap_err();
     dist::set_probe_hook(|_| None);
     dist::set_rename_hook(|_, _| None);

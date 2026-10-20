@@ -370,7 +370,28 @@ pub fn write_json_atomic(path: &str, value: &Json, indent: Option<usize>) -> Res
 
 const LINKED_TREE: &str = "corpus tree contains a symbolic link, junction or reparse point";
 
-fn linked(path: &str) -> Result<bool, Exc> {
+type ProbeHook = Box<dyn FnMut(&str) -> Option<OsError>>;
+
+thread_local! {
+    static PROBE_HOOK: std::cell::RefCell<Option<ProbeHook>> =
+        const { std::cell::RefCell::new(None) };
+}
+
+/// Run `hook(path)` before every link and reparse-point probe on this thread;
+/// an error it returns is the probe's. For tests.
+#[doc(hidden)]
+pub fn set_probe_hook(hook: impl FnMut(&str) -> Option<OsError> + 'static) {
+    PROBE_HOOK.with(|h| *h.borrow_mut() = Some(Box::new(hook)));
+}
+
+/// `islink(path) or is_junction(path) or is_reparse_point(path)`: the last
+/// `lstat`s the path and raises if it cannot. Every gate that refuses links
+/// asks this one question.
+pub fn linked(path: &str) -> Result<bool, Exc> {
+    let injected = PROBE_HOOK.with(|h| h.borrow_mut().as_mut().and_then(|hook| hook(path)));
+    if let Some(error) = injected {
+        return Err(Exc::Os(error));
+    }
     Ok(crate::pyos::islink(path)
         || crate::pyos::isjunction(path)
         || crate::pyos::is_reparse_point_at(path)?)

@@ -3,7 +3,9 @@
 //! sort meets first, and a comparison that is not a total order (NaN) leaves
 //! the items where Python leaves them.
 //!
-//! `lt(a, b)` is `a < b`. On error the order of `items` is unspecified.
+//! `lt(a, b)` is `a < b`. On error the order of `items` is unchanged. The sort
+//! moves positions, not items, then swaps each item into place once, so no
+//! item is ever cloned.
 
 const MAX_MINRUN: usize = 64;
 const MIN_GALLOP: usize = 7;
@@ -14,24 +16,46 @@ struct Pending {
     power: u32,
 }
 
-struct Sorter<'a, T, F> {
-    a: &'a mut [T],
+/// The positions being sorted and `lt` over the positions' items.
+struct Sorter<'a, F> {
+    a: &'a mut [usize],
     lt: F,
     min_gallop: usize,
     pending: Vec<Pending>,
 }
 
 /// `items.sort()` with `lt` as `<`.
-pub fn sort<T: Clone, E>(
-    items: &mut [T],
-    lt: impl FnMut(&T, &T) -> Result<bool, E>,
+pub fn sort<T, E>(items: &mut [T], mut lt: impl FnMut(&T, &T) -> Result<bool, E>) -> Result<(), E> {
+    let mut order: Vec<usize> = (0..items.len()).collect();
+    let view: &[T] = items;
+    sort_positions(&mut order, |i, j| lt(&view[i], &view[j]))?;
+    // Item `order[k]` belongs at `k`: follow each cycle of that permutation.
+    let mut placed = vec![false; order.len()];
+    for start in 0..order.len() {
+        let mut k = start;
+        while !placed[k] {
+            placed[k] = true;
+            let source = order[k];
+            if source == start {
+                break;
+            }
+            items.swap(k, source);
+            k = source;
+        }
+    }
+    Ok(())
+}
+
+fn sort_positions<E>(
+    order: &mut [usize],
+    lt: impl FnMut(usize, usize) -> Result<bool, E>,
 ) -> Result<(), E> {
-    let listlen = items.len();
+    let listlen = order.len();
     if listlen < 2 {
         return Ok(());
     }
     let mut s = Sorter {
-        a: items,
+        a: order,
         lt,
         min_gallop: MIN_GALLOP,
         pending: Vec::new(),
@@ -67,15 +91,108 @@ pub fn sort<T: Clone, E>(
     s.merge_force_collapse()
 }
 
-impl<T: Clone, E, F: FnMut(&T, &T) -> Result<bool, E>> Sorter<'_, T, F> {
-    fn lt(&mut self, x: &T, y: &T) -> Result<bool, E> {
-        (self.lt)(x, y)
+/// Where `key` goes in the sorted `v`, left of any equal item.
+fn gallop_left<E>(
+    lt: &mut impl FnMut(usize, usize) -> Result<bool, E>,
+    key: usize,
+    v: &[usize],
+    hint: usize,
+) -> Result<usize, E> {
+    let n = v.len() as isize;
+    let hint = hint as isize;
+    let (mut lastofs, mut ofs): (isize, isize) = (0, 1);
+    if lt(v[hint as usize], key)? {
+        let maxofs = n - hint;
+        while ofs < maxofs {
+            if lt(v[(hint + ofs) as usize], key)? {
+                lastofs = ofs;
+                ofs = (ofs << 1) + 1;
+            } else {
+                break;
+            }
+        }
+        ofs = ofs.min(maxofs);
+        lastofs += hint;
+        ofs += hint;
+    } else {
+        let maxofs = hint + 1;
+        while ofs < maxofs {
+            if lt(v[(hint - ofs) as usize], key)? {
+                break;
+            }
+            lastofs = ofs;
+            ofs = (ofs << 1) + 1;
+        }
+        ofs = ofs.min(maxofs);
+        let k = lastofs;
+        lastofs = hint - ofs;
+        ofs = hint - k;
     }
+    lastofs += 1;
+    while lastofs < ofs {
+        let m = lastofs + ((ofs - lastofs) >> 1);
+        if lt(v[m as usize], key)? {
+            lastofs = m + 1;
+        } else {
+            ofs = m;
+        }
+    }
+    Ok(ofs as usize)
+}
 
+/// Where `key` goes in the sorted `v`, right of any equal item.
+fn gallop_right<E>(
+    lt: &mut impl FnMut(usize, usize) -> Result<bool, E>,
+    key: usize,
+    v: &[usize],
+    hint: usize,
+) -> Result<usize, E> {
+    let n = v.len() as isize;
+    let hint = hint as isize;
+    let (mut lastofs, mut ofs): (isize, isize) = (0, 1);
+    if lt(key, v[hint as usize])? {
+        let maxofs = hint + 1;
+        while ofs < maxofs {
+            if lt(key, v[(hint - ofs) as usize])? {
+                lastofs = ofs;
+                ofs = (ofs << 1) + 1;
+            } else {
+                break;
+            }
+        }
+        ofs = ofs.min(maxofs);
+        let k = lastofs;
+        lastofs = hint - ofs;
+        ofs = hint - k;
+    } else {
+        let maxofs = n - hint;
+        while ofs < maxofs {
+            if lt(key, v[(hint + ofs) as usize])? {
+                break;
+            }
+            lastofs = ofs;
+            ofs = (ofs << 1) + 1;
+        }
+        ofs = ofs.min(maxofs);
+        lastofs += hint;
+        ofs += hint;
+    }
+    lastofs += 1;
+    while lastofs < ofs {
+        let m = lastofs + ((ofs - lastofs) >> 1);
+        if lt(key, v[m as usize])? {
+            ofs = m;
+        } else {
+            lastofs = m + 1;
+        }
+    }
+    Ok(ofs as usize)
+}
+
+impl<E, F: FnMut(usize, usize) -> Result<bool, E>> Sorter<'_, F> {
     /// `lt(a[i], a[j])`.
     fn lt_at(&mut self, i: usize, j: usize) -> Result<bool, E> {
-        let (x, y) = (self.a[i].clone(), self.a[j].clone());
-        (self.lt)(&x, &y)
+        (self.lt)(self.a[i], self.a[j])
     }
 
     /// Stable binary insertion sort of `a[lo..lo+n]`, of which `a[lo..lo+ok]`
@@ -122,7 +239,7 @@ impl<T: Clone, E, F: FnMut(&T, &T) -> Result<bool, E>> Sorter<'_, T, F> {
         }
         n += 1;
         let mut neq = 0;
-        let reverse_last_neq = |a: &mut [T], n: usize, neq: &mut usize| {
+        let reverse_last_neq = |a: &mut [usize], n: usize, neq: &mut usize| {
             if *neq > 0 {
                 *neq += 1;
                 a[lo + n - *neq..lo + n].reverse();
@@ -150,96 +267,8 @@ impl<T: Clone, E, F: FnMut(&T, &T) -> Result<bool, E>> Sorter<'_, T, F> {
         Ok(n)
     }
 
-    /// Where `key` goes in the sorted `v`, left of any equal item.
-    fn gallop_left(&mut self, key: &T, v: &[T], hint: usize) -> Result<usize, E> {
-        let n = v.len() as isize;
-        let hint = hint as isize;
-        let (mut lastofs, mut ofs): (isize, isize) = (0, 1);
-        if self.lt(&v[hint as usize], key)? {
-            let maxofs = n - hint;
-            while ofs < maxofs {
-                if self.lt(&v[(hint + ofs) as usize], key)? {
-                    lastofs = ofs;
-                    ofs = (ofs << 1) + 1;
-                } else {
-                    break;
-                }
-            }
-            ofs = ofs.min(maxofs);
-            lastofs += hint;
-            ofs += hint;
-        } else {
-            let maxofs = hint + 1;
-            while ofs < maxofs {
-                if self.lt(&v[(hint - ofs) as usize], key)? {
-                    break;
-                }
-                lastofs = ofs;
-                ofs = (ofs << 1) + 1;
-            }
-            ofs = ofs.min(maxofs);
-            let k = lastofs;
-            lastofs = hint - ofs;
-            ofs = hint - k;
-        }
-        lastofs += 1;
-        while lastofs < ofs {
-            let m = lastofs + ((ofs - lastofs) >> 1);
-            if self.lt(&v[m as usize], key)? {
-                lastofs = m + 1;
-            } else {
-                ofs = m;
-            }
-        }
-        Ok(ofs as usize)
-    }
-
-    /// Where `key` goes in the sorted `v`, right of any equal item.
-    fn gallop_right(&mut self, key: &T, v: &[T], hint: usize) -> Result<usize, E> {
-        let n = v.len() as isize;
-        let hint = hint as isize;
-        let (mut lastofs, mut ofs): (isize, isize) = (0, 1);
-        if self.lt(key, &v[hint as usize])? {
-            let maxofs = hint + 1;
-            while ofs < maxofs {
-                if self.lt(key, &v[(hint - ofs) as usize])? {
-                    lastofs = ofs;
-                    ofs = (ofs << 1) + 1;
-                } else {
-                    break;
-                }
-            }
-            ofs = ofs.min(maxofs);
-            let k = lastofs;
-            lastofs = hint - ofs;
-            ofs = hint - k;
-        } else {
-            let maxofs = n - hint;
-            while ofs < maxofs {
-                if self.lt(key, &v[(hint + ofs) as usize])? {
-                    break;
-                }
-                lastofs = ofs;
-                ofs = (ofs << 1) + 1;
-            }
-            ofs = ofs.min(maxofs);
-            lastofs += hint;
-            ofs += hint;
-        }
-        lastofs += 1;
-        while lastofs < ofs {
-            let m = lastofs + ((ofs - lastofs) >> 1);
-            if self.lt(key, &v[m as usize])? {
-                ofs = m;
-            } else {
-                lastofs = m + 1;
-            }
-        }
-        Ok(ofs as usize)
-    }
-
-    /// Merge `a[pa..pa+na]` and the run after it, `na <= nb`, through a copy
-    /// of the first.
+    /// Merge `a[base_a..base_a+na]` and the run after it, `na <= nb`, through
+    /// a copy of the first.
     fn merge_lo(
         &mut self,
         base_a: usize,
@@ -247,53 +276,51 @@ impl<T: Clone, E, F: FnMut(&T, &T) -> Result<bool, E>> Sorter<'_, T, F> {
         base_b: usize,
         mut nb: usize,
     ) -> Result<(), E> {
-        let tmp: Vec<T> = self.a[base_a..base_a + na].to_vec();
+        let tmp: Vec<usize> = self.a[base_a..base_a + na].to_vec();
         let (mut dest, mut pa, mut pb) = (base_a, 0usize, base_b);
-        let copy_b = |a: &mut [T], dest: usize, pb: usize, nb: usize, last: &T| {
-            for i in 0..nb {
-                a[dest + i] = a[pb + i].clone();
-            }
-            a[dest + nb] = last.clone();
+        let copy_b = |a: &mut [usize], dest: usize, pb: usize, nb: usize, last: usize| {
+            a.copy_within(pb..pb + nb, dest);
+            a[dest + nb] = last;
         };
-        self.a[dest] = self.a[pb].clone();
+        self.a[dest] = self.a[pb];
         dest += 1;
         pb += 1;
         nb -= 1;
         if nb == 0 {
-            self.a[dest..dest + na].clone_from_slice(&tmp[pa..pa + na]);
+            self.a[dest..dest + na].copy_from_slice(&tmp[pa..pa + na]);
             return Ok(());
         }
         if na == 1 {
-            copy_b(self.a, dest, pb, nb, &tmp[pa]);
+            copy_b(self.a, dest, pb, nb, tmp[pa]);
             return Ok(());
         }
         let mut min_gallop = self.min_gallop;
         loop {
             let (mut acount, mut bcount) = (0usize, 0usize);
             loop {
-                if self.lt(&self.a[pb].clone(), &tmp[pa])? {
-                    self.a[dest] = self.a[pb].clone();
+                if (self.lt)(self.a[pb], tmp[pa])? {
+                    self.a[dest] = self.a[pb];
                     dest += 1;
                     pb += 1;
                     bcount += 1;
                     acount = 0;
                     nb -= 1;
                     if nb == 0 {
-                        self.a[dest..dest + na].clone_from_slice(&tmp[pa..pa + na]);
+                        self.a[dest..dest + na].copy_from_slice(&tmp[pa..pa + na]);
                         return Ok(());
                     }
                     if bcount >= min_gallop {
                         break;
                     }
                 } else {
-                    self.a[dest] = tmp[pa].clone();
+                    self.a[dest] = tmp[pa];
                     dest += 1;
                     pa += 1;
                     acount += 1;
                     bcount = 0;
                     na -= 1;
                     if na == 1 {
-                        copy_b(self.a, dest, pb, nb, &tmp[pa]);
+                        copy_b(self.a, dest, pb, nb, tmp[pa]);
                         return Ok(());
                     }
                     if acount >= min_gallop {
@@ -305,52 +332,47 @@ impl<T: Clone, E, F: FnMut(&T, &T) -> Result<bool, E>> Sorter<'_, T, F> {
             loop {
                 min_gallop -= usize::from(min_gallop > 1);
                 self.min_gallop = min_gallop;
-                let key = self.a[pb].clone();
-                let k = self.gallop_right(&key, &tmp[pa..pa + na], 0)?;
+                let k = gallop_right(&mut self.lt, self.a[pb], &tmp[pa..pa + na], 0)?;
                 acount = k;
                 if k > 0 {
-                    self.a[dest..dest + k].clone_from_slice(&tmp[pa..pa + k]);
+                    self.a[dest..dest + k].copy_from_slice(&tmp[pa..pa + k]);
                     dest += k;
                     pa += k;
                     na -= k;
                     if na == 1 {
-                        copy_b(self.a, dest, pb, nb, &tmp[pa]);
+                        copy_b(self.a, dest, pb, nb, tmp[pa]);
                         return Ok(());
                     }
                     if na == 0 {
                         return Ok(());
                     }
                 }
-                self.a[dest] = self.a[pb].clone();
+                self.a[dest] = self.a[pb];
                 dest += 1;
                 pb += 1;
                 nb -= 1;
                 if nb == 0 {
-                    self.a[dest..dest + na].clone_from_slice(&tmp[pa..pa + na]);
+                    self.a[dest..dest + na].copy_from_slice(&tmp[pa..pa + na]);
                     return Ok(());
                 }
-                let key = tmp[pa].clone();
-                let run: Vec<T> = self.a[pb..pb + nb].to_vec();
-                let k = self.gallop_left(&key, &run, 0)?;
+                let k = gallop_left(&mut self.lt, tmp[pa], &self.a[pb..pb + nb], 0)?;
                 bcount = k;
                 if k > 0 {
-                    for i in 0..k {
-                        self.a[dest + i] = self.a[pb + i].clone();
-                    }
+                    self.a.copy_within(pb..pb + k, dest);
                     dest += k;
                     pb += k;
                     nb -= k;
                     if nb == 0 {
-                        self.a[dest..dest + na].clone_from_slice(&tmp[pa..pa + na]);
+                        self.a[dest..dest + na].copy_from_slice(&tmp[pa..pa + na]);
                         return Ok(());
                     }
                 }
-                self.a[dest] = tmp[pa].clone();
+                self.a[dest] = tmp[pa];
                 dest += 1;
                 pa += 1;
                 na -= 1;
                 if na == 1 {
-                    copy_b(self.a, dest, pb, nb, &tmp[pa]);
+                    copy_b(self.a, dest, pb, nb, tmp[pa]);
                     return Ok(());
                 }
                 if acount < MIN_GALLOP && bcount < MIN_GALLOP {
@@ -371,25 +393,23 @@ impl<T: Clone, E, F: FnMut(&T, &T) -> Result<bool, E>> Sorter<'_, T, F> {
         base_b: usize,
         mut nb: usize,
     ) -> Result<(), E> {
-        let tmp: Vec<T> = self.a[base_b..base_b + nb].to_vec();
+        let tmp: Vec<usize> = self.a[base_b..base_b + nb].to_vec();
         // Signed, as CPython's pointers may step one before a run.
         let mut dest = (base_b + nb - 1) as isize;
         let mut pa = (base_a + na - 1) as isize;
         let mut pb = (nb - 1) as isize;
         let at = |i: isize| i as usize;
         // On success with b left over: tmp[..nb] fills a[dest-(nb-1)..=dest].
-        let fill_b = |a: &mut [T], dest: isize, nb: usize| {
+        let fill_b = |a: &mut [usize], dest: isize, nb: usize| {
             let start = at(dest + 1) - nb;
-            a[start..start + nb].clone_from_slice(&tmp[..nb]);
+            a[start..start + nb].copy_from_slice(&tmp[..nb]);
         };
         // b's first item goes before what remains of a, shifted right.
-        let copy_a = |a: &mut [T], dest: isize, pa: isize, na: usize, first: &T| {
-            for i in 0..na {
-                a[at(dest) - i] = a[at(pa) - i].clone();
-            }
-            a[at(dest) - na] = first.clone();
+        let copy_a = |a: &mut [usize], dest: isize, pa: isize, na: usize, first: usize| {
+            a.copy_within(at(pa) + 1 - na..=at(pa), at(dest) + 1 - na);
+            a[at(dest) - na] = first;
         };
-        self.a[at(dest)] = self.a[at(pa)].clone();
+        self.a[at(dest)] = self.a[at(pa)];
         dest -= 1;
         pa -= 1;
         na -= 1;
@@ -398,15 +418,15 @@ impl<T: Clone, E, F: FnMut(&T, &T) -> Result<bool, E>> Sorter<'_, T, F> {
             return Ok(());
         }
         if nb == 1 {
-            copy_a(self.a, dest, pa, na, &tmp[at(pb)]);
+            copy_a(self.a, dest, pa, na, tmp[at(pb)]);
             return Ok(());
         }
         let mut min_gallop = self.min_gallop;
         loop {
             let (mut acount, mut bcount) = (0usize, 0usize);
             loop {
-                if self.lt(&tmp[at(pb)], &self.a[at(pa)].clone())? {
-                    self.a[at(dest)] = self.a[at(pa)].clone();
+                if (self.lt)(tmp[at(pb)], self.a[at(pa)])? {
+                    self.a[at(dest)] = self.a[at(pa)];
                     dest -= 1;
                     pa -= 1;
                     acount += 1;
@@ -420,14 +440,14 @@ impl<T: Clone, E, F: FnMut(&T, &T) -> Result<bool, E>> Sorter<'_, T, F> {
                         break;
                     }
                 } else {
-                    self.a[at(dest)] = tmp[at(pb)].clone();
+                    self.a[at(dest)] = tmp[at(pb)];
                     dest -= 1;
                     pb -= 1;
                     bcount += 1;
                     acount = 0;
                     nb -= 1;
                     if nb == 1 {
-                        copy_a(self.a, dest, pa, na, &tmp[at(pb)]);
+                        copy_a(self.a, dest, pa, na, tmp[at(pb)]);
                         return Ok(());
                     }
                     if bcount >= min_gallop {
@@ -439,49 +459,44 @@ impl<T: Clone, E, F: FnMut(&T, &T) -> Result<bool, E>> Sorter<'_, T, F> {
             loop {
                 min_gallop -= usize::from(min_gallop > 1);
                 self.min_gallop = min_gallop;
-                let key = tmp[at(pb)].clone();
-                let run: Vec<T> = self.a[base_a..base_a + na].to_vec();
-                let k = na - self.gallop_right(&key, &run, na - 1)?;
+                let key = tmp[at(pb)];
+                let k = na - gallop_right(&mut self.lt, key, &self.a[base_a..base_a + na], na - 1)?;
                 acount = k;
                 if k > 0 {
                     dest -= k as isize;
                     pa -= k as isize;
-                    for i in (1..=k as isize).rev() {
-                        self.a[at(dest + i)] = self.a[at(pa + i)].clone();
-                    }
+                    self.a.copy_within(at(pa + 1)..at(pa + 1) + k, at(dest + 1));
                     na -= k;
                     if na == 0 {
                         fill_b(self.a, dest, nb);
                         return Ok(());
                     }
                 }
-                self.a[at(dest)] = tmp[at(pb)].clone();
+                self.a[at(dest)] = tmp[at(pb)];
                 dest -= 1;
                 pb -= 1;
                 nb -= 1;
                 if nb == 1 {
-                    copy_a(self.a, dest, pa, na, &tmp[at(pb)]);
+                    copy_a(self.a, dest, pa, na, tmp[at(pb)]);
                     return Ok(());
                 }
-                let key = self.a[at(pa)].clone();
-                let k = nb - self.gallop_left(&key, &tmp[..nb], nb - 1)?;
+                let k = nb - gallop_left(&mut self.lt, self.a[at(pa)], &tmp[..nb], nb - 1)?;
                 bcount = k;
                 if k > 0 {
                     dest -= k as isize;
                     pb -= k as isize;
-                    for i in 1..=k as isize {
-                        self.a[at(dest + i)] = tmp[at(pb + i)].clone();
-                    }
+                    let start = at(pb + 1);
+                    self.a[at(dest + 1)..at(dest + 1) + k].copy_from_slice(&tmp[start..start + k]);
                     nb -= k;
                     if nb == 1 {
-                        copy_a(self.a, dest, pa, na, &tmp[at(pb)]);
+                        copy_a(self.a, dest, pa, na, tmp[at(pb)]);
                         return Ok(());
                     }
                     if nb == 0 {
                         return Ok(());
                     }
                 }
-                self.a[at(dest)] = self.a[at(pa)].clone();
+                self.a[at(dest)] = self.a[at(pa)];
                 dest -= 1;
                 pa -= 1;
                 na -= 1;
@@ -505,17 +520,19 @@ impl<T: Clone, E, F: FnMut(&T, &T) -> Result<bool, E>> Sorter<'_, T, F> {
         self.pending[i].len = na + nb;
         self.pending.remove(i + 1);
 
-        let key = self.a[base_b].clone();
-        let run: Vec<T> = self.a[base_a..base_a + na].to_vec();
-        let k = self.gallop_right(&key, &run, 0)?;
+        let k = gallop_right(
+            &mut self.lt,
+            self.a[base_b],
+            &self.a[base_a..base_a + na],
+            0,
+        )?;
         base_a += k;
         na -= k;
         if na == 0 {
             return Ok(());
         }
-        let key = self.a[base_a + na - 1].clone();
-        let run: Vec<T> = self.a[base_b..base_b + nb].to_vec();
-        let nb = self.gallop_left(&key, &run, nb - 1)?;
+        let key = self.a[base_a + na - 1];
+        let nb = gallop_left(&mut self.lt, key, &self.a[base_b..base_b + nb], nb - 1)?;
         if nb == 0 {
             return Ok(());
         }
@@ -659,5 +676,16 @@ mod tests {
         expected.sort_by_key(|p| p.0);
         sort(&mut v, |a, b| Ok::<_, ()>(a.0 < b.0)).unwrap();
         assert_eq!(v, expected);
+    }
+
+    /// Items are only swapped: a type that cannot be cloned sorts, stably.
+    #[test]
+    fn sorts_items_that_cannot_be_cloned() {
+        struct Item(u32, usize);
+        let mut v: Vec<Item> = (0..2000)
+            .map(|i| Item((i as u32 * 7919) % 1009, i))
+            .collect();
+        sort(&mut v, |a, b| Ok::<_, ()>(a.0 < b.0)).unwrap();
+        assert!(v.windows(2).all(|w| (w[0].0, w[0].1) < (w[1].0, w[1].1)));
     }
 }
