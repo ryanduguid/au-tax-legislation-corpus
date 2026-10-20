@@ -681,6 +681,32 @@ fn capture_directory_swap_never_exports_an_external_graph() {
     }
 }
 
+/// The directory inventories hold no link counts, so only the final per-file
+/// recheck sees a source file gain a second link after it was copied.
+#[test]
+fn a_source_file_linked_after_copying_is_refused() {
+    let dir = tempfile::tempdir().unwrap();
+    let capture = make_capture(dir.path());
+    let (source, link) = (
+        capture.join("monitor-baseline.json"),
+        dir.path().join("second-link.json"),
+    );
+    let outcome = with_hooks(
+        Box::new(move |step| {
+            if let Step::Copied(_) = step {
+                std::fs::hard_link(&source, &link).unwrap();
+            }
+            None
+        }),
+        || export(&capture, &dir.path().join("output")),
+    );
+    assert_eq!(
+        message(outcome.unwrap_err()),
+        "capture snapshot source file changed."
+    );
+    assert!(!dir.path().join("output").exists());
+}
+
 #[test]
 fn evidence_directory_swap_never_copies_external_bytes() {
     let dir = tempfile::tempdir().unwrap();
@@ -728,6 +754,46 @@ fn evidence_directory_swap_never_copies_external_bytes() {
             assert!(!bundle.to_string().contains("ZXh0ZXJuYWw"));
         }
     }
+}
+
+/// A swap before the first evidence file's identity is taken stays bound to
+/// the pinned original directory, so the inventory check refuses it.
+#[cfg(unix)]
+#[test]
+fn evidence_swap_before_identity_capture_is_refused() {
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path().to_path_buf();
+    let capture = make_capture(&root);
+    let outside = root.join("outside-evidence");
+    std::fs::create_dir(&outside).unwrap();
+    let name = std::fs::read_dir(capture.join("evidence"))
+        .unwrap()
+        .next()
+        .unwrap()
+        .unwrap()
+        .file_name();
+    std::fs::write(outside.join(&name), b"external").unwrap();
+    let (evidence, retained) = (capture.join("evidence"), root.join("retained-evidence"));
+    let mut swapped = false;
+    let outcome = with_hooks(
+        Box::new(move |step| {
+            if let Step::Identify(path) = step
+                && Path::new(path).parent() == Some(evidence.as_path())
+                && !swapped
+            {
+                swapped = true;
+                std::fs::rename(&evidence, &retained).unwrap();
+                std::os::unix::fs::symlink(&outside, &evidence).unwrap();
+            }
+            None
+        }),
+        || export(&capture, &root.join("output")),
+    );
+    assert_eq!(
+        message(outcome.unwrap_err()),
+        "capture input inventory changed."
+    );
+    assert!(!root.join("output").exists());
 }
 
 #[test]
@@ -840,6 +906,37 @@ fn registration_is_independent_from_compilation_start_and_previous_number_may_be
         "2026-08-18"
     );
     assert_eq!(bundle["baseline_title"]["compilation_number"], Value::Null);
+    // Registration stays its own source fact in the retained response.
+    let raw = base64_decode(bundle["primary_response_base64"].as_str().unwrap());
+    let registered = b"\"registeredAt\":\"2026-08-27T17:31:41.1234567+10:00\"";
+    assert!(raw.windows(registered.len()).any(|w| w == registered));
+}
+
+/// Standard padded base64, as `base64.b64decode(text, validate=True)` reads it.
+#[cfg(windows)]
+fn base64_decode(text: &str) -> Vec<u8> {
+    let value = |c: u8| match c {
+        b'A'..=b'Z' => c - b'A',
+        b'a'..=b'z' => c - b'a' + 26,
+        b'0'..=b'9' => c - b'0' + 52,
+        b'+' => 62,
+        b'/' => 63,
+        _ => panic!("not base64: {c}"),
+    };
+    let mut out = Vec::new();
+    for chunk in text.as_bytes().chunks(4) {
+        let digits: Vec<u8> = chunk
+            .iter()
+            .filter(|&&c| c != b'=')
+            .map(|&c| value(c))
+            .collect();
+        let bits = digits
+            .iter()
+            .fold(0u32, |acc, &d| (acc << 6) | u32::from(d))
+            << (6 * (4 - digits.len()));
+        out.extend_from_slice(&bits.to_be_bytes()[1..digits.len()]);
+    }
+    out
 }
 
 // ------------------------------------------------------------ filesystem
@@ -901,6 +998,21 @@ fn output_may_not_collide_with_capture_input() {
     assert_eq!(
         std::fs::read(capture.join("monitor-baseline.json")).unwrap(),
         before
+    );
+}
+
+/// On POSIX a backslash is an ordinary name character: a capture under `a\b`
+/// does not contain an output under `a/b`.
+#[cfg(unix)]
+#[test]
+fn a_backslash_is_not_a_separator_on_posix() {
+    let dir = tempfile::tempdir().unwrap();
+    let capture = make_capture(&dir.path().join("a\\b"));
+    let parent = dir.path().join("a").join("b").join("capture");
+    std::fs::create_dir_all(&parent).unwrap();
+    assert_eq!(
+        message(export(&capture, &parent.join("out")).unwrap_err()),
+        "identity-bound live evidence publication is supported only on Windows."
     );
 }
 
@@ -973,6 +1085,115 @@ fn write_failure_removes_only_owned_staging_and_preserves_neighbours() {
     assert!(owned_staging(root, &output).is_empty());
 }
 
+/// Python's `os.chmod` after each new directory and file can fail on its own:
+/// the parent's failure is its creation failing and the staging directory's
+/// the write's. A new file's failure leaves it unrecorded, so cleanup refuses
+/// the unexpected child and keeps the staging directory, as Python does.
+#[cfg(windows)]
+#[test]
+fn chmod_failures_follow_their_python_boundaries() {
+    for (target, nested, expected) in [
+        (
+            "pub",
+            true,
+            "live evidence output parent could not be created.",
+        ),
+        (
+            ".output.live-evidence-",
+            false,
+            "live evidence output could not be written.",
+        ),
+        (
+            ".json",
+            false,
+            "live evidence staging changed before cleanup.",
+        ),
+    ] {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().to_path_buf();
+        let capture = make_capture(&root);
+        let output = if nested {
+            root.join("pub").join("output")
+        } else {
+            root.join("output")
+        };
+        let outcome = with_hooks(
+            Box::new(move |step| match step {
+                Step::Chmod(path)
+                    if Path::new(path)
+                        .file_name()
+                        .is_some_and(|n| n.to_string_lossy().contains(target)) =>
+                {
+                    Some(simulated("denied"))
+                }
+                _ => None,
+            }),
+            || export(&capture, &output),
+        );
+        assert_eq!(message(outcome.unwrap_err()), expected, "{target}");
+        assert!(!output.exists());
+        let left = owned_staging(output.parent().unwrap(), &output).len();
+        assert_eq!(left, usize::from(target == ".json"), "{target}");
+    }
+}
+
+/// Both held directories are closed after promotion even when the first close
+/// fails; the staging directory's failure is the one reported, and the
+/// complete output stays for recovery.
+#[cfg(windows)]
+#[test]
+fn held_directory_close_failures_keep_the_promoted_output() {
+    for (labels, expected) in [
+        (
+            &["live evidence staging", "live evidence output parent"][..],
+            "live evidence staging cleanup failed.",
+        ),
+        (
+            &["live evidence output parent"][..],
+            "live evidence output parent cleanup failed.",
+        ),
+    ] {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        let output = root.join("output");
+        let capture = make_capture(root);
+        let outcome = with_hooks(
+            Box::new(move |step| match step {
+                Step::Close(label) if labels.contains(&label) => Some(simulated("close")),
+                _ => None,
+            }),
+            || export(&capture, &output),
+        );
+        assert_eq!(message(outcome.unwrap_err()), expected);
+        assert!(output.join(BUNDLE).is_file());
+        assert!(owned_staging(root, &output).is_empty());
+    }
+}
+
+/// A cleanup child that cannot be closed is reported, superseding the
+/// failure that started cleanup.
+#[cfg(windows)]
+#[test]
+fn a_cleanup_child_close_failure_is_reported() {
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path();
+    let output = root.join("output");
+    let capture = make_capture(root);
+    let outcome = with_hooks(
+        Box::new(|step| match step {
+            Step::Reread(_) => Some(simulated("staged output changed")),
+            Step::Close("live evidence staging child") => Some(simulated("close")),
+            _ => None,
+        }),
+        || export(&capture, &output),
+    );
+    assert_eq!(
+        message(outcome.unwrap_err()),
+        "live evidence staging child cleanup failed."
+    );
+    assert!(!output.exists());
+}
+
 #[cfg(windows)]
 #[test]
 fn reread_failure_never_promotes_output() {
@@ -989,6 +1210,52 @@ fn reread_failure_never_promotes_output() {
     assert_eq!(message(outcome.unwrap_err()), "staged output changed");
     assert!(!output.exists());
     assert!(owned_staging(root, &output).is_empty());
+}
+
+/// A staged file's size at its first inspection must match what is read: a
+/// file grown before that inspection and cut back before the reads is refused.
+#[cfg(windows)]
+#[test]
+fn a_staged_file_resized_around_its_first_inspection_is_refused() {
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path().to_path_buf();
+    let output = root.join("output");
+    let capture = make_capture(&root);
+    use std::io::Write as _;
+    let mut grown = std::collections::HashMap::<PathBuf, u64>::new();
+    let outcome = with_hooks(
+        Box::new(move |step| {
+            match step {
+                Step::Reread(staging) => {
+                    for entry in std::fs::read_dir(staging).unwrap() {
+                        let path = entry.unwrap().path();
+                        let length = std::fs::metadata(&path).unwrap().len();
+                        let mut file = std::fs::OpenOptions::new()
+                            .append(true)
+                            .open(&path)
+                            .unwrap();
+                        file.write_all(b" ").unwrap();
+                        grown.insert(path, length);
+                    }
+                }
+                Step::Inspected(path) => {
+                    if let Some(length) = grown.remove(Path::new(path)) {
+                        let file = std::fs::OpenOptions::new().write(true).open(path).unwrap();
+                        file.set_len(length).unwrap();
+                    }
+                }
+                _ => {}
+            }
+            None
+        }),
+        || export(&capture, &output),
+    );
+    assert_eq!(
+        message(outcome.unwrap_err()),
+        "staged live evidence output changed during validation."
+    );
+    assert!(!output.exists());
+    assert!(owned_staging(&root, &output).is_empty());
 }
 
 #[cfg(windows)]
@@ -1018,6 +1285,37 @@ fn promotion_race_cannot_overwrite_a_new_destination() {
         "keep"
     );
     assert!(owned_staging(&root, &output).is_empty());
+}
+
+/// The parent's first inspection is the identity publication binds: a
+/// different ordinary directory put in its place straight after it is refused.
+#[cfg(windows)]
+#[test]
+fn a_parent_replaced_after_its_first_inspection_is_refused() {
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path().to_path_buf();
+    let capture = make_capture(&root);
+    let parent = root.join("pub");
+    std::fs::create_dir(&parent).unwrap();
+    let output = parent.join("output");
+    let (from, aside) = (parent.clone(), root.join("pub-aside"));
+    let outcome = with_hooks(
+        Box::new(move |step| {
+            if let Step::Inspected(_) = step {
+                std::fs::rename(&from, &aside).unwrap();
+                std::fs::create_dir(&from).unwrap();
+            }
+            None
+        }),
+        || export(&capture, &output),
+    );
+    assert_eq!(
+        message(outcome.unwrap_err()),
+        "live evidence output parent changed before publication."
+    );
+    for place in [&parent, &root.join("pub-aside")] {
+        assert_eq!(std::fs::read_dir(place).unwrap().count(), 0);
+    }
 }
 
 /// The handle-bound rename itself refuses a destination that appears after
@@ -1265,6 +1563,46 @@ fn producer_version_requires_strict_semver_and_package_equality() {
         message(outcome.unwrap_err()),
         "producer version could not be read."
     );
+}
+
+/// The package version is Python's MULTILINE regex search, whose `\s*` spans
+/// line breaks; a file that is not UTF-8 raises UnicodeDecodeError, which
+/// the export does not catch.
+#[test]
+fn producer_version_follows_the_regex_and_its_catch_boundary() {
+    let refused = "producer version must be strict Semantic Version 2.0.0.";
+    let accepted = "identity-bound live evidence publication is supported only on Windows.";
+    for (version, pyproject, expected) in [
+        (
+            &b"1.2.3\n"[..],
+            &b"version\n=\n\"1.2.3\"\n"[..],
+            Some(accepted),
+        ),
+        (b"1.2.3", b"[x]\n version = \"1.2.3\"\n", Some(refused)),
+        (
+            b"1.2.3",
+            b"version = \"1.2.3\" \nversion = \"9.9.9\"\n",
+            Some(accepted),
+        ),
+        (b"\xff", b"version = \"1.2.3\"\n", None),
+        (b"1.2.3", b"version = \"1.2.3\"\n\xff", None),
+    ] {
+        let dir = tempfile::tempdir().unwrap();
+        let capture = make_capture(dir.path());
+        let project = dir.path().join("project");
+        std::fs::create_dir(&project).unwrap();
+        std::fs::write(project.join("VERSION"), version).unwrap();
+        std::fs::write(project.join("pyproject.toml"), pyproject).unwrap();
+        live::set_version_dir(Some(s(&project)));
+        live::set_not_windows(true);
+        let outcome = export(&capture, &dir.path().join("output"));
+        live::clear_hooks();
+        match (outcome.unwrap_err(), expected) {
+            (error, Some(text)) => assert_eq!(message(error), text, "{pyproject:?}"),
+            (Exc::Value { class, .. }, None) => assert_eq!(class, "UnicodeDecodeError"),
+            (other, None) => panic!("{other:?}"),
+        }
+    }
 }
 
 #[test]

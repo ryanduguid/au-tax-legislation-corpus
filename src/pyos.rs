@@ -386,6 +386,112 @@ pub fn path_identity(path: &str) -> io::Result<(u64, u64)> {
     handle_identity(&file)
 }
 
+/// `os.chmod(path, mode)`.
+#[cfg(unix)]
+pub fn chmod(path: &str, mode: u32) -> io::Result<()> {
+    use std::os::unix::fs::PermissionsExt;
+    std::fs::set_permissions(path, std::fs::Permissions::from_mode(mode))
+}
+
+/// `os.chmod(path, mode)` as CPython 3.13 and later do it on Windows: open
+/// the target for its attributes alone, then set or clear the read-only
+/// attribute by `mode`'s owner-write bit, writing only on a change.
+#[cfg(windows)]
+pub fn chmod(path: &str, mode: u32) -> io::Result<()> {
+    use std::os::windows::fs::OpenOptionsExt;
+    use std::os::windows::io::AsRawHandle;
+    use windows_sys::Win32::Storage::FileSystem::{
+        FILE_ATTRIBUTE_READONLY, FILE_BASIC_INFO, FILE_FLAG_BACKUP_SEMANTICS, FILE_READ_ATTRIBUTES,
+        FILE_WRITE_ATTRIBUTES, FileBasicInfo, GetFileInformationByHandleEx,
+        SetFileInformationByHandle,
+    };
+    let file = OpenOptions::new()
+        .access_mode(FILE_READ_ATTRIBUTES | FILE_WRITE_ATTRIBUTES)
+        .share_mode(0)
+        .custom_flags(FILE_FLAG_BACKUP_SEMANTICS)
+        .open(path)?;
+    let size = std::mem::size_of::<FILE_BASIC_INFO>() as u32;
+    // SAFETY: an all-zero FILE_BASIC_INFO is a valid value to be overwritten.
+    let mut info: FILE_BASIC_INFO = unsafe { std::mem::zeroed() };
+    // SAFETY: the handle is open and info is writable for its size.
+    let read = unsafe {
+        GetFileInformationByHandleEx(
+            file.as_raw_handle(),
+            FileBasicInfo,
+            (&raw mut info).cast(),
+            size,
+        )
+    };
+    if read == 0 {
+        return Err(io::Error::last_os_error());
+    }
+    let attributes = if mode & 0o200 != 0 {
+        info.FileAttributes & !FILE_ATTRIBUTE_READONLY
+    } else {
+        info.FileAttributes | FILE_ATTRIBUTE_READONLY
+    };
+    if attributes == info.FileAttributes {
+        return Ok(());
+    }
+    info.FileAttributes = attributes;
+    // SAFETY: the handle is open and info is a valid FILE_BASIC_INFO.
+    let written = unsafe {
+        SetFileInformationByHandle(
+            file.as_raw_handle(),
+            FileBasicInfo,
+            (&raw const info).cast(),
+            size,
+        )
+    };
+    if written == 0 {
+        return Err(io::Error::last_os_error());
+    }
+    Ok(())
+}
+
+/// One `os.lstat(path)`: its type and size together with its `(st_dev, st_ino)`,
+/// all from the same object.
+#[cfg(unix)]
+pub fn lstat_identity(path: &str) -> io::Result<(Metadata, (u64, u64))> {
+    use std::os::unix::fs::MetadataExt;
+    let meta = std::fs::symlink_metadata(path)?;
+    let identity = (meta.dev(), meta.ino());
+    Ok((meta, identity))
+}
+
+/// One `os.lstat(path)`: its type and size together with its `(st_dev, st_ino)`,
+/// all from one handle opened without following a final reparse point, as
+/// CPython does. Where that open is refused for access or sharing, CPython
+/// reads the directory entry instead and reports no file number; so does this.
+#[cfg(windows)]
+pub fn lstat_identity(path: &str) -> io::Result<(Metadata, (u64, u64))> {
+    use std::os::windows::fs::OpenOptionsExt;
+    use windows_sys::Win32::Foundation::{ERROR_ACCESS_DENIED, ERROR_SHARING_VIOLATION};
+    use windows_sys::Win32::Storage::FileSystem::{
+        FILE_FLAG_BACKUP_SEMANTICS, FILE_FLAG_OPEN_REPARSE_POINT, FILE_READ_ATTRIBUTES,
+    };
+    let opened = OpenOptions::new()
+        .access_mode(FILE_READ_ATTRIBUTES)
+        .custom_flags(FILE_FLAG_BACKUP_SEMANTICS | FILE_FLAG_OPEN_REPARSE_POINT)
+        .open(path);
+    match opened {
+        Ok(file) => {
+            let meta = file.metadata()?;
+            let identity = handle_identity(&file)?;
+            Ok((meta, identity))
+        }
+        Err(error)
+            if matches!(
+                error.raw_os_error().map(|code| code as u32),
+                Some(ERROR_ACCESS_DENIED | ERROR_SHARING_VIOLATION)
+            ) =>
+        {
+            Ok((std::fs::symlink_metadata(path)?, (0, 0)))
+        }
+        Err(error) => Err(error),
+    }
+}
+
 /// Whether an `lstat` result is a Windows reparse point (`FILE_ATTRIBUTE_REPARSE_POINT`).
 pub fn is_reparse_point(meta: &Metadata) -> bool {
     #[cfg(windows)]
@@ -440,7 +546,12 @@ pub fn try_random_hex(count: usize) -> Result<String, OsError> {
     }
     let mut bytes = vec![0u8; count.div_ceil(2)];
     getrandom::fill(&mut bytes).map_err(|e| {
-        let error = io::Error::other(e.to_string());
+        // The operating system's own error, as os.urandom reports it, where
+        // there is one.
+        let error = e.raw_os_error().map_or_else(
+            || io::Error::other(e.to_string()),
+            io::Error::from_raw_os_error,
+        );
         OsError::new(&error, None, Style::Errno)
     })?;
     let text: String = bytes.iter().map(|b| format!("{b:02x}")).collect();

@@ -291,6 +291,59 @@ fn one_title(exchange: RegisterExchange) -> (Value, Value, Vec<(String, Vec<u8>)
     )
 }
 
+/// Removing malformed source bytes would make the closed decision unauditable.
+#[test]
+fn a_bounded_malformed_200_body_is_retained_as_failure_evidence() {
+    let malformed = b"{\"value\":";
+    let (capture, observation, evidence) =
+        one_title(successful_exchange(malformed, "2026-08-29T06:00:01Z"));
+    let request = &capture["results"][0]["requests"][0];
+    let digest = sha256_id(malformed);
+    assert_eq!(request["response_sha256"], json!(digest));
+    assert_eq!(request["response_length"], json!(malformed.len()));
+    assert_eq!(
+        request["evidence_path"],
+        json!(format!("evidence/sha256-{}.json", &digest[7..]))
+    );
+    assert_eq!(
+        evidence
+            .iter()
+            .map(|(_, b)| b.as_slice())
+            .collect::<Vec<_>>(),
+        [&malformed[..]]
+    );
+    let item = &observation["observations"][0];
+    assert_eq!(item["primary_response_sha256"], json!(digest));
+    assert_eq!(
+        item["primary_response_media_type"],
+        json!("application/json")
+    );
+}
+
+/// A server error body must not cross the capture's bounded evidence contract.
+#[test]
+fn a_non_200_body_is_neither_retained_nor_disclosed() {
+    let secret = b"PRIVATE-SERVER-BODY-MUST-NOT-APPEAR";
+    let (capture, observation, evidence) = one_title(exchange_with(
+        Body::Bytes(secret.to_vec()),
+        Json::Int(503.into()),
+        "2026-08-29T07:00:01Z",
+        headers(&[("Content-Type", "text/plain"), ("Server", "ignored")]),
+        3,
+        Json::Null,
+    ));
+    let request = &capture["results"][0]["requests"][0];
+    for field in ["response_length", "response_sha256", "evidence_path"] {
+        assert_eq!(request[field], Value::Null, "{field}");
+    }
+    assert!(evidence.is_empty());
+    let item = &observation["observations"][0];
+    assert_eq!(item["primary_response_sha256"], Value::Null);
+    assert_eq!(item["primary_response_media_type"], Value::Null);
+    let serialised = serde_json::to_string(&json!([capture, observation])).unwrap();
+    assert!(!serialised.contains("PRIVATE-SERVER-BODY"));
+}
+
 fn simulated(text: &str) -> OsError {
     OsError {
         kind: std::io::ErrorKind::Other,
@@ -779,6 +832,40 @@ fn manifest_path_swap_cannot_substitute_a_different_regular_file() {
         &mut MemorySession::new(vec![]),
     );
     capture::clear_hooks();
+    assert_eq!(
+        message(outcome.unwrap_err()),
+        "manifest changed during capture."
+    );
+    assert!(!w.root.join("capture").exists());
+}
+
+/// The identity an open is compared with comes from the manifest's first
+/// inspection: an identical copy put in its place straight after it is refused.
+#[test]
+fn a_manifest_replaced_after_its_first_inspection_is_refused() {
+    let w = Work::new();
+    let manifest = w.manifest(&json!([manifest_row(json!({}))]));
+    let copy = w.root.join("copy.json");
+    std::fs::copy(&manifest, &copy).unwrap();
+    let (target, mut copy) = (manifest.clone(), Some(copy));
+    let outcome = with_hooks(
+        move |step| {
+            if let Step::Reparse(path) = step
+                && Path::new(path) == target
+                && let Some(copy) = copy.take()
+            {
+                std::fs::rename(copy, &target).unwrap();
+            }
+            None
+        },
+        || {
+            capture_register_run(
+                s(&manifest),
+                s(&w.root.join("capture")),
+                &mut MemorySession::new(vec![]),
+            )
+        },
+    );
     assert_eq!(
         message(outcome.unwrap_err()),
         "manifest changed during capture."
@@ -2549,6 +2636,35 @@ fn read_failures_and_races_are_refused() {
         let outcome = with_hooks(hook, || capture::validate_staged_graph(&staged));
         assert_eq!(message(outcome.unwrap_err()), expected);
     }
+}
+
+/// A staged file replaced by an identical copy straight after its first
+/// inspection is a different object, and validation refuses it.
+#[test]
+fn a_staged_file_replaced_after_its_first_inspection_is_refused() {
+    let w = Work::new();
+    let graph = capture_graph(&w.root.join("graph"), CURRENT_BODY);
+    let target = graph.join("monitor-baseline.json");
+    let copy = w.root.join("copy.json");
+    std::fs::copy(&target, &copy).unwrap();
+    let mut copy = Some(copy);
+    let staged = PyPath::new(s(&graph));
+    let outcome = with_hooks(
+        move |step| {
+            if let Step::Reparse(path) = step
+                && Path::new(path) == target
+                && let Some(copy) = copy.take()
+            {
+                std::fs::rename(copy, &target).unwrap();
+            }
+            None
+        },
+        || capture::validate_staged_graph(&staged),
+    );
+    assert_eq!(
+        message(outcome.unwrap_err()),
+        "staged capture file changed during validation"
+    );
 }
 
 // ------------------------------------------------------------ filesystem

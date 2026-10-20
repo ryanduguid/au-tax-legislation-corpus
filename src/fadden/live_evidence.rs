@@ -25,6 +25,7 @@ use crate::argparse::{Action, Exit, Get, Parser};
 use crate::pyjson::{self, DecodeError, Json, PyStr};
 use crate::pyos::{self, OsError};
 use crate::pypath::{self, PyPath};
+use crate::pyre;
 use crate::pyvalue::{self, py_eq};
 
 const MAX_RESPONSE_BYTES: usize = 256 * 1024;
@@ -133,6 +134,8 @@ pub enum Step<'a> {
     Copied(&'a str),
     /// `os.mkdir` of the output parent or the staging directory.
     Mkdir(&'a str),
+    /// `os.chmod` of a new directory or file.
+    Chmod(&'a str),
     /// `_write_new(path)`.
     Write(&'a str),
     /// Holding a directory locked against rename and deletion.
@@ -149,8 +152,14 @@ pub enum Step<'a> {
     CleanupStaging(&'a str),
     /// Re-reading the staged export: an error is its refusal.
     Reread(&'a str),
+    /// The existing output parent, or a staged file, inspected: the hook may
+    /// race its replacement.
+    Inspected(&'a str),
     /// Removing the temporary snapshot directory.
     TempCleanup(&'a str),
+    /// About to take a snapshot source file's expected identity; the hook
+    /// may race it.
+    Identify(&'a str),
 }
 
 type FaultHook = Box<dyn FnMut(Step) -> Option<OsError>>;
@@ -204,13 +213,14 @@ fn is_windows() -> bool {
 // ------------------------------------------------------------ identities
 
 /// What `os.stat_result` holds that the export compares: the type and
-/// permission bits, the device and file number, and the link count.
+/// permission bits, the device and file number, the link count and the size.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Stat {
     pub mode: u32,
     pub dev: u64,
     pub ino: u64,
     pub nlink: u64,
+    pub size: u64,
     pub reparse: bool,
 }
 
@@ -255,6 +265,7 @@ fn stat_of(meta: &std::fs::Metadata) -> Stat {
         dev: meta.dev(),
         ino: meta.ino(),
         nlink: meta.nlink(),
+        size: meta.size(),
         reparse: false,
     }
 }
@@ -269,14 +280,16 @@ mod win {
         FileRenameInformation, NtOpenFile, NtSetInformationFile,
     };
     use windows_sys::Win32::Foundation::{
-        CloseHandle, GENERIC_READ, HANDLE, INVALID_HANDLE_VALUE, UNICODE_STRING,
+        CloseHandle, ERROR_ACCESS_DENIED, ERROR_SHARING_VIOLATION, GENERIC_READ, HANDLE,
+        INVALID_HANDLE_VALUE, UNICODE_STRING,
     };
     use windows_sys::Win32::Storage::FileSystem::{
         BY_HANDLE_FILE_INFORMATION, CreateFileW, DELETE, FILE_ADD_FILE, FILE_ATTRIBUTE_DIRECTORY,
-        FILE_ATTRIBUTE_READONLY, FILE_ATTRIBUTE_REPARSE_POINT, FILE_DISPOSITION_INFO,
-        FILE_FLAG_BACKUP_SEMANTICS, FILE_FLAG_OPEN_REPARSE_POINT, FILE_READ_ATTRIBUTES,
-        FILE_SHARE_DELETE, FILE_SHARE_READ, FILE_SHARE_WRITE, FileDispositionInfo,
-        GetFileInformationByHandle, OPEN_EXISTING, SYNCHRONIZE, SetFileInformationByHandle,
+        FILE_ATTRIBUTE_READONLY, FILE_ATTRIBUTE_REPARSE_POINT, FILE_ATTRIBUTE_TAG_INFO,
+        FILE_DISPOSITION_INFO, FILE_FLAG_BACKUP_SEMANTICS, FILE_FLAG_OPEN_REPARSE_POINT,
+        FILE_READ_ATTRIBUTES, FILE_SHARE_DELETE, FILE_SHARE_READ, FILE_SHARE_WRITE,
+        FileAttributeTagInfo, FileDispositionInfo, GetFileInformationByHandle,
+        GetFileInformationByHandleEx, OPEN_EXISTING, SYNCHRONIZE, SetFileInformationByHandle,
     };
     use windows_sys::Win32::System::IO::IO_STATUS_BLOCK;
 
@@ -318,22 +331,85 @@ mod win {
             dev: u64::from(info.dwVolumeSerialNumber),
             ino: (u64::from(info.nFileIndexHigh) << 32) | u64::from(info.nFileIndexLow),
             nlink: u64::from(info.nNumberOfLinks),
+            size: (u64::from(info.nFileSizeHigh) << 32) | u64::from(info.nFileSizeLow),
             reparse: attributes & FILE_ATTRIBUTE_REPARSE_POINT != 0,
         })
     }
 
-    /// `os.lstat(path)` as the export compares it.
+    /// The reparse tag of an open reparse point.
+    fn reparse_tag(handle: RawHandle) -> std::io::Result<u32> {
+        // SAFETY: an all-zero FILE_ATTRIBUTE_TAG_INFO is a valid value to be overwritten.
+        let mut info: FILE_ATTRIBUTE_TAG_INFO = unsafe { std::mem::zeroed() };
+        // SAFETY: the handle is open for the call and info is writable for its size.
+        let ok = unsafe {
+            GetFileInformationByHandleEx(
+                handle as HANDLE,
+                FileAttributeTagInfo,
+                (&raw mut info).cast(),
+                std::mem::size_of::<FILE_ATTRIBUTE_TAG_INFO>() as u32,
+            )
+        };
+        if ok == 0 {
+            return Err(std::io::Error::last_os_error());
+        }
+        Ok(info.ReparseTag)
+    }
+
+    /// `os.lstat(path)` as the export compares it, from one handle opened
+    /// without following a final reparse point: a symbolic link's tag makes
+    /// it `S_IFLNK`, as CPython reports it. Where that open is refused for
+    /// access or sharing, CPython reads the directory entry instead, with no
+    /// device or file number and one link; so does this.
     pub fn path_stat(path: &str) -> std::io::Result<Stat> {
-        let handle = create(
+        const IO_REPARSE_TAG_SYMLINK: u32 = 0xA000_000C;
+        let handle = match create(
             path,
             FILE_READ_ATTRIBUTES,
             FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
-        )?;
+        ) {
+            Ok(handle) => handle,
+            Err(error)
+                if matches!(
+                    error.raw_os_error().map(|code| code as u32),
+                    Some(ERROR_ACCESS_DENIED | ERROR_SHARING_VIOLATION)
+                ) =>
+            {
+                return entry_stat(path);
+            }
+            Err(error) => return Err(error),
+        };
         let mut stat = handle_stat(handle.as_raw_handle())?;
-        if crate::pyos::islink(path) {
+        if stat.reparse && reparse_tag(handle.as_raw_handle())? == IO_REPARSE_TAG_SYMLINK {
             stat.mode = S_IFLNK | (stat.mode & 0o777);
         }
         Ok(stat)
+    }
+
+    /// CPython's directory-entry `lstat` fallback.
+    fn entry_stat(path: &str) -> std::io::Result<Stat> {
+        use std::os::windows::fs::MetadataExt;
+        let meta = std::fs::symlink_metadata(path)?;
+        let attributes = meta.file_attributes();
+        let mut mode = if meta.file_type().is_symlink() {
+            S_IFLNK
+        } else if attributes & FILE_ATTRIBUTE_DIRECTORY != 0 {
+            S_IFDIR | 0o111
+        } else {
+            S_IFREG
+        };
+        mode |= if attributes & FILE_ATTRIBUTE_READONLY != 0 {
+            0o444
+        } else {
+            0o666
+        };
+        Ok(Stat {
+            mode,
+            dev: 0,
+            ino: 0,
+            nlink: 1,
+            size: meta.file_size(),
+            reparse: attributes & FILE_ATTRIBUTE_REPARSE_POINT != 0,
+        })
     }
 
     /// `CreateFileW(path, access, share, OPEN_EXISTING, backup semantics,
@@ -428,19 +504,25 @@ mod win {
     /// `NtSetInformationFile(staging, FileRenameInformation)` with the held
     /// parent as the root directory and `ReplaceIfExists` false.
     pub fn rename_no_replace(staging: RawHandle, parent: RawHandle, name: &str) -> bool {
+        use std::mem::{offset_of, size_of};
+        use windows_sys::Wdk::Storage::FileSystem::FILE_RENAME_INFORMATION;
         let encoded: Vec<u16> = name.encode_utf16().collect();
-        // FILE_RENAME_INFORMATION: a 4-byte flag, the root directory handle at
-        // offset 8, the name length at 16 and the name from 20, in a buffer
-        // the size of the padded structure plus the name.
-        let size = 24 + encoded.len() * 2;
+        // A zeroed FILE_RENAME_INFORMATION (ReplaceIfExists false) followed by
+        // the name, in a buffer the size of the structure plus the name, as
+        // the Python ctypes code builds it; offsets come from the structure.
+        let root = offset_of!(FILE_RENAME_INFORMATION, RootDirectory);
+        let length = offset_of!(FILE_RENAME_INFORMATION, FileNameLength);
+        let start = offset_of!(FILE_RENAME_INFORMATION, FileName);
+        let size = size_of::<FILE_RENAME_INFORMATION>() + encoded.len() * 2;
         let mut buffer = vec![0u64; size.div_ceil(8)];
         // SAFETY: the buffer holds `size` bytes, 8-byte aligned.
         let bytes =
             unsafe { std::slice::from_raw_parts_mut(buffer.as_mut_ptr().cast::<u8>(), size) };
-        bytes[8..16].copy_from_slice(&(parent as usize as u64).to_le_bytes());
-        bytes[16..20].copy_from_slice(&((encoded.len() * 2) as u32).to_le_bytes());
+        bytes[root..root + size_of::<HANDLE>()]
+            .copy_from_slice(&(parent as usize).to_le_bytes()[..size_of::<HANDLE>()]);
+        bytes[length..length + 4].copy_from_slice(&((encoded.len() * 2) as u32).to_le_bytes());
         for (i, unit) in encoded.iter().enumerate() {
-            bytes[20 + 2 * i..22 + 2 * i].copy_from_slice(&unit.to_le_bytes());
+            bytes[start + 2 * i..start + 2 * i + 2].copy_from_slice(&unit.to_le_bytes());
         }
         // SAFETY: an all-zero IO_STATUS_BLOCK is a valid value to be overwritten.
         let mut status: IO_STATUS_BLOCK = unsafe { std::mem::zeroed() };
@@ -569,13 +651,45 @@ fn stat_at(parent: std::os::fd::RawFd, name: &str) -> std::io::Result<Stat> {
     {
         return Err(std::io::Error::last_os_error());
     }
-    Ok(Stat {
+    Ok(raw_stat(&details))
+}
+
+/// `os.fstat(fd)` on a held descriptor, without duplicating it.
+#[cfg(unix)]
+fn fstat_fd(fd: std::os::fd::RawFd) -> std::io::Result<Stat> {
+    // SAFETY: an all-zero stat is a valid value to be overwritten.
+    let mut details: libc::stat = unsafe { std::mem::zeroed() };
+    // SAFETY: the descriptor is open and details is writable.
+    if unsafe { libc::fstat(fd, &mut details) } != 0 {
+        return Err(std::io::Error::last_os_error());
+    }
+    Ok(raw_stat(&details))
+}
+
+#[cfg(unix)]
+fn raw_stat(details: &libc::stat) -> Stat {
+    Stat {
         mode: details.st_mode,
         dev: details.st_dev,
         ino: details.st_ino,
         nlink: details.st_nlink,
+        size: details.st_size as u64,
         reparse: false,
-    })
+    }
+}
+
+/// This thread's `errno`.
+#[cfg(target_os = "linux")]
+fn errno() -> *mut libc::c_int {
+    // SAFETY: always valid for the calling thread.
+    unsafe { libc::__errno_location() }
+}
+
+/// This thread's `errno`.
+#[cfg(all(unix, not(target_os = "linux")))]
+fn errno() -> *mut libc::c_int {
+    // SAFETY: always valid for the calling thread.
+    unsafe { libc::__error() }
 }
 
 /// `os.listdir(fd)`.
@@ -598,9 +712,21 @@ fn list_fd(fd: std::os::fd::RawFd) -> std::io::Result<Vec<String>> {
     unsafe { libc::rewinddir(stream) };
     let mut names = Vec::new();
     loop {
-        // SAFETY: the stream is open; readdir returns null at the end.
-        let entry = unsafe { libc::readdir(stream) };
+        // readdir returns null at the end and on an error; only errno tells
+        // them apart, so it is cleared first, as CPython's listdir does.
+        // SAFETY: errno is this thread's; the stream is open.
+        let entry = unsafe {
+            *errno() = 0;
+            libc::readdir(stream)
+        };
         if entry.is_null() {
+            // SAFETY: errno is this thread's.
+            let code = unsafe { *errno() };
+            if code != 0 {
+                // SAFETY: the stream is closed once.
+                unsafe { libc::closedir(stream) };
+                return Err(std::io::Error::from_raw_os_error(code));
+            }
             break;
         }
         // SAFETY: d_name is NUL-terminated within the entry.
@@ -714,13 +840,8 @@ fn pinned_directory_details(chain: &PinnedChain, path: &str, index: usize) -> Re
     let changed = || live_error("capture input inventory changed.");
     #[cfg(unix)]
     let details = {
-        use std::os::fd::{AsFd, BorrowedFd};
         let _ = path;
-        let fd: BorrowedFd = match &chain.held[index].1 {
-            Pinned::Fd(fd) => fd.as_fd(),
-        };
-        let file = std::fs::File::from(fd.try_clone_to_owned().map_err(|_| changed())?);
-        file_stat(&file).map_err(|_| changed())?
+        fstat_fd(chain.held[index].1.fd()).map_err(|_| changed())?
     };
     #[cfg(windows)]
     let details = {
@@ -787,6 +908,7 @@ fn directory_inventory(
 /// `_ordinary_file_details(path, directory_handle=...)`: a regular file with
 /// one link, and on Windows no link, junction or reparse point.
 fn ordinary_file_details(chain: &PinnedChain, path: &PyPath, index: usize) -> Result<Stat, Exc> {
+    injected(Step::Identify(&path.display()));
     let expected = child_details(chain, path, index)?;
     let windows_refusal = cfg!(windows) && !plain(&path.display(), &expected);
     if !expected.is_reg() || windows_refusal || expected.nlink != 1 {
@@ -974,8 +1096,9 @@ fn snapshot_into(
         return Err(live_error("capture input inventory changed."));
     }
     for (path, index, expected) in &copied {
-        let finished = child_details(pinned, path, *index)
-            .map_err(|_| live_error("capture snapshot source file changed."))?;
+        // The helper's own refusal stands: Python's `except OSError` here
+        // never sees it.
+        let finished = child_details(pinned, path, *index)?;
         if !same_regular(expected, &finished) {
             return Err(live_error("capture snapshot source file changed."));
         }
@@ -1098,25 +1221,22 @@ fn producer_version() -> Result<String, Exc> {
         Some(directory) => PyPath::new(&directory),
         None => corpus_paths::script_dir("export_live_evidence_bundles.py")?.parent(),
     };
-    let read = |name: &str| crate::pyio::read_text(&root.join(name).display());
-    let (Ok(version), Ok(pyproject)) = (read("VERSION"), read("pyproject.toml")) else {
-        return Err(live_error("producer version could not be read."));
+    // Read in turn; only OSError becomes the export's refusal, and a decoding
+    // error escapes as Python's UnicodeDecodeError does.
+    let read = |name: &str| match crate::pyio::read_text(&root.join(name).display()) {
+        Ok(text) => Ok(text),
+        Err(crate::pyio::ReadError::Os(_)) => {
+            Err(live_error("producer version could not be read."))
+        }
+        Err(error) => Err(Exc::from(error)),
     };
+    let version = read("VERSION")?;
+    let pyproject = read("pyproject.toml")?;
     let version = version.strip_suffix('\n').unwrap_or(&version);
     let version = version.strip_suffix('\r').unwrap_or(version);
-    // re.search(r'^version\s*=\s*"([^"]+)"\s*$', pyproject, re.MULTILINE)
-    let package = pyproject.split('\n').find_map(|line| {
-        let rest = line.strip_prefix("version")?;
-        let rest = rest
-            .trim_start_matches(crate::py::is_space)
-            .strip_prefix('=')?;
-        let rest = rest
-            .trim_start_matches(crate::py::is_space)
-            .strip_prefix('"')?;
-        let end = rest.find('"')?;
-        let (value, tail) = (&rest[..end], &rest[end + 1..]);
-        (!value.is_empty() && tail.chars().all(crate::py::is_space)).then(|| value.to_string())
-    });
+    let package = pyre::re(r#"^version\s*=\s*"([^"]+)"\s*$"#, pyre::M)
+        .search(&pyproject)
+        .map(|caps| caps[1].to_string());
     if !semver(&pts(version)) || package.as_deref() != Some(version) {
         return Err(live_error(
             "producer version must be strict Semantic Version 2.0.0.",
@@ -1630,7 +1750,8 @@ fn output_collides_capture(output: &str, capture: &str) -> Result<bool, Exc> {
         let (drive, root, tail) = pypath::splitroot(p);
         let mut parts = vec![format!("{drive}{root}")];
         parts.extend(
-            tail.split(['/', '\\'])
+            // posixpath splits on `/` alone; ntpath on both separators.
+            tail.split(|c| c == '/' || (cfg!(windows) && c == '\\'))
                 .filter(|s| !s.is_empty() && *s != ".")
                 .map(str::to_string),
         );
@@ -1664,8 +1785,9 @@ fn preflight_output(output: &PyPath) -> Result<(bool, Option<Stat>), Exc> {
     require_absent_destination(&output.display())?;
     let parent = output.parent();
     let parent_text = parent.display();
-    match pyos::lstat(&parent_text) {
-        Err(error) if error.not_found() => {
+    // One inspection: its identity is what publication later compares with.
+    match path_stat(&parent_text) {
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
             if !safe_output_leaf(parent.name()) {
                 return Err(live_error("live evidence output parent name is unsafe."));
             }
@@ -1676,9 +1798,8 @@ fn preflight_output(output: &PyPath) -> Result<(bool, Option<Stat>), Exc> {
         Err(_) => Err(live_error(
             "live evidence output parent could not be inspected.",
         )),
-        Ok(_) => {
-            let details = path_stat(&parent_text)
-                .map_err(|_| live_error("live evidence output parent could not be inspected."))?;
+        Ok(details) => {
+            injected(Step::Inspected(&parent_text));
             if !details.is_dir() || !plain(&parent_text, &details) {
                 return Err(live_error(
                     "live evidence output parent must be an ordinary directory.",
@@ -1695,7 +1816,15 @@ fn preflight_output(output: &PyPath) -> Result<(bool, Option<Stat>), Exc> {
 fn write_new(path: &str, content: &[u8]) -> std::io::Result<()> {
     io_fault(Step::Write(path))?;
     let mut file = pyos::create_new(path, true).map_err(|e| std::io::Error::other(e.text))?;
+    chmod(path, 0o600)?;
     file.write_all(content)
+}
+
+/// `os.chmod(path, mode)`.
+#[cfg(windows)]
+fn chmod(path: &str, mode: u32) -> std::io::Result<()> {
+    io_fault(Step::Chmod(path))?;
+    pyos::chmod(path, mode)
 }
 
 /// `_read_staged_file(path, expected)`.
@@ -1708,13 +1837,13 @@ fn read_staged_file(path: &str, expected: &[u8]) -> Result<(), Exc> {
             "staged live evidence output contains a non-ordinary file.",
         ));
     }
+    injected(Step::Inspected(path));
     /// One staged file read twice through one handle.
     struct Reread {
         opened: Stat,
         first: Vec<u8>,
         second: Vec<u8>,
         read_details: Stat,
-        size: u64,
         finished: Stat,
     }
     let read = (|| -> std::io::Result<Reread> {
@@ -1726,14 +1855,12 @@ fn read_staged_file(path: &str, expected: &[u8]) -> Result<(), Exc> {
         std::io::Seek::seek(&mut file, std::io::SeekFrom::Start(0))?;
         (&mut file).take(limit).read_to_end(&mut second)?;
         let read_details = file_stat(&file)?;
-        let size = file.metadata()?.len();
         drop(file);
         Ok(Reread {
             opened,
             first,
             second,
             read_details,
-            size,
             finished: path_stat(path)?,
         })
     })()
@@ -1743,19 +1870,15 @@ fn read_staged_file(path: &str, expected: &[u8]) -> Result<(), Exc> {
         first,
         second,
         read_details,
-        size,
         finished,
     } = read;
-    let details_size = std::fs::symlink_metadata(path)
-        .map(|m| m.len())
-        .unwrap_or(u64::MAX);
     if !(same_regular(&details, &opened)
         && same_regular(&opened, &read_details)
         && same_regular(&read_details, &finished)
         && first == second
         && first == expected
-        && first.len() as u64 == size
-        && size == details_size)
+        && first.len() as u64 == read_details.size
+        && read_details.size == details.size)
     {
         return Err(live_error(
             "staged live evidence output changed during validation.",
@@ -1901,13 +2024,14 @@ impl OwnedStaging {
         })
     }
 
-    fn remember_file(&mut self, name: &str) -> std::io::Result<()> {
+    /// `remember_file(name)`: `_ordinary_file_details`, whose refusals are
+    /// the export's own errors rather than an `OSError`.
+    fn remember_file(&mut self, name: &str) -> Result<(), Exc> {
         let path = self.path.join(name).display();
-        let details = path_stat(&path)?;
+        let details = path_stat(&path)
+            .map_err(|_| live_error("capture snapshot source file is unavailable."))?;
         if !details.is_reg() || !plain(&path, &details) || details.nlink != 1 {
-            return Err(std::io::Error::other(
-                "capture snapshot source file is not ordinary.",
-            ));
+            return Err(live_error("capture snapshot source file is not ordinary."));
         }
         self.files.push((name.to_string(), details));
         Ok(())
@@ -1934,7 +2058,10 @@ impl OwnedStaging {
         let file = std::fs::File::from(handle);
         match file_stat(&file) {
             Ok(observed) if same_regular(expected, &observed) => Ok(file),
-            _ => Err(changed()),
+            _ => {
+                close_handle(file.into(), "live evidence staging child")?;
+                Err(changed())
+            }
         }
     }
 
@@ -1974,7 +2101,8 @@ impl OwnedStaging {
             injected(Step::Cleanup(name));
             let file = self.open_child(name, expected)?;
             let marked = mark_for_deletion(file.as_raw_handle(), "live evidence staging child");
-            drop(file);
+            // finally: a close failure replaces the marking's outcome.
+            close_handle(file.into(), "live evidence staging child")?;
             marked?;
         }
         mark_for_deletion(self.staging_handle.as_raw_handle(), "live evidence staging")
@@ -2048,6 +2176,7 @@ fn publish_on_windows(
     if create_parent {
         io_fault(Step::Mkdir(&parent_text))
             .and_then(|()| pyos::mkdir_private(&parent_text))
+            .and_then(|()| chmod(&parent_text, 0o700))
             .map_err(|_| live_error("live evidence output parent could not be created."))?;
     }
     let parent_details = ordinary_directory_details(&parent_text, "live evidence output parent")?;
@@ -2078,10 +2207,10 @@ fn publish_on_windows(
             staging_details,
         )?);
         let held = owned.as_mut().expect("just pinned");
+        chmod(&staging_text, 0o700).map_err(|_| not_written())?;
         for (name, content) in expected {
             write_new(&staging.join(name).display(), content).map_err(|_| not_written())?;
-            held.remember_file(name)
-                .map_err(|_| live_error("capture snapshot source file is not ordinary."))?;
+            held.remember_file(name)?;
         }
         validate_staged_export(&staging_text, expected)?;
         injected(Step::Validated(&staging_text));
@@ -2160,7 +2289,8 @@ pub fn export_live_evidence_bundles(
         }
         build_validated_snapshot(&snapshot)
     })();
-    let removed = io_fault(Step::TempCleanup(&temporary)).and(std::fs::remove_dir_all(&temporary));
+    let removed =
+        io_fault(Step::TempCleanup(&temporary)).and_then(|()| std::fs::remove_dir_all(&temporary));
     let (release_tag, candidates) = match (built, removed) {
         (_, Err(_)) => return Err(cleanup_failed()),
         (Err(Exc::Os(_)), Ok(())) => return Err(cleanup_failed()),

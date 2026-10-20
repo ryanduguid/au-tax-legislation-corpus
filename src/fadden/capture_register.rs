@@ -470,6 +470,20 @@ fn lstat_ok(path: &str) -> Option<std::fs::Metadata> {
     lstat(path).ok()
 }
 
+/// Whether a file is regular, with its `(st_dev, st_ino)`.
+type Identity = (bool, (u64, u64));
+
+/// One `os.lstat(path)` with the regular-file identity it carries, so the
+/// identity a later open is compared with is the object that was inspected.
+fn lstat_identified(path: &str) -> Option<(std::fs::Metadata, Identity)> {
+    if injected(Step::Lstat(path)).is_some() {
+        return None;
+    }
+    let (details, identity) = pyos::lstat_identity(path).ok()?;
+    let regular = details.file_type().is_file();
+    Some((details, (regular, identity)))
+}
+
 /// `_require_ordinary_directory(path, label)`.
 fn require_ordinary_directory(path: &str, label: &str) -> Result<(), Exc> {
     match lstat_ok(path) {
@@ -505,10 +519,6 @@ fn require_ordinary_ancestors(path: &PyPath, label: &str) -> Result<(), Exc> {
 /// `_same_regular_file_identity(expected, observed)` for two looks at `path`.
 fn identical(path: &str, expected: &(bool, (u64, u64)), observed: &(bool, (u64, u64))) -> bool {
     expected.0 && observed.0 && expected.1 == observed.1 && injected(Step::Identity(path)).is_none()
-}
-
-fn path_identity(path: &str, details: &std::fs::Metadata) -> std::io::Result<(bool, (u64, u64))> {
-    Ok((details.file_type().is_file(), pyos::path_identity(path)?))
 }
 
 fn handle_identity(file: &std::fs::File) -> std::io::Result<(bool, (u64, u64))> {
@@ -550,8 +560,8 @@ fn read_twice(
     let read = handle_identity(&file)?;
     let read_size = file.metadata()?.len();
     drop(file);
-    let final_details = std::fs::symlink_metadata(path)?;
-    let finished = path_identity(path, &final_details)?;
+    let (final_details, final_identity) = pyos::lstat_identity(path)?;
+    let finished = (final_details.file_type().is_file(), final_identity);
     Ok(Ok(StableRead {
         opened,
         content,
@@ -566,15 +576,14 @@ fn read_twice(
 fn load_manifest(path: &PyPath) -> Result<Vec<Json>, Exc> {
     let text = path.display();
     require_ordinary_ancestors(&path.parent(), "manifest")?;
-    let details = match lstat_ok(&text) {
-        Some(details) if ordinary(&text, &details, false) => details,
+    let (details, expected) = match lstat_identified(&text) {
+        Some((details, expected)) if ordinary(&text, &details, false) => (details, expected),
         _ => return Err(capture_error("manifest must be an ordinary file.")),
     };
     if details.len() > MAX_MANIFEST_BYTES {
         return Err(capture_error("manifest exceeds the 8 MiB size limit."));
     }
     let unreadable = || capture_error("manifest could not be read.");
-    let expected = path_identity(&text, &details).map_err(|_| unreadable())?;
     let read = read_twice(
         &text,
         &expected,
@@ -1184,13 +1193,12 @@ fn require_staged_directory(path: &str) -> Result<(), Exc> {
 
 /// `_read_staged_file(path)`: the bytes of one stable, ordinary staged file.
 fn read_staged_file(path: &str) -> Result<Vec<u8>, Exc> {
-    let details =
-        lstat_ok(path).ok_or_else(|| capture_error("staged capture file is unavailable"))?;
+    let (details, expected) = lstat_identified(path)
+        .ok_or_else(|| capture_error("staged capture file is unavailable"))?;
     if !ordinary(path, &details, false) {
         return Err(capture_error("staged capture contains a non-ordinary file"));
     }
     let unreadable = || capture_error("staged capture file could not be read");
-    let expected = path_identity(path, &details).map_err(|_| unreadable())?;
     let read = read_twice(
         path,
         &expected,
