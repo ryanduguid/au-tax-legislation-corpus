@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import hashlib
 import json
-import os
 import re
 import shutil
 import subprocess  # nosec B404 - runs the approval script against a stub gh
@@ -81,6 +80,48 @@ class ApproveLiveEvidenceScriptTests(unittest.TestCase):
     FILES = {"a.json": b'{"a":1}\n', "b.json": b'{"b":2}\n'}
     DIGESTS = {name: _digest(data) for name, data in FILES.items()}
 
+    # One PowerShell process runs every scenario: starting pwsh per scenario
+    # dominated this class's run time. Each scenario is a fresh script scope.
+    shell: subprocess.Popen[str]
+
+    @classmethod
+    def setUpClass(cls) -> None:
+        # nosemgrep: python.lang.security.audit.dangerous-subprocess-use-audit.dangerous-subprocess-use-audit
+        cls.shell = subprocess.Popen(  # nosec B603
+            [str(PWSH), "-NoProfile", "-NonInteractive", "-Command", "-"],
+            stdin=subprocess.PIPE,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            text=True,
+            encoding="utf-8",
+        )
+
+    @classmethod
+    def tearDownClass(cls) -> None:
+        assert cls.shell.stdin is not None
+        cls.shell.stdin.close()
+        cls.shell.wait(timeout=60)
+
+    def _run_in_shell(self, script: Path, settings: dict[str, str]) -> tuple[int, str]:
+        def quote(value: str) -> str:
+            return "'" + value.replace("'", "''") + "'"
+
+        assignments = "; ".join(f"$env:{name} = {quote(value)}" for name, value in settings.items())
+        command = (
+            f"{assignments}; try {{ & {quote(str(script))}; $status = 0 }} "
+            "catch { Write-Output $_.Exception.Message; $status = 1 }; "
+            "Write-Output \"@@done $status\"\n"
+        )
+        assert self.shell.stdin is not None and self.shell.stdout is not None
+        self.shell.stdin.write(command)
+        self.shell.stdin.flush()
+        output: list[str] = []
+        for line in self.shell.stdout:
+            if line.startswith("@@done "):
+                return int(line.split()[1]), "".join(output)
+            output.append(line)
+        self.fail("PowerShell exited before the scenario finished:\n" + "".join(output))
+
     def _approve(
         self,
         *,
@@ -132,26 +173,17 @@ class ApproveLiveEvidenceScriptTests(unittest.TestCase):
             argv_log.write_text("", encoding="utf-8")
             path = root / "approve.ps1"
             path.write_text(FAKE_GH + script + "\n", encoding="utf-8")
-            env = {
-                **os.environ,
+            settings = {
                 "RELEASE_TAG": TAG,
                 "RUNNER_TEMP": str(root / "runner"),
                 "FAKE_GH_FIXTURE": str(fixture),
                 "FAKE_GH_LOG": str(log),
                 "FAKE_GH_ARGS": str(argv_log),
             }
-            # nosemgrep: python.lang.security.audit.dangerous-subprocess-use-audit.dangerous-subprocess-use-audit
-            result = subprocess.run(  # nosec B603
-                [str(PWSH), "-NoProfile", "-NonInteractive", "-File", str(path)],
-                env=env,
-                capture_output=True,
-                text=True,
-                timeout=120,
-                check=False,
-            )
+            status, output = self._run_in_shell(path, settings)
             calls = log.read_text(encoding="utf-8").splitlines()
             argv = [json.loads(line) for line in argv_log.read_text(encoding="utf-8").splitlines()]
-            return result.returncode, calls, result.stdout + result.stderr, argv
+            return status, calls, output, argv
 
     def _assert_refused(self, outcome: tuple[int, list[str], str], message: str = "") -> None:
         status, calls, output = outcome
