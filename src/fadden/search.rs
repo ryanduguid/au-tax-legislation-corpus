@@ -626,12 +626,12 @@ fn write_index(
                 Json::str(&entry.sections_sha256),
                 Json::str(&entry.markdown_sha256),
             ];
-            connection
-                .execute(
-                    "INSERT INTO titles VALUES (?,?,?,?,?,?,?,?,?,?,?,?)",
-                    params_from_iter(bind_all(&values)?),
-                )
-                .map_err(|e| sqlite_error(&e))?;
+            run(
+                &connection,
+                "INSERT INTO titles VALUES (?,?,?,?,?,?,?,?,?,?,?,?)",
+                params_from_iter(bind_all(&values)?),
+            )
+            .map_err(|e| sqlite_error(&e))?;
             let (places, mut failure) = structure(&entry.rows, &entry.markdown);
             for (index, row) in entry.rows.iter().enumerate() {
                 // zip draws row i, then its place: a failure stops before row i.
@@ -661,12 +661,12 @@ fn write_index(
             meta.push((format!("{name}_count"), Json::str(&value.to_string())));
         }
         for (key, value) in meta {
-            connection
-                .execute(
-                    "INSERT INTO meta VALUES (?, ?)",
-                    params_from_iter(bind_all(&[Json::str(&key), value])?),
-                )
-                .map_err(|e| sqlite_error(&e))?;
+            run(
+                &connection,
+                "INSERT INTO meta VALUES (?, ?)",
+                params_from_iter(bind_all(&[Json::str(&key), value])?),
+            )
+            .map_err(|e| sqlite_error(&e))?;
         }
         Ok(())
     })();
@@ -684,6 +684,17 @@ fn write_index(
             Err(error)
         }
     }
+}
+
+/// `connection.execute(sql, params)` through the statement cache: Python's
+/// `sqlite3` reuses a statement it has compiled, and compiling each insert
+/// again was most of the build's time.
+fn run(
+    connection: &Connection,
+    sql: &str,
+    params: impl rusqlite::Params,
+) -> rusqlite::Result<usize> {
+    connection.prepare_cached(sql)?.execute(params)
 }
 
 fn insert_row(
@@ -713,20 +724,19 @@ fn insert_row(
         get(row, "container").clone(),
         get(row, "text").clone(),
     ];
-    connection
-        .execute(
+    run(connection,
             "INSERT INTO rows (row_id, register_id, section, section_key, division_key, subdivision_key, heading, container, text) VALUES (?,?,?,?,?,?,?,?,?)",
             params_from_iter(bind_all(&values)?),
         )
         .map_err(|e| sqlite_error(&e))?;
     let id = connection.last_insert_rowid();
     let heading = normalise_value(&or_empty(get(row, "heading")))?;
-    connection
-        .execute(
-            "INSERT INTO rows_fts (rowid, heading, text) VALUES (?,?,?)",
-            rusqlite::params![id, heading, normalise(&text)],
-        )
-        .map_err(|e| sqlite_error(&e))?;
+    run(
+        connection,
+        "INSERT INTO rows_fts (rowid, heading, text) VALUES (?,?,?)",
+        rusqlite::params![id, heading, normalise(&text)],
+    )
+    .map_err(|e| sqlite_error(&e))?;
     counts.rows += 1;
     let row_id = get(row, "row_id").as_str().unwrap_or_default();
     let heading_text = match or_empty(get(row, "heading")) {
@@ -738,12 +748,12 @@ fn insert_row(
         .is_some()
     {
         for (position, (term, body)) in definitions(&text).into_iter().enumerate() {
-            connection
-                .execute(
-                    "INSERT INTO definitions VALUES (?,?,?,?,?)",
-                    rusqlite::params![term, term_key(&term), row_id, position as i64 + 1, body],
-                )
-                .map_err(|e| sqlite_error(&e))?;
+            run(
+                connection,
+                "INSERT INTO definitions VALUES (?,?,?,?,?)",
+                rusqlite::params![term, term_key(&term), row_id, position as i64 + 1, body],
+            )
+            .map_err(|e| sqlite_error(&e))?;
             counts.definitions += 1;
         }
     }
@@ -755,12 +765,12 @@ fn insert_row(
                 .find(|(k, _)| *k == pyvalue::Key::Str(name.chars().map(u32::from).collect()))
                 .and_then(|(_, v)| v.clone()),
         };
-        connection
-            .execute(
-                "INSERT INTO refs VALUES (?,?,?,?,?,?)",
-                rusqlite::params![row_id, kind, target, cited, act, citation],
-            )
-            .map_err(|e| sqlite_error(&e))?;
+        run(
+            connection,
+            "INSERT INTO refs VALUES (?,?,?,?,?,?)",
+            rusqlite::params![row_id, kind, target, cited, act, citation],
+        )
+        .map_err(|e| sqlite_error(&e))?;
         counts.refs += 1;
     }
     Ok(())

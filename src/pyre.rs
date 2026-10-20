@@ -100,19 +100,23 @@ impl Re {
         }
     }
 
-    pub fn search<'t>(&self, text: &'t str) -> Option<Captures<'t, str>> {
+    pub fn search<'t>(&self, text: &'t str) -> Option<Caps<'t>> {
         self.search_at(text, 0)
     }
 
     /// `pattern.search(text, pos)` with `pos` as a byte offset.
-    pub fn search_at<'t>(&self, text: &'t str, pos: usize) -> Option<Captures<'t, str>> {
+    pub fn search_at<'t>(&self, text: &'t str, pos: usize) -> Option<Caps<'t>> {
+        if let Some(plain) = self.plain(text) {
+            return plain.captures_at(text, pos).map(Caps::Plain);
+        }
         self.engine(text)
             .captures_from_pos(text, pos)
             .expect("unbounded backtracking")
+            .map(Caps::Fancy)
     }
 
     /// `pattern.match(text, pos)`: a match that starts at `pos`.
-    pub fn match_at<'t>(&self, text: &'t str, pos: usize) -> Option<Captures<'t, str>> {
+    pub fn match_at<'t>(&self, text: &'t str, pos: usize) -> Option<Caps<'t>> {
         self.search_at(text, pos)
             .filter(|c| c.get(0).is_some_and(|m| m.start() == pos))
     }
@@ -126,13 +130,18 @@ impl Re {
             .expect("unbounded backtracking")
     }
 
-    pub fn captures_iter<'r, 't>(
-        &'r self,
-        text: &'t str,
-    ) -> impl Iterator<Item = Captures<'t, str>> + use<'r, 't> {
-        self.engine(text)
-            .captures_iter(text)
-            .map(|c| c.expect("unbounded backtracking"))
+    pub fn captures_iter<'r, 't>(&'r self, text: &'t str) -> Box<dyn Iterator<Item = Caps<'t>> + 'r>
+    where
+        't: 'r,
+    {
+        match self.plain(text) {
+            Some(plain) => Box::new(plain.captures_iter(text).map(Caps::Plain)),
+            None => Box::new(
+                self.engine(text)
+                    .captures_iter(text)
+                    .map(|c| Caps::Fancy(c.expect("unbounded backtracking"))),
+            ),
+        }
     }
 
     /// `pattern.finditer(text)` as the text of each whole match. Without
@@ -192,7 +201,7 @@ impl Re {
     }
 
     /// `pattern.sub(function, text)`.
-    pub fn sub_with(&self, text: &str, mut f: impl FnMut(&Captures<'_, str>) -> String) -> String {
+    pub fn sub_with(&self, text: &str, mut f: impl FnMut(&Caps<'_>) -> String) -> String {
         let mut out = String::with_capacity(text.len());
         let mut last = 0;
         for c in self.captures_iter(text) {
@@ -203,6 +212,87 @@ impl Re {
         }
         out.push_str(&text[last..]);
         out
+    }
+}
+
+/// One match's groups, from whichever engine ran the pattern.
+pub enum Caps<'t> {
+    Plain(regex::Captures<'t>),
+    Fancy(Captures<'t, str>),
+}
+
+impl std::ops::Index<usize> for Caps<'_> {
+    type Output = str;
+
+    /// Group `i`'s text; panics where it did not take part, as both engines do.
+    fn index(&self, i: usize) -> &str {
+        match self {
+            Caps::Plain(c) => &c[i],
+            Caps::Fancy(c) => &c[i],
+        }
+    }
+}
+
+/// One group's text and where it starts in the searched text.
+#[derive(Clone, Copy, Debug)]
+pub struct Span<'t> {
+    text: &'t str,
+    start: usize,
+}
+
+impl<'t> Span<'t> {
+    pub fn start(&self) -> usize {
+        self.start
+    }
+
+    pub fn end(&self) -> usize {
+        self.start + self.text.len()
+    }
+
+    pub fn as_str(&self) -> &'t str {
+        self.text
+    }
+}
+
+impl<'t> Caps<'t> {
+    /// Group `i`, or None where it did not take part.
+    pub fn get(&self, i: usize) -> Option<Span<'t>> {
+        match self {
+            Caps::Plain(c) => c.get(i).map(|m| Span {
+                text: m.as_str(),
+                start: m.start(),
+            }),
+            Caps::Fancy(c) => c.get(i).map(|m| Span {
+                text: m.as_str(),
+                start: m.start(),
+            }),
+        }
+    }
+
+    /// The number of groups, group 0 included.
+    pub fn len(&self) -> usize {
+        match self {
+            Caps::Plain(c) => c.len(),
+            Caps::Fancy(c) => c.len(),
+        }
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.len() == 0
+    }
+
+    /// Group `name`, or None where it did not take part.
+    pub fn name(&self, name: &str) -> Option<Span<'t>> {
+        match self {
+            Caps::Plain(c) => c.name(name).map(|m| Span {
+                text: m.as_str(),
+                start: m.start(),
+            }),
+            Caps::Fancy(c) => c.name(name).map(|m| Span {
+                text: m.as_str(),
+                start: m.start(),
+            }),
+        }
     }
 }
 

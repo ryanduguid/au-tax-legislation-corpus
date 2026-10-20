@@ -136,17 +136,22 @@ pub enum DecodeError {
 /// every recursive walk of a decoded value well inside the Rust stack.
 pub const MAX_DEPTH: usize = 1000;
 
-fn decode_error(msg: &str, doc: &[char], pos: usize) -> DecodeError {
-    let lineno = doc[..pos].iter().filter(|c| **c == '\n').count() + 1;
-    let colno = match doc[..pos].iter().rposition(|c| *c == '\n') {
-        Some(i) => pos - i,
+/// The scanner's error at byte offset `at`, positioned in characters as
+/// Python counts them. Every offset the scanner reports is a character
+/// boundary: it moves over ASCII syntax and whole runs of string content.
+fn decode_error(msg: &str, doc: &str, at: usize) -> DecodeError {
+    let before = &doc[..at];
+    let pos = before.chars().count();
+    let lineno = before.bytes().filter(|&b| b == b'\n').count() + 1;
+    let colno = match before.rfind('\n') {
+        Some(i) => pos - before[..i].chars().count(),
         None => pos + 1,
     };
     DecodeError::Invalid(format!("{msg}: line {lineno} column {colno} (char {pos})"))
 }
 
-fn is_ws(c: char) -> bool {
-    matches!(c, ' ' | '\t' | '\n' | '\r')
+fn is_ws(c: u8) -> bool {
+    matches!(c, b' ' | b'\t' | b'\n' | b'\r')
 }
 
 enum Frame {
@@ -165,15 +170,17 @@ pub fn loads_standard(text: &str) -> Result<Json, DecodeError> {
     decode(text, false)
 }
 
+/// The C scanner over the text's UTF-8 bytes: its syntax is ASCII, and string
+/// content is copied a run at a time.
 fn decode(text: &str, reject_duplicates: bool) -> Result<Json, DecodeError> {
-    let s: Vec<char> = text.chars().collect();
-    if s.first() == Some(&'\u{feff}') {
+    if text.starts_with('\u{feff}') {
         return Err(decode_error(
             "Unexpected UTF-8 BOM (decode using utf-8-sig)",
-            &s,
+            text,
             0,
         ));
     }
+    let s = text.as_bytes();
     let len = s.len();
     let skip = |mut i: usize| {
         while i < len && is_ws(s[i]) {
@@ -183,21 +190,21 @@ fn decode(text: &str, reject_duplicates: bool) -> Result<Json, DecodeError> {
     };
     let mut idx = skip(0);
     let mut stack: Vec<Frame> = Vec::new();
-    let expecting_value = |pos: usize| decode_error("Expecting value", &s, pos);
+    let expecting_value = |pos: usize| decode_error("Expecting value", text, pos);
 
     // Reads a key and its delimiter, leaving idx at the value.
     let read_key = |idx: &mut usize| -> Result<PyStr, DecodeError> {
-        if *idx >= len || s[*idx] != '"' {
+        if *idx >= len || s[*idx] != b'"' {
             return Err(decode_error(
                 "Expecting property name enclosed in double quotes",
-                &s,
+                text,
                 *idx,
             ));
         }
-        let (key, next) = scanstring(&s, *idx + 1)?;
+        let (key, next) = scanstring(text, *idx + 1)?;
         *idx = skip(next);
-        if *idx >= len || s[*idx] != ':' {
-            return Err(decode_error("Expecting ':' delimiter", &s, *idx));
+        if *idx >= len || s[*idx] != b':' {
+            return Err(decode_error("Expecting ':' delimiter", text, *idx));
         }
         *idx = skip(*idx + 1);
         Ok(key)
@@ -208,17 +215,17 @@ fn decode(text: &str, reject_duplicates: bool) -> Result<Json, DecodeError> {
             return Err(expecting_value(idx));
         }
         let mut value = match s[idx] {
-            '"' => {
-                let (string, next) = scanstring(&s, idx + 1)?;
+            b'"' => {
+                let (string, next) = scanstring(text, idx + 1)?;
                 idx = next;
                 Json::Str(string)
             }
-            '{' => {
+            b'{' => {
                 if stack.len() >= MAX_DEPTH {
                     return Err(DecodeError::Recursion("object"));
                 }
                 idx = skip(idx + 1);
-                if idx < len && s[idx] == '}' {
+                if idx < len && s[idx] == b'}' {
                     idx += 1;
                     Json::Object(Vec::new())
                 } else {
@@ -227,12 +234,12 @@ fn decode(text: &str, reject_duplicates: bool) -> Result<Json, DecodeError> {
                     continue 'value;
                 }
             }
-            '[' => {
+            b'[' => {
                 if stack.len() >= MAX_DEPTH {
                     return Err(DecodeError::Recursion("array"));
                 }
                 idx = skip(idx + 1);
-                if idx < len && s[idx] == ']' {
+                if idx < len && s[idx] == b']' {
                     idx += 1;
                     Json::Array(Vec::new())
                 } else {
@@ -241,34 +248,28 @@ fn decode(text: &str, reject_duplicates: bool) -> Result<Json, DecodeError> {
                 }
             }
             _ => {
-                let literal = |word: &str| {
-                    s[idx..]
-                        .iter()
-                        .take(word.chars().count())
-                        .copied()
-                        .eq(word.chars())
-                };
-                if literal("null") {
+                let literal = |word: &[u8]| s[idx..].starts_with(word);
+                if literal(b"null") {
                     idx += 4;
                     Json::Null
-                } else if literal("true") {
+                } else if literal(b"true") {
                     idx += 4;
                     Json::Bool(true)
-                } else if literal("false") {
+                } else if literal(b"false") {
                     idx += 5;
                     Json::Bool(false)
-                } else if literal("NaN") {
+                } else if literal(b"NaN") {
                     idx += 3;
                     Json::Float(f64::NAN)
-                } else if literal("Infinity") {
+                } else if literal(b"Infinity") {
                     idx += 8;
                     Json::Float(f64::INFINITY)
-                } else if literal("-Infinity") {
+                } else if literal(b"-Infinity") {
                     idx += 9;
                     Json::Float(f64::NEG_INFINITY)
                 } else {
                     let (number, next) =
-                        match_number(&s, idx).ok_or_else(|| expecting_value(idx))??;
+                        match_number(text, idx).ok_or_else(|| expecting_value(idx))??;
                     idx = next;
                     number
                 }
@@ -279,7 +280,7 @@ fn decode(text: &str, reject_duplicates: bool) -> Result<Json, DecodeError> {
             let Some(frame) = stack.last_mut() else {
                 let end = skip(idx);
                 if end != len {
-                    return Err(decode_error("Extra data", &s, end));
+                    return Err(decode_error("Extra data", text, end));
                 }
                 return Ok(value);
             };
@@ -287,7 +288,7 @@ fn decode(text: &str, reject_duplicates: bool) -> Result<Json, DecodeError> {
                 Frame::Array(items) => {
                     items.push(value);
                     idx = skip(idx);
-                    if idx < len && s[idx] == ']' {
+                    if idx < len && s[idx] == b']' {
                         idx += 1;
                         let Some(Frame::Array(items)) = stack.pop() else {
                             unreachable!()
@@ -295,15 +296,15 @@ fn decode(text: &str, reject_duplicates: bool) -> Result<Json, DecodeError> {
                         value = Json::Array(items);
                         continue;
                     }
-                    if idx >= len || s[idx] != ',' {
-                        return Err(decode_error("Expecting ',' delimiter", &s, idx));
+                    if idx >= len || s[idx] != b',' {
+                        return Err(decode_error("Expecting ',' delimiter", text, idx));
                     }
                     let comma = idx;
                     idx = skip(idx + 1);
-                    if idx < len && s[idx] == ']' {
+                    if idx < len && s[idx] == b']' {
                         return Err(decode_error(
                             "Illegal trailing comma before end of array",
-                            &s,
+                            text,
                             comma,
                         ));
                     }
@@ -312,7 +313,7 @@ fn decode(text: &str, reject_duplicates: bool) -> Result<Json, DecodeError> {
                 Frame::Object(pairs, key) => {
                     pairs.push((std::mem::replace(key, PyStr::Text(String::new())), value));
                     idx = skip(idx);
-                    if idx < len && s[idx] == '}' {
+                    if idx < len && s[idx] == b'}' {
                         idx += 1;
                         let Some(Frame::Object(pairs, _)) = stack.pop() else {
                             unreachable!()
@@ -333,15 +334,15 @@ fn decode(text: &str, reject_duplicates: bool) -> Result<Json, DecodeError> {
                         value = Json::Object(unique);
                         continue;
                     }
-                    if idx >= len || s[idx] != ',' {
-                        return Err(decode_error("Expecting ',' delimiter", &s, idx));
+                    if idx >= len || s[idx] != b',' {
+                        return Err(decode_error("Expecting ',' delimiter", text, idx));
                     }
                     let comma = idx;
                     idx = skip(idx + 1);
-                    if idx < len && s[idx] == '}' {
+                    if idx < len && s[idx] == b'}' {
                         return Err(decode_error(
                             "Illegal trailing comma before end of object",
-                            &s,
+                            text,
                             comma,
                         ));
                     }
@@ -357,38 +358,39 @@ fn decode(text: &str, reject_duplicates: bool) -> Result<Json, DecodeError> {
 }
 
 /// The C scanner's number match; None where it raises StopIteration.
-fn match_number(s: &[char], start: usize) -> Option<Result<(Json, usize), DecodeError>> {
+fn match_number(doc: &str, start: usize) -> Option<Result<(Json, usize), DecodeError>> {
+    let s = doc.as_bytes();
     let len = s.len();
     let digit = |i: usize| i < len && s[i].is_ascii_digit();
     let mut idx = start;
-    if s[idx] == '-' {
+    if s[idx] == b'-' {
         idx += 1;
         if idx >= len {
             return None;
         }
     }
-    if ('1'..='9').contains(&s[idx]) {
+    if (b'1'..=b'9').contains(&s[idx]) {
         idx += 1;
         while digit(idx) {
             idx += 1;
         }
-    } else if s[idx] == '0' {
+    } else if s[idx] == b'0' {
         idx += 1;
     } else {
         return None;
     }
     let mut is_float = false;
-    if idx + 1 < len && s[idx] == '.' && s[idx + 1].is_ascii_digit() {
+    if idx + 1 < len && s[idx] == b'.' && s[idx + 1].is_ascii_digit() {
         is_float = true;
         idx += 2;
         while digit(idx) {
             idx += 1;
         }
     }
-    if idx + 1 < len && (s[idx] == 'e' || s[idx] == 'E') {
+    if idx + 1 < len && (s[idx] == b'e' || s[idx] == b'E') {
         let e_start = idx;
         idx += 1;
-        if idx + 1 < len && (s[idx] == '-' || s[idx] == '+') {
+        if idx + 1 < len && (s[idx] == b'-' || s[idx] == b'+') {
             idx += 1;
         }
         while digit(idx) {
@@ -400,62 +402,101 @@ fn match_number(s: &[char], start: usize) -> Option<Result<(Json, usize), Decode
             idx = e_start;
         }
     }
-    let text: String = s[start..idx].iter().collect();
+    let text = &doc[start..idx];
     if is_float {
         let value: f64 = text.parse().expect("a JSON float literal");
         Some(Ok((Json::Float(value), idx)))
     } else {
         Some(
-            py::parse_int(&text, 10)
+            py::parse_int(text, 10)
                 .map(|i| (Json::Int(i), idx))
                 .map_err(DecodeError::Invalid),
         )
     }
 }
 
-/// The C `scanstring`: `end` is the index after the opening quote.
-fn scanstring(s: &[char], end: usize) -> Result<(PyStr, usize), DecodeError> {
+/// A string being decoded: text until a lone surrogate turns up, then code
+/// points from there on.
+struct StringBuf {
+    text: String,
+    lone: Option<Vec<u32>>,
+}
+
+impl StringBuf {
+    fn push_str(&mut self, piece: &str) {
+        match &mut self.lone {
+            Some(points) => points.extend(piece.chars().map(u32::from)),
+            None => self.text.push_str(piece),
+        }
+    }
+
+    fn push(&mut self, code: u32) {
+        match (char::from_u32(code), &mut self.lone) {
+            (Some(c), None) => self.text.push(c),
+            (_, Some(points)) => points.push(code),
+            (None, None) => {
+                let mut points: Vec<u32> = self.text.chars().map(u32::from).collect();
+                points.push(code);
+                self.lone = Some(points);
+            }
+        }
+    }
+
+    fn finish(self) -> PyStr {
+        match self.lone {
+            Some(points) => PyStr::Lone(points),
+            None => PyStr::Text(self.text),
+        }
+    }
+}
+
+/// The C `scanstring`: `end` is the byte after the opening quote.
+fn scanstring(doc: &str, end: usize) -> Result<(PyStr, usize), DecodeError> {
+    let s = doc.as_bytes();
     let len = s.len();
     let begin = end - 1;
-    let mut out: Vec<u32> = Vec::new();
+    let mut out = StringBuf {
+        text: String::new(),
+        lone: None,
+    };
     let mut end = end;
     loop {
         let mut next = end;
-        let mut c = '\0';
+        let mut c = 0u8;
         while next < len {
             c = s[next];
-            if c == '"' || c == '\\' {
+            if c == b'"' || c == b'\\' {
                 break;
             }
-            if (c as u32) <= 0x1f {
-                return Err(decode_error("Invalid control character at", s, next));
+            if c <= 0x1f {
+                return Err(decode_error("Invalid control character at", doc, next));
             }
             next += 1;
         }
-        if next >= len || c != '"' && c != '\\' {
-            return Err(decode_error("Unterminated string starting at", s, begin));
+        if next >= len || c != b'"' && c != b'\\' {
+            return Err(decode_error("Unterminated string starting at", doc, begin));
         }
-        out.extend(s[end..next].iter().map(|&c| u32::from(c)));
+        out.push_str(&doc[end..next]);
         next += 1;
-        if c == '"' {
-            return Ok((PyStr::from_code_points(out), next));
+        if c == b'"' {
+            return Ok((out.finish(), next));
         }
         if next == len {
-            return Err(decode_error("Unterminated string starting at", s, begin));
+            return Err(decode_error("Unterminated string starting at", doc, begin));
         }
         let c = s[next];
-        if c != 'u' {
+        if c != b'u' {
             end = next + 1;
             let replacement = match c {
-                '"' => '"',
-                '\\' => '\\',
-                '/' => '/',
-                'b' => '\x08',
-                'f' => '\x0c',
-                'n' => '\n',
-                'r' => '\r',
-                't' => '\t',
-                _ => return Err(decode_error("Invalid \\escape", s, end - 2)),
+                b'"' => '"',
+                b'\\' => '\\',
+                b'/' => '/',
+                b'b' => '\x08',
+                b'f' => '\x0c',
+                b'n' => '\n',
+                b'r' => '\r',
+                b't' => '\t',
+                _ => return Err(decode_error("Invalid \\escape", doc, end - 2)),
             };
             out.push(u32::from(replacement));
             continue;
@@ -463,25 +504,28 @@ fn scanstring(s: &[char], end: usize) -> Result<(PyStr, usize), DecodeError> {
         next += 1;
         end = next + 4;
         if end > len {
-            return Err(decode_error("Invalid \\uXXXX escape", s, next - 1));
+            return Err(decode_error("Invalid \\uXXXX escape", doc, next - 1));
         }
         let hex = |from: usize, end: usize| -> Result<u32, DecodeError> {
             let mut value = 0;
             for &digit in &s[from..from + 4] {
                 value = value << 4
-                    | digit
+                    | char::from(digit)
                         .to_digit(16)
-                        .ok_or_else(|| decode_error("Invalid \\uXXXX escape", s, end - 5))?;
+                        .ok_or_else(|| decode_error("Invalid \\uXXXX escape", doc, end - 5))?;
             }
             Ok(value)
         };
         let mut code = hex(next, end)?;
         // CPython 3.15 reads a following `\u` as the low half, and refuses it
         // there when fewer than 4 hex digits follow.
-        if (0xd800..=0xdbff).contains(&code) && end + 1 < len && s[end] == '\\' && s[end + 1] == 'u'
+        if (0xd800..=0xdbff).contains(&code)
+            && end + 1 < len
+            && s[end] == b'\\'
+            && s[end + 1] == b'u'
         {
             if end + 6 > len {
-                return Err(decode_error("Invalid \\uXXXX escape", s, end + 1));
+                return Err(decode_error("Invalid \\uXXXX escape", doc, end + 1));
             }
             let low = hex(end + 2, end + 6)?;
             if (0xdc00..=0xdfff).contains(&low) {

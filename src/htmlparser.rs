@@ -471,7 +471,7 @@ impl Parser {
 
 /// A reference's name (the match after `skip` bytes, less its final character) and where
 /// parsing resumes: after a `;`, or at the final character otherwise.
-fn reference(m: &fancy_regex::Captures<'_, str>, skip: usize) -> (String, usize) {
+fn reference(m: &crate::pyre::Caps<'_>, skip: usize) -> (String, usize) {
     let whole = m.get(0).expect("group 0");
     let text = whole.as_str();
     let last = text.chars().next_back().expect("a character");
