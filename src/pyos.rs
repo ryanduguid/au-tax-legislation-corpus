@@ -393,57 +393,32 @@ pub fn chmod(path: &str, mode: u32) -> io::Result<()> {
     std::fs::set_permissions(path, std::fs::Permissions::from_mode(mode))
 }
 
-/// `os.chmod(path, mode)` as CPython 3.13 and later do it on Windows: open
-/// the target for its attributes alone, then set or clear the read-only
-/// attribute by `mode`'s owner-write bit, writing only on a change.
+/// `os.chmod(path, mode)` as CPython 3.14 and later do it on Windows with default arguments:
+/// `win32_lchmod`, which reads and writes the attributes of the path itself, so a symbolic
+/// link gets the read-only attribute and its target is left alone. The read-only attribute
+/// follows `mode`'s owner-write bit.
 #[cfg(windows)]
 pub fn chmod(path: &str, mode: u32) -> io::Result<()> {
-    use std::os::windows::fs::OpenOptionsExt;
-    use std::os::windows::io::AsRawHandle;
+    use std::os::windows::ffi::OsStrExt;
     use windows_sys::Win32::Storage::FileSystem::{
-        FILE_ATTRIBUTE_READONLY, FILE_BASIC_INFO, FILE_FLAG_BACKUP_SEMANTICS, FILE_READ_ATTRIBUTES,
-        FILE_WRITE_ATTRIBUTES, FileBasicInfo, GetFileInformationByHandleEx,
-        SetFileInformationByHandle,
+        FILE_ATTRIBUTE_READONLY, GetFileAttributesW, INVALID_FILE_ATTRIBUTES, SetFileAttributesW,
     };
-    let file = OpenOptions::new()
-        .access_mode(FILE_READ_ATTRIBUTES | FILE_WRITE_ATTRIBUTES)
-        .share_mode(0)
-        .custom_flags(FILE_FLAG_BACKUP_SEMANTICS)
-        .open(path)?;
-    let size = std::mem::size_of::<FILE_BASIC_INFO>() as u32;
-    // SAFETY: an all-zero FILE_BASIC_INFO is a valid value to be overwritten.
-    let mut info: FILE_BASIC_INFO = unsafe { std::mem::zeroed() };
-    // SAFETY: the handle is open and info is writable for its size.
-    let read = unsafe {
-        GetFileInformationByHandleEx(
-            file.as_raw_handle(),
-            FileBasicInfo,
-            (&raw mut info).cast(),
-            size,
-        )
-    };
-    if read == 0 {
+    let wide: Vec<u16> = std::ffi::OsStr::new(path)
+        .encode_wide()
+        .chain(std::iter::once(0))
+        .collect();
+    // SAFETY: `wide` is NUL-terminated and outlives the call.
+    let attributes = unsafe { GetFileAttributesW(wide.as_ptr()) };
+    if attributes == INVALID_FILE_ATTRIBUTES {
         return Err(io::Error::last_os_error());
     }
     let attributes = if mode & 0o200 != 0 {
-        info.FileAttributes & !FILE_ATTRIBUTE_READONLY
+        attributes & !FILE_ATTRIBUTE_READONLY
     } else {
-        info.FileAttributes | FILE_ATTRIBUTE_READONLY
+        attributes | FILE_ATTRIBUTE_READONLY
     };
-    if attributes == info.FileAttributes {
-        return Ok(());
-    }
-    info.FileAttributes = attributes;
-    // SAFETY: the handle is open and info is a valid FILE_BASIC_INFO.
-    let written = unsafe {
-        SetFileInformationByHandle(
-            file.as_raw_handle(),
-            FileBasicInfo,
-            (&raw const info).cast(),
-            size,
-        )
-    };
-    if written == 0 {
+    // SAFETY: as above.
+    if unsafe { SetFileAttributesW(wide.as_ptr(), attributes) } == 0 {
         return Err(io::Error::last_os_error());
     }
     Ok(())

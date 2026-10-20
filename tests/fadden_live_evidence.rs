@@ -773,17 +773,30 @@ fn evidence_swap_before_identity_capture_is_refused() {
         .unwrap()
         .file_name();
     std::fs::write(outside.join(&name), b"external").unwrap();
+    let original = std::fs::read(capture.join("evidence").join(&name)).unwrap();
     let (evidence, retained) = (capture.join("evidence"), root.join("retained-evidence"));
     let mut swapped = false;
+    // The snapshot directory, and the evidence bytes it held once every file was copied.
+    let seen = std::rc::Rc::new(std::cell::RefCell::new((None::<String>, None::<Vec<u8>>)));
+    let hook_seen = seen.clone();
+    let hook_name = name.clone();
     let outcome = with_hooks(
         Box::new(move |step| {
-            if let Step::Identify(path) = step
-                && Path::new(path).parent() == Some(evidence.as_path())
-                && !swapped
-            {
-                swapped = true;
-                std::fs::rename(&evidence, &retained).unwrap();
-                std::os::unix::fs::symlink(&outside, &evidence).unwrap();
+            match step {
+                Step::Snapshot(path) => hook_seen.borrow_mut().0 = Some(path.to_string()),
+                Step::Copied(_) => {
+                    let snapshot = hook_seen.borrow().0.clone().unwrap();
+                    let copied = Path::new(&snapshot).join("evidence").join(&hook_name);
+                    hook_seen.borrow_mut().1 = Some(std::fs::read(copied).unwrap());
+                }
+                Step::Identify(path)
+                    if Path::new(path).parent() == Some(evidence.as_path()) && !swapped =>
+                {
+                    swapped = true;
+                    std::fs::rename(&evidence, &retained).unwrap();
+                    std::os::unix::fs::symlink(&outside, &evidence).unwrap();
+                }
+                _ => {}
             }
             None
         }),
@@ -794,6 +807,8 @@ fn evidence_swap_before_identity_capture_is_refused() {
         "capture input inventory changed."
     );
     assert!(!root.join("output").exists());
+    // The copy read the pinned original, never the substituted external bytes.
+    assert_eq!(seen.borrow().1.as_deref(), Some(original.as_slice()));
 }
 
 #[test]
@@ -1157,9 +1172,14 @@ fn held_directory_close_failures_keep_the_promoted_output() {
         let root = dir.path();
         let output = root.join("output");
         let capture = make_capture(root);
+        let closed = std::rc::Rc::new(std::cell::RefCell::new(Vec::<String>::new()));
+        let record = closed.clone();
         let outcome = with_hooks(
             Box::new(move |step| match step {
-                Step::Close(label) if labels.contains(&label) => Some(simulated("close")),
+                Step::Close(label) => {
+                    record.borrow_mut().push(label.to_string());
+                    labels.contains(&label).then(|| simulated("close"))
+                }
                 _ => None,
             }),
             || export(&capture, &output),
@@ -1167,6 +1187,45 @@ fn held_directory_close_failures_keep_the_promoted_output() {
         assert_eq!(message(outcome.unwrap_err()), expected);
         assert!(output.join(BUNDLE).is_file());
         assert!(owned_staging(root, &output).is_empty());
+        // Both held directories were closed, staging first, whichever close failed.
+        let closed = closed.borrow();
+        let held: Vec<&String> = closed
+            .iter()
+            .filter(|l| *l == "live evidence staging" || *l == "live evidence output parent")
+            .collect();
+        assert_eq!(
+            held,
+            ["live evidence staging", "live evidence output parent"]
+        );
+    }
+}
+
+/// A child that cannot be marked for deletion is reported, unless closing it also fails, which
+/// replaces the marking's outcome as Python's `finally` does.
+#[cfg(windows)]
+#[test]
+fn a_cleanup_child_delete_mark_failure_and_its_close() {
+    for (close_fails, expected) in [
+        (false, "live evidence staging child could not be removed."),
+        (true, "live evidence staging child cleanup failed."),
+    ] {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        let output = root.join("output");
+        let capture = make_capture(root);
+        let outcome = with_hooks(
+            Box::new(move |step| match step {
+                Step::Reread(_) => Some(simulated("staged output changed")),
+                Step::Delete("live evidence staging child") => Some(simulated("delete")),
+                Step::Close("live evidence staging child") if close_fails => {
+                    Some(simulated("close"))
+                }
+                _ => None,
+            }),
+            || export(&capture, &output),
+        );
+        assert_eq!(message(outcome.unwrap_err()), expected);
+        assert!(!output.exists());
     }
 }
 
@@ -1762,4 +1821,35 @@ fn the_command_reports_the_candidates() {
             &observation_digest[7..]
         )
     );
+}
+
+/// A snapshot source that grows after the export opened it is refused, not copied with its
+/// new tail. (On Windows the export's open denies writers, so it cannot grow there.)
+#[cfg(unix)]
+#[test]
+fn a_manifest_that_grows_after_opening_is_refused() {
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path().to_path_buf();
+    let capture = make_capture(&root);
+    let manifest = capture.join("register-capture.json");
+    let outcome = with_hooks(
+        Box::new(move |step| {
+            if let Step::Copy(path) = step
+                && Path::new(path) == manifest.as_path()
+            {
+                let mut file = std::fs::OpenOptions::new()
+                    .append(true)
+                    .open(&manifest)
+                    .unwrap();
+                std::io::Write::write_all(&mut file, b" ").unwrap();
+            }
+            None
+        }),
+        || export(&capture, &root.join("output")),
+    );
+    assert_eq!(
+        message(outcome.unwrap_err()),
+        "capture snapshot source file changed."
+    );
+    assert!(!root.join("output").exists());
 }
