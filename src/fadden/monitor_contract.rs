@@ -10,13 +10,14 @@ use std::cell::RefCell;
 use std::collections::BTreeSet;
 use std::time::{Duration, Instant};
 
+use super::iso::{self, TextRefusal, Zone};
 use super::{Exc, Run};
 use crate::argparse::{Action, Exit, Get, Parser};
 use crate::py;
 use crate::pyjson::{self, DecodeError, Json, PyStr};
 use crate::pyos::{self, OsError, Style};
 use crate::pypath::{self, PyPath};
-use crate::pyvalue::{self, dumps_with};
+use crate::pyvalue;
 
 pub const COLLECTIONS: [&str; 3] = ["Act", "LegislativeInstrument", "NotifiableInstrument"];
 const OBSERVATION_STATES: [&str; 5] = [
@@ -75,10 +76,6 @@ fn pts(text: &str) -> P {
     text.chars().map(u32::from).collect()
 }
 
-fn is_space(cp: u32) -> bool {
-    char::from_u32(cp).is_some_and(py::is_space)
-}
-
 /// The text of a `str` value, its code points kept.
 fn points(value: &Json) -> Option<P> {
     match value {
@@ -90,53 +87,16 @@ fn points(value: &Json) -> Option<P> {
 /// `_non_empty(value, field)`: the stripped text of a non-empty `str`
 /// without control characters.
 fn non_empty(value: &Json, field: &str) -> Result<P, Exc> {
-    let empty = || contract_error(format!("{field} must be a non-empty string."));
-    let text = points(value).ok_or_else(empty)?;
-    let start = text.iter().position(|&cp| !is_space(cp));
-    let end = text.iter().rposition(|&cp| !is_space(cp));
-    let (Some(start), Some(end)) = (start, end) else {
-        return Err(empty());
-    };
-    let text = text[start..=end].to_vec();
-    if text.iter().any(|&cp| cp < 32 || cp == 127) {
-        return Err(contract_error(format!(
-            "{field} must not contain control characters."
-        )));
-    }
-    Ok(text)
+    iso::stripped(value).map_err(|refusal| match refusal {
+        TextRefusal::Empty => contract_error(format!("{field} must be a non-empty string.")),
+        TextRefusal::Control => {
+            contract_error(format!("{field} must not contain control characters."))
+        }
+    })
 }
 
 fn text_json(points: P) -> Json {
     Json::Str(PyStr::from_code_points(points))
-}
-
-/// Whether `points` are `\d` digits, as `re` matches them in a `str`.
-fn digits(points: &[u32]) -> bool {
-    points
-        .iter()
-        .all(|&cp| char::from_u32(cp).is_some_and(py::is_decimal))
-}
-
-/// `YYYY-MM-DD` as `re.fullmatch(r"\d{4}-\d{2}-\d{2}")` and a valid
-/// `date.fromisoformat`, which takes only ASCII digits.
-fn iso_date_points(text: &[u32]) -> bool {
-    if text.len() != 10 || text[4] != u32::from('-') || text[7] != u32::from('-') {
-        return false;
-    }
-    let (y, m, d) = (&text[0..4], &text[5..7], &text[8..10]);
-    if !digits(y) || !digits(m) || !digits(d) {
-        return false;
-    }
-    let ascii = |part: &[u32]| -> Option<i64> {
-        part.iter()
-            .map(|&cp| char::from_u32(cp).filter(char::is_ascii_digit))
-            .collect::<Option<String>>()
-            .and_then(|s| s.parse().ok())
-    };
-    match (ascii(y), ascii(m), ascii(d)) {
-        (Some(y), Some(m), Some(d)) => py::Date::new(y, m, d).is_ok(),
-        _ => false,
-    }
 }
 
 /// `_date(value, field, nullable=...)`.
@@ -145,7 +105,7 @@ fn date(value: &Json, field: &str, nullable: bool) -> Result<Option<P>, Exc> {
         return Ok(None);
     }
     let text = non_empty(value, field)?;
-    if !iso_date_points(&text) {
+    if !iso::iso_date(&text) {
         return Err(contract_error(format!(
             "{field} must be an ISO calendar date."
         )));
@@ -160,53 +120,10 @@ fn required_date(value: &Json, field: &str) -> Result<P, Exc> {
 /// `_utc_timestamp(value, field)`: `YYYY-MM-DDTHH:MM:SS[.ffffff]Z`, a real instant.
 fn utc_timestamp(value: &Json, field: &str) -> Result<P, Exc> {
     let text = non_empty(value, field)?;
-    let invalid = || {
-        contract_error(format!(
+    if iso::instant(&text, 6, Zone::Utc).is_none() {
+        return Err(contract_error(format!(
             "{field} must be an explicit UTC timestamp ending in Z."
-        ))
-    };
-    let at = |i: usize, c: char| text.get(i) == Some(&u32::from(c));
-    let shaped = text.len() >= 20
-        && at(4, '-')
-        && at(7, '-')
-        && at(10, 'T')
-        && at(13, ':')
-        && at(16, ':')
-        && text.last() == Some(&u32::from('Z'))
-        && digits(&text[0..4])
-        && digits(&text[5..7])
-        && digits(&text[8..10])
-        && digits(&text[11..13])
-        && digits(&text[14..16])
-        && digits(&text[17..19])
-        && (text.len() == 20
-            || (at(19, '.')
-                && (22..=27).contains(&text.len())
-                && digits(&text[20..text.len() - 1])));
-    if !shaped || !iso_date_points(&text[0..10]) {
-        return Err(invalid());
-    }
-    // datetime.fromisoformat takes ASCII digits only.
-    let number = |range: std::ops::Range<usize>| -> Option<u32> {
-        text[range]
-            .iter()
-            .map(|&cp| char::from_u32(cp).filter(char::is_ascii_digit))
-            .collect::<Option<String>>()
-            .and_then(|s| s.parse().ok())
-    };
-    let fraction = if text.len() > 20 {
-        number(20..text.len() - 1)
-    } else {
-        Some(0)
-    };
-    let valid = match (number(11..13), number(14..16), number(17..19), fraction) {
-        (Some(h), Some(m), Some(s), Some(_)) if h < 24 => m < 60 && s < 60,
-        // 24:00:00 is midnight of the next day, which must still be a date.
-        (Some(24), Some(0), Some(0), Some(0)) => text[0..10] != pts("9999-12-31")[..],
-        _ => false,
-    };
-    if !valid {
-        return Err(invalid());
+        )));
     }
     Ok(text)
 }
@@ -742,56 +659,70 @@ pub fn sha256_id(text: &[u32]) -> bool {
             .all(|&cp| matches!(char::from_u32(cp), Some('0'..='9' | 'a'..='f')))
 }
 
-/// The first chunk `json.dump(value, f, indent=2, sort_keys=True,
-/// ensure_ascii=False)` hands a UTF-8 text file that cannot encode, as the
-/// `UnicodeEncodeError` text that file raises.
-fn first_unencodable(value: &Json) -> Option<String> {
-    fn quoted(s: &PyStr) -> P {
-        pyvalue::dumps_line(&Json::Str(s.clone()), false)
+/// The chunks `json.dump(value, f, indent=2, sort_keys=True,
+/// ensure_ascii=False)` hands the file, in order, as CPython's pure-Python
+/// `_make_iterencode` yields them.
+pub fn dump_chunks(value: &Json) -> Vec<P> {
+    fn newline_indent(level: usize) -> P {
+        std::iter::once(u32::from('\n'))
+            .chain(std::iter::repeat_n(u32::from(' '), 2 * level))
+            .collect()
     }
-    fn walk(value: &Json, level: usize) -> Option<String> {
+    fn scalar(value: &Json) -> P {
+        pyvalue::dumps_line(value, false)
+    }
+    fn walk(value: &Json, level: usize, out: &mut Vec<P>) {
         match value {
+            Json::Object(pairs) if pairs.is_empty() => out.push(pts("{}")),
             Json::Object(pairs) => {
+                out.push(pts("{"));
+                let indent = newline_indent(level + 1);
                 let mut sorted: Vec<&(PyStr, Json)> = pairs.iter().collect();
                 sorted.sort_by_key(|(k, _)| k.code_points());
-                for (k, v) in sorted {
-                    if let Some(error) = pyvalue::utf8_strict_error(&quoted(k)) {
-                        return Some(error);
+                for (i, (key, member)) in sorted.into_iter().enumerate() {
+                    if i == 0 {
+                        out.push(indent.clone());
+                    } else {
+                        let mut separator = pts(",");
+                        separator.extend(&indent);
+                        out.push(separator);
                     }
-                    let found = match v {
-                        Json::Str(s) => pyvalue::utf8_strict_error(&quoted(s)),
-                        other => walk(other, level + 1),
-                    };
-                    if found.is_some() {
-                        return found;
+                    out.push(scalar(&Json::Str(key.clone())));
+                    out.push(pts(": "));
+                    match member {
+                        Json::Object(_) | Json::Array(_) => walk(member, level + 1, out),
+                        other => out.push(scalar(other)),
                     }
                 }
-                None
+                out.push(newline_indent(level));
+                out.push(pts("}"));
             }
+            Json::Array(items) if items.is_empty() => out.push(pts("[]")),
             Json::Array(items) => {
-                let indent: P = std::iter::once(u32::from('\n'))
-                    .chain(std::iter::repeat_n(u32::from(' '), 2 * (level + 1)))
-                    .collect();
+                let indent = newline_indent(level + 1);
                 for (i, item) in items.iter().enumerate() {
-                    let found = match item {
-                        Json::Str(s) => {
-                            let mut chunk = pts(if i == 0 { "[" } else { "," });
-                            chunk.extend(&indent);
-                            chunk.extend(quoted(s));
-                            pyvalue::utf8_strict_error(&chunk)
+                    let mut buf = pts(if i == 0 { "[" } else { "," });
+                    buf.extend(&indent);
+                    match item {
+                        Json::Object(_) | Json::Array(_) => {
+                            out.push(buf);
+                            walk(item, level + 1, out);
                         }
-                        other => walk(other, level + 1),
-                    };
-                    if found.is_some() {
-                        return found;
+                        other => {
+                            buf.extend(scalar(other));
+                            out.push(buf);
+                        }
                     }
                 }
-                None
+                out.push(newline_indent(level));
+                out.push(pts("]"));
             }
-            _ => None,
+            other => out.push(scalar(other)),
         }
     }
-    walk(value, 0)
+    let mut out = Vec::new();
+    walk(value, 0, &mut out);
+    out
 }
 
 // ----------------------------------------------------------- test hooks
@@ -802,6 +733,15 @@ fn first_unencodable(value: &Json) -> Option<String> {
 pub enum Step<'a> {
     /// Writing the staged copy of an output: its destination.
     Stage(&'a str),
+    /// One write of staged bytes to the operating system: the staged file.
+    StageWrite(&'a str),
+    /// `os.lstat(path)` of an output name.
+    Lstat(&'a str),
+    /// `path.unlink()`.
+    Unlink(&'a str),
+    /// A completed `os.replace(source, destination)`: an error stands for a
+    /// failure after the rename took effect.
+    Replaced(&'a str, &'a str),
     /// Writing the lock's token: the lock file.
     LockToken(&'a str),
     /// `os.replace(source, destination)`.
@@ -828,23 +768,45 @@ pub fn set_lock_timeout(timeout: Duration) {
     LOCK_TIMEOUT.with(|t| t.set(timeout));
 }
 
+fn injected(step: Step) -> Option<OsError> {
+    FAULT_HOOK.with(|h| h.borrow_mut().as_mut().and_then(|hook| hook(step)))
+}
+
 fn fault(step: Step) -> Result<(), Exc> {
-    match FAULT_HOOK.with(|h| h.borrow_mut().as_mut().and_then(|hook| hook(step))) {
-        Some(error) => Err(Exc::Os(error)),
-        None => Ok(()),
-    }
+    injected(step).map_or(Ok(()), |error| Err(Exc::Os(error)))
 }
 
 /// `os.replace(src, dst)`.
 fn replace(src: &str, dst: &str) -> Result<(), Exc> {
     fault(Step::Replace(src, dst))?;
-    Ok(pyos::replace(src, dst)?)
+    pyos::replace(src, dst)?;
+    fault(Step::Replaced(src, dst))
+}
+
+/// The staged file as its buffered writer sees it.
+struct StagedFile<'a> {
+    file: std::fs::File,
+    path: &'a str,
+}
+
+impl std::io::Write for StagedFile<'_> {
+    fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+        if let Some(error) = injected(Step::StageWrite(self.path)) {
+            return Err(std::io::Error::other(error.text));
+        }
+        self.file.write(bytes)
+    }
+
+    fn flush(&mut self) -> std::io::Result<()> {
+        self.file.flush()
+    }
 }
 
 // ------------------------------------------------------------ publishing
 
 /// `path.unlink()`, a missing file ignored.
 fn remove(path: &str) -> Result<(), Exc> {
+    fault(Step::Unlink(path))?;
     match std::fs::remove_file(path) {
         Ok(()) => Ok(()),
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
@@ -874,7 +836,7 @@ fn lexists(path: &str) -> bool {
 
 /// `_validate_existing_destination(path)`: absent or an ordinary file.
 fn validate_existing_destination(path: &str) -> Result<(), Exc> {
-    let details = match pyos::lstat(path) {
+    let details = match injected(Step::Lstat(path)).map_or_else(|| pyos::lstat(path), Err) {
         Ok(details) => details,
         Err(error) if error.not_found() => return Ok(()),
         Err(error) => {
@@ -895,35 +857,57 @@ fn validate_existing_destination(path: &str) -> Result<(), Exc> {
     Ok(())
 }
 
-/// `_write_staged(path, value)`: a new private sibling holding the JSON.
+/// `_write_staged(path, value)`: a new sibling holding the JSON, written as
+/// `json.dump` streams it into a UTF-8 text file. A chunk that cannot be
+/// encoded stops the write after the chunks before it; closing flushes those,
+/// and a failure to remove the file afterwards is ignored.
 fn write_staged(path: &str, value: &Json) -> Result<String, Exc> {
+    use std::io::Write;
     fault(Step::Stage(path))?;
     let (parent, name) = pypath::split(path);
     let staged = pypath::join(
         &parent,
-        &format!(".{name}.monitor-contract-{}.tmp", pyos::random_hex(32)),
+        &format!(".{name}.monitor-contract-{}.tmp", pyos::try_random_hex(32)?),
     );
-    let mut file = std::fs::File::options()
+    let file = std::fs::File::options()
         .write(true)
         .create_new(true)
         .open(&staged)
         .map_err(|e| OsError::new(&e, Some(&staged), Style::Errno))?;
-    if let Some(error) = first_unencodable(value) {
-        drop(file);
-        let _ = std::fs::remove_file(&staged);
-        return Err(Exc::UnicodeEncode(error));
+    let os = |e: std::io::Error| Exc::Os(OsError::new(&e, None, Style::Errno));
+    // TextIOWrapper and BufferedWriter both hold 8 KiB before writing.
+    let mut out = std::io::BufWriter::with_capacity(
+        8192,
+        StagedFile {
+            file,
+            path: &staged,
+        },
+    );
+    let mut chunks = dump_chunks(value);
+    chunks.push(pts("\n"));
+    let mut failure = None;
+    for chunk in &chunks {
+        if let Some(error) = pyvalue::utf8_strict_error(chunk) {
+            failure = Some(Exc::UnicodeEncode(error));
+            break;
+        }
+        let bytes: String = chunk.iter().filter_map(|&cp| char::from_u32(cp)).collect();
+        if let Err(error) = out.write_all(bytes.as_bytes()) {
+            failure = Some(os(error));
+            break;
+        }
     }
-    let mut text = dumps_with(value, Some(2), false, true);
-    text.push(u32::from('\n'));
-    let bytes: String = text.into_iter().filter_map(char::from_u32).collect();
-    let written = std::io::Write::write_all(&mut file, bytes.as_bytes())
-        .map_err(|e| Exc::Os(OsError::new(&e, None, Style::Errno)));
-    drop(file);
-    if let Err(error) = written {
-        let _ = std::fs::remove_file(&staged);
-        return Err(error);
+    // Closing flushes; its error replaces any earlier one.
+    if let Err(error) = out.into_inner() {
+        failure = Some(os(error.into_error()));
     }
-    Ok(staged)
+    match failure {
+        None => Ok(staged),
+        Some(error) => {
+            let _ = remove(&staged);
+            Err(error)
+        }
+    }
 }
 
 /// `_OutputDirectoryLock`: an exclusive, recoverable lock file for one output
@@ -941,9 +925,14 @@ impl OutputLock {
         loop {
             match pyos::create_new(&path, true) {
                 Ok(mut file) => {
-                    let token =
-                        format!("pid={} token={}", std::process::id(), pyos::random_hex(32))
-                            .into_bytes();
+                    // Python made the token after creating the lock and outside
+                    // the guarded write, so a failure here leaves the lock.
+                    let token = format!(
+                        "pid={} token={}",
+                        std::process::id(),
+                        pyos::try_random_hex(32)?
+                    )
+                    .into_bytes();
                     let written = fault(Step::LockToken(&path)).and_then(|()| {
                         std::io::Write::write_all(&mut file, &token)
                             .map_err(|e| Exc::Os(OsError::new(&e, None, Style::Errno)))
@@ -1023,7 +1012,7 @@ fn publish(staged: &[(&str, String)], destinations: &[(&str, String)]) -> Result
                     let (parent, leaf) = pypath::split(destination);
                     let backup = pypath::join(
                         &parent,
-                        &format!(".{leaf}.monitor-contract-{}.bak", pyos::random_hex(32)),
+                        &format!(".{leaf}.monitor-contract-{}.bak", pyos::try_random_hex(32)?),
                     );
                     if exists(destination) {
                         if lexists(&backup) {

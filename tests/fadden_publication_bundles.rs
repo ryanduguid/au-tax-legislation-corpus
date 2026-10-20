@@ -1162,3 +1162,163 @@ fn reparse_staging_is_not_recursively_removed() {
     assert!(message(outcome.unwrap_err()).contains("no longer an ordinary directory"));
     assert!(staging.symlink_metadata().is_ok());
 }
+
+// Added for the Part A final review.
+
+#[test]
+fn reversing_observations_keeps_the_exact_bundle_bytes() {
+    let (mut baseline, mut observation) = projected();
+    let mut second_title = baseline["titles"][0].clone();
+    second_title["register_id"] = json!("C2099A00002");
+    baseline["titles"]
+        .as_array_mut()
+        .unwrap()
+        .push(second_title);
+    let mut second = observation["observations"][0].clone();
+    second["register_id"] = json!("C2099A00002");
+    second["observed_register_document_id"] = json!("C2099C00003");
+    second["evidence_id"] = json!("ev-c2099a00002-01");
+    second["evidence_url"] = json!("https://www.legislation.gov.au/C2099A00002/latest/text");
+    observation["expected_register_ids"]
+        .as_array_mut()
+        .unwrap()
+        .push(json!("C2099A00002"));
+    observation["observations"]
+        .as_array_mut()
+        .unwrap()
+        .push(second);
+    let bytes = |observation: &Value| -> Vec<Vec<u8>> {
+        build_publication_bundles(
+            &j(&baseline),
+            &j(observation),
+            DIGEST,
+            DIGEST,
+            &Json::str("1.0.0"),
+        )
+        .unwrap()
+        .iter()
+        .map(|b| bundle_bytes(b).unwrap())
+        .collect()
+    };
+    let forward = bytes(&observation);
+    observation["observations"]
+        .as_array_mut()
+        .unwrap()
+        .reverse();
+    assert_eq!(bytes(&observation), forward);
+}
+
+#[test]
+fn a_competing_empty_destination_keeps_its_identity() {
+    let w = Work::new();
+    let output = w.root.join("bundles");
+    let racer = output.clone();
+    let identity = std::rc::Rc::new(std::cell::RefCell::new(None));
+    let seen = identity.clone();
+    let outcome = with_faults(
+        move |step| {
+            if let Step::Promote(..) = step {
+                std::fs::create_dir(&racer).unwrap();
+                *seen.borrow_mut() = Some(tax_radar_au::pyos::path_identity(s(&racer)).unwrap());
+            }
+            None
+        },
+        || w.export(),
+    );
+    assert!(
+        message(outcome.unwrap_err())
+            .starts_with("publication bundle output could not be promoted: ")
+    );
+    assert_eq!(
+        Some(tax_radar_au::pyos::path_identity(s(&output)).unwrap()),
+        *identity.borrow()
+    );
+    assert!(std::fs::read_dir(&output).unwrap().next().is_none());
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn a_c_library_without_renameat2_is_refused() {
+    let w = Work::new();
+    exporter::set_renameat2_missing(true);
+    let outcome = w.export();
+    exporter::set_renameat2_missing(false);
+    assert_eq!(
+        message(outcome.unwrap_err()),
+        "publication bundle output could not be promoted: [Errno 95] renameat2 is unavailable."
+    );
+    assert!(!w.root.join("bundles").exists());
+    assert!(!w.staging_left());
+}
+
+/// The producer version an export records from a distribution's metadata.
+fn version_from_metadata(metadata: &[u8]) -> Result<Value, Exc> {
+    let w = Work::new();
+    let site = w.root.join("site");
+    let info = site.join("tax_radar_au-9.9.9.dist-info");
+    std::fs::create_dir_all(&info).unwrap();
+    std::fs::write(info.join("METADATA"), metadata).unwrap();
+    exporter::set_version_dir(Some(s(&site)));
+    let outcome = w.export();
+    exporter::set_version_dir(None);
+    let written = outcome?;
+    let bundle: Value = serde_json::from_slice(&std::fs::read(&written[0]).unwrap()).unwrap();
+    Ok(bundle["producer"]["version"].clone())
+}
+
+#[test]
+fn installed_metadata_headers_read_as_the_email_parser_reads_them() {
+    // Header names are case-insensitive.
+    assert_eq!(
+        version_from_metadata(b"Metadata-Version: 2.1\nversion: 9.9.9\n").unwrap(),
+        "9.9.9"
+    );
+    // The value keeps trailing blanks, which the publisher's text rule refuses;
+    // a Version after the header block is body text, so there is none.
+    for metadata in [
+        &b"Version: 9.9.9 \n"[..],
+        b"Name: tax-radar-au\n\nVersion: 9\n",
+    ] {
+        assert_eq!(
+            message(version_from_metadata(metadata).unwrap_err()),
+            "producer_version must be non-empty, trimmed text.",
+            "{}",
+            String::from_utf8_lossy(metadata)
+        );
+    }
+    match version_from_metadata(b"Version: \xff\n").unwrap_err() {
+        Exc::Value {
+            class: "UnicodeDecodeError",
+            ..
+        } => {}
+        other => panic!("{other:?}"),
+    }
+}
+
+/// New directories carry the protected DACL CPython 3.13 and later give
+/// `os.mkdir(path, 0o700)`, not the parent's inherited permissions.
+#[cfg(windows)]
+#[test]
+fn new_directories_are_private_as_python_makes_them() {
+    let w = Work::new();
+    let parent = w.root.join("build");
+    w.export_to(&parent.join("bundles")).unwrap();
+    for path in [parent.clone(), parent.join("bundles")] {
+        let done = std::process::Command::new("powershell")
+            .args([
+                "-NoProfile",
+                "-Command",
+                &format!("(Get-Acl -LiteralPath '{}').Sddl", s(&path)),
+            ])
+            .output()
+            .unwrap();
+        let sddl = String::from_utf8_lossy(&done.stdout).trim().to_string();
+        let dacl = &sddl[sddl.find("D:").unwrap()..];
+        assert_eq!(
+            dacl,
+            "D:P(A;OICI;FA;;;OW)(A;OICI;FA;;;SY)(A;OICI;FA;;;BA)",
+            "{}",
+            s(&path)
+        );
+    }
+}

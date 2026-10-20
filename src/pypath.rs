@@ -539,6 +539,23 @@ pub fn realpath(filename: &str) -> Result<String, crate::pyos::OsError> {
     Ok(path)
 }
 
+/// `os.path.abspath(path)`: on Windows `GetFullPathNameW` of the normalised
+/// path, which resolves a drive-relative path against that drive's working
+/// directory, else the lexical join with the working directory.
+pub fn abspath(path: &str) -> String {
+    #[cfg(windows)]
+    if let Ok(full) = std::path::absolute(normpath(path))
+        && let Some(text) = full.to_str()
+    {
+        return text.to_string();
+    }
+    if isabs(path) {
+        return normpath(path);
+    }
+    let cwd = std::env::current_dir().unwrap_or_default();
+    normpath(&join(&cwd.to_string_lossy(), path))
+}
+
 /// `os.path.normcase(path)`: on Windows lower case with backslashes; elsewhere unchanged.
 pub fn normcase(path: &str) -> String {
     if cfg!(windows) {

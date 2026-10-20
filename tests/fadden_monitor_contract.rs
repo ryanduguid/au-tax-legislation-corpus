@@ -1013,6 +1013,13 @@ fn competing_writers_leave_an_aged_lock_untouched() {
     std::fs::create_dir(&w.out).unwrap();
     let lock = w.out.join(LOCK);
     std::fs::write(&lock, "failed writer requires operator recovery").unwrap();
+    let aged = std::time::SystemTime::now() - Duration::from_secs(600);
+    std::fs::File::options()
+        .write(true)
+        .open(&lock)
+        .unwrap()
+        .set_modified(aged)
+        .unwrap();
     let barrier = Arc::new(Barrier::new(2));
     let writers: Vec<_> = (0..2)
         .map(|_| {
@@ -1469,4 +1476,250 @@ fn monitor_interruptions_after_each_rename_restore_the_old_pair() {
             "rename {interrupt_at}"
         );
     }
+}
+
+// Ported or added for the Part A final review.
+
+#[test]
+fn dump_chunks_join_to_the_dumped_text() {
+    let baseline = baseline();
+    let joined: Vec<u32> = contract::dump_chunks(&baseline).concat();
+    assert_eq!(
+        joined,
+        tax_radar_au::pyvalue::dumps_with(&baseline, Some(2), false, true)
+    );
+}
+
+/// The `n`th random name of a publication over an existing pair fails.
+/// The work, the pair before, and the outcome.
+type Attempt = (Work, (Vec<u8>, Vec<u8>), Result<(String, String), Exc>);
+
+fn random_failure_at(n: usize) -> Attempt {
+    let w = Work::new();
+    w.publish().unwrap();
+    let prior = w.pair();
+    let mut changed = sources_document();
+    changed["corpus"] = json!("replacement");
+    w.write(&w.sources, &changed);
+    tax_radar_au::pyos::set_random_failure(Some(n));
+    let outcome = w.publish();
+    tax_radar_au::pyos::set_random_failure(None);
+    (w, prior, outcome)
+}
+
+#[test]
+fn a_randomness_failure_choosing_a_backup_rolls_the_pair_back() {
+    // Staging names, the lock token, the first backup, then the second.
+    let (w, prior, outcome) = random_failure_at(5);
+    assert_eq!(
+        outcome.unwrap_err().to_string(),
+        "simulated randomness failure"
+    );
+    assert_eq!(w.pair(), prior);
+    assert_eq!(
+        w.names(),
+        ["monitor-baseline.json", "register-observation.json"]
+    );
+}
+
+#[test]
+fn a_randomness_failure_naming_the_second_staged_file_removes_the_first() {
+    let (w, prior, outcome) = random_failure_at(2);
+    assert_eq!(
+        outcome.unwrap_err().to_string(),
+        "simulated randomness failure"
+    );
+    assert_eq!(w.pair(), prior);
+    assert_eq!(
+        w.names(),
+        ["monitor-baseline.json", "register-observation.json"]
+    );
+}
+
+#[test]
+fn a_randomness_failure_making_the_lock_token_leaves_the_lock() {
+    // Python made the token after creating the lock, outside its guarded write.
+    let (w, prior, outcome) = random_failure_at(3);
+    assert_eq!(
+        outcome.unwrap_err().to_string(),
+        "simulated randomness failure"
+    );
+    assert_eq!(w.pair(), prior);
+    assert_eq!(
+        w.names(),
+        [LOCK, "monitor-baseline.json", "register-observation.json"]
+    );
+}
+
+#[test]
+fn an_unencodable_chunk_with_denied_cleanup_leaves_the_written_prefix() {
+    let w = Work::new();
+    let mut sources = sources_document();
+    sources["titles"][1]["name"] = json!("Sample Act");
+    std::fs::write(
+        &w.sources,
+        sources
+            .to_string()
+            .replacen("Sample Act", "Sample \\ud800Act", 1),
+    )
+    .unwrap();
+    contract::set_fault_hook(|step| match step {
+        Step::Unlink(path) if path.ends_with(".tmp") => Some(simulated("[WinError 5] denied")),
+        _ => None,
+    });
+    let outcome = w.publish();
+    contract::set_fault_hook(|_| None);
+    assert!(matches!(outcome.unwrap_err(), Exc::UnicodeEncode(_)));
+    let staged: Vec<String> = w.leftovers();
+    assert_eq!(staged.len(), 1, "{staged:?}");
+    // What json.dump wrote before the chunk holding the surrogate.
+    let projected =
+        project_baseline(&pyjson::loads(&std::fs::read_to_string(&w.sources).unwrap()).unwrap())
+            .unwrap();
+    let prefix: Vec<u32> = contract::dump_chunks(&projected)
+        .into_iter()
+        .take_while(|chunk| chunk.iter().all(|&cp| char::from_u32(cp).is_some()))
+        .flatten()
+        .collect();
+    let expected: String = prefix.into_iter().filter_map(char::from_u32).collect();
+    assert_eq!(
+        std::fs::read_to_string(w.out.join(&staged[0])).unwrap(),
+        expected
+    );
+}
+
+#[test]
+fn a_write_failure_before_an_unencodable_chunk_is_the_reported_error() {
+    let w = Work::new();
+    let mut sources = sources_document();
+    // The corpus name sorts first and fills the 8 KiB buffer before the title.
+    sources["corpus"] = json!("c".repeat(10_000));
+    std::fs::write(
+        &w.sources,
+        sources
+            .to_string()
+            .replacen("Sample Act", "Sample \\ud800Act", 1),
+    )
+    .unwrap();
+    contract::set_fault_hook(|step| match step {
+        Step::StageWrite(_) => Some(simulated("[Errno 28] No space left on device")),
+        _ => None,
+    });
+    let outcome = w.publish();
+    contract::set_fault_hook(|_| None);
+    match outcome.unwrap_err() {
+        Exc::Os(error) => assert!(
+            error.text.contains("No space left on device"),
+            "{}",
+            error.text
+        ),
+        other => panic!("{other:?}"),
+    }
+    assert!(w.names().is_empty());
+}
+
+#[test]
+fn an_owned_lock_that_cannot_be_unlinked_after_publication_is_reported() {
+    let w = Work::new();
+    contract::set_fault_hook(|step| match step {
+        Step::Unlink(path) if path.ends_with(LOCK) => Some(simulated("unlink failed")),
+        _ => None,
+    });
+    let outcome = w.publish();
+    contract::set_fault_hook(|_| None);
+    assert_eq!(
+        message(outcome.unwrap_err()),
+        "monitor output was published, but its owned lock could not be removed"
+    );
+    assert_eq!(
+        w.names(),
+        [LOCK, "monitor-baseline.json", "register-observation.json"]
+    );
+}
+
+#[test]
+fn an_owned_lock_that_cannot_be_unlinked_after_a_failure_keeps_the_failure() {
+    let w = Work::new();
+    contract::set_fault_hook(|step| match step {
+        Step::Unlink(path) if path.ends_with(LOCK) => Some(simulated("unlink failed")),
+        Step::Replace(..) => Some(simulated("publication failed")),
+        _ => None,
+    });
+    let outcome = w.publish();
+    contract::set_fault_hook(|_| None);
+    assert_eq!(outcome.unwrap_err().to_string(), "publication failed");
+    assert_eq!(w.names(), [LOCK]);
+}
+
+#[test]
+fn an_uninspectable_destination_is_refused_on_every_platform() {
+    let w = Work::new();
+    contract::set_fault_hook(|step| match step {
+        Step::Lstat(path) if named(path) == "monitor-baseline.json" => {
+            Some(simulated("[WinError 5] Access is denied"))
+        }
+        _ => None,
+    });
+    let outcome = w.publish();
+    contract::set_fault_hook(|_| None);
+    let text = message(outcome.unwrap_err());
+    assert!(
+        text.starts_with("monitor output path cannot be inspected: "),
+        "{text}"
+    );
+    assert!(
+        text.ends_with(" ([WinError 5] Access is denied)."),
+        "{text}"
+    );
+}
+
+#[test]
+fn a_second_writer_waits_while_half_the_pair_is_promoted() {
+    let w = Work::new();
+    let (sources_a, facts_a) = variant(&w, "a", "writer A", "2026-08-21T10:01:00Z");
+    let (sources_b, facts_b) = variant(&w, "b", "writer B", "2026-08-21T10:02:00Z");
+    let (promoted_tx, promoted_rx) = mpsc::channel();
+    let (allow_tx, allow_rx) = mpsc::channel::<()>();
+    let reached = Arc::new(AtomicBool::new(false));
+    let out = w.out.clone();
+    let first = std::thread::spawn(move || {
+        contract::set_fault_hook(move |step| {
+            // After the new baseline is really in place.
+            if let Step::Replaced(source, destination) = step
+                && source.ends_with(".tmp")
+                && named(destination) == "monitor-baseline.json"
+            {
+                promoted_tx.send(()).unwrap();
+                allow_rx.recv_timeout(Duration::from_secs(5)).unwrap();
+            }
+            None
+        });
+        publish_pair(s(&sources_a), s(&facts_a), s(&out)).map_err(message)
+    });
+    promoted_rx.recv_timeout(Duration::from_secs(5)).unwrap();
+    assert_eq!(
+        read_json(&w.out.join("monitor-baseline.json"))["corpus"],
+        "writer A"
+    );
+    assert!(!w.out.join("register-observation.json").exists());
+    let out = w.out.clone();
+    let flag = reached.clone();
+    let second = std::thread::spawn(move || {
+        contract::set_fault_hook(move |step| {
+            if matches!(step, Step::Replace(..)) {
+                flag.store(true, Ordering::SeqCst);
+            }
+            None
+        });
+        publish_pair(s(&sources_b), s(&facts_b), s(&out)).map_err(message)
+    });
+    std::thread::sleep(Duration::from_millis(250));
+    assert!(!reached.load(Ordering::SeqCst));
+    allow_tx.send(()).unwrap();
+    first.join().unwrap().unwrap();
+    second.join().unwrap().unwrap();
+    assert_eq!(
+        read_json(&w.out.join("monitor-baseline.json"))["corpus"],
+        "writer B"
+    );
 }

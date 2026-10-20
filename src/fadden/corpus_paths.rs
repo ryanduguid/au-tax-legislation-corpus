@@ -419,3 +419,26 @@ pub fn relative(path: &str, start: &str) -> String {
     let prefix = format!("{}{}", start.trim_end_matches(pypath::SEP), pypath::SEP);
     path.strip_prefix(&prefix).unwrap_or(path).to_string()
 }
+
+/// `_absolute(path)`: `Path(os.path.abspath(os.fspath(Path(path))))`.
+pub fn abspath(path: &str) -> String {
+    pypath::abspath(&PyPath::new(path).display())
+}
+
+/// Whether an `lstat` result is an ordinary entry of the wanted kind: a
+/// directory or a regular file, and no link, junction or reparse point.
+pub fn ordinary(path: &str, details: &std::fs::Metadata, directory: bool) -> bool {
+    let kind = details.file_type();
+    (if directory {
+        kind.is_dir()
+    } else {
+        kind.is_file()
+    }) && !crate::pyos::islink(path)
+        && !crate::pyos::isjunction(path)
+        && !crate::pyos::is_reparse_point(details)
+}
+
+/// `_same_location(left, right)`: the same path once links are resolved.
+pub fn same_location(left: &str, right: &str) -> Result<bool, Exc> {
+    Ok(pypath::normcase(&pypath::realpath(left)?) == pypath::normcase(&pypath::realpath(right)?))
+}

@@ -2,17 +2,22 @@
 use std::io::Write;
 
 use super::{
-    Run, as_at, compare_builds, dist, dist_verify, monitor_contract, pii_scan, probe13,
-    publication_bundles, rates, rulings, search,
+    Run, as_at, capture_register, compare_builds, dist, dist_verify, live_evidence,
+    monitor_contract, pii_scan, probe13, publication_bundles, rates, rulings, search,
 };
 use crate::argparse::Exit;
 
 /// The stages this binary runs; the others remain in the Python package.
-pub const STAGES: [&str; 12] = [
+/// `capture_register` and `export_live_evidence_bundles` are here for
+/// verification only: `python -m fadden` still runs their Python stages,
+/// which the publication workflow uses.
+pub const STAGES: [&str; 14] = [
     "as_at",
+    "capture_register",
     "compare_builds",
     "dist",
     "dist_verify",
+    "export_live_evidence_bundles",
     "export_monitor_contract",
     "export_publication_bundles",
     "pii_scan",
@@ -23,7 +28,7 @@ pub const STAGES: [&str; 12] = [
     "search",
 ];
 
-const USAGE: &str = "usage: fadden {as_at,compare_builds,dist,dist_verify,export_monitor_contract,export_publication_bundles,pii_scan,pii_scan2,probe13,rates,rulings,search} [arguments ...]\n";
+const USAGE: &str = "usage: fadden {as_at,capture_register,compare_builds,dist,dist_verify,export_live_evidence_bundles,export_monitor_contract,export_publication_bundles,pii_scan,pii_scan2,probe13,rates,rulings,search} [arguments ...]\n";
 
 /// Text-mode output: newlines become the platform's line separator.
 fn text_mode(bytes: &[u8]) -> Vec<u8> {
@@ -46,6 +51,9 @@ pub fn main(argv: &[String]) -> i32 {
     let mut run = Run::default();
     let outcome = match argv.split_first() {
         Some((stage, rest)) if stage == "as_at" => as_at::main(rest, &mut run),
+        Some((stage, rest)) if stage == "capture_register" => {
+            capture_register::main(rest, &mut run)
+        }
         Some((stage, rest)) if stage == "compare_builds" => compare_builds::main(rest, &mut run),
         Some((stage, rest)) if stage == "rates" => rates::main(rest, &mut run),
         Some((stage, rest)) if stage == "rulings" => rulings::main(rest, &mut run),
@@ -55,6 +63,9 @@ pub fn main(argv: &[String]) -> i32 {
         Some((stage, rest)) if stage == "probe13" => probe13::main(rest, &mut run),
         Some((stage, rest)) if stage == "dist_verify" => dist_verify::main(rest, &mut run),
         Some((stage, rest)) if stage == "dist" => dist::main(rest, &mut run),
+        Some((stage, rest)) if stage == "export_live_evidence_bundles" => {
+            live_evidence::main(rest, &mut run)
+        }
         Some((stage, rest)) if stage == "export_monitor_contract" => {
             monitor_contract::main(rest, &mut run)
         }

@@ -41,9 +41,33 @@ pub enum Failure {
     Transport(String),
 }
 
+/// One response as the capture recorder keeps it: any status, every header
+/// in the order received, and the body of a 200 response only.
+#[derive(Debug, Clone)]
+pub struct Exchange {
+    pub status: u16,
+    pub headers: Vec<(String, String)>,
+    pub body: Option<Vec<u8>>,
+}
+
 pub trait Http {
     /// One GET, reading at most `limit` bytes of the body when given.
     fn get(&mut self, url: &str, limit: Option<usize>) -> Result<Response, Failure>;
+    /// One GET that follows no redirect and reports every status, reading at
+    /// most `limit` bytes of a 200 body; an `Err` is always `Transport`. A
+    /// fake that scripts only `get` fails every exchange.
+    fn exchange(&mut self, url: &str, limit: usize) -> Result<Exchange, Failure> {
+        let _ = (url, limit);
+        Err(Failure::Transport("URLError".into()))
+    }
+    /// `time.monotonic()`; a fake's clock stands still.
+    fn monotonic(&mut self) -> f64 {
+        0.0
+    }
+    /// `datetime.now(timezone.utc).isoformat(timespec="seconds")` with `Z`.
+    fn utc_now(&mut self) -> String {
+        "1970-01-01T00:00:00Z".into()
+    }
     /// `time.sleep(seconds)`.
     fn sleep(&mut self, seconds: f64);
     /// `datetime.date.today().isoformat()`.
@@ -96,26 +120,55 @@ pub fn fetch_json(http: &mut dyn Http, url: &str) -> Result<Option<Json>, Exc> {
 
 struct Net {
     agent: ureq::Agent,
+    /// The capture recorder's agent: no redirect is followed.
+    direct: ureq::Agent,
+    started: std::time::Instant,
 }
 
 impl Net {
     fn new() -> Net {
-        let tls = ureq::tls::TlsConfig::builder()
-            .root_certs(ureq::tls::RootCerts::PlatformVerifier)
-            .build();
-        let agent = ureq::Agent::config_builder()
-            .tls_config(tls)
-            .user_agent(UA)
-            .http_status_as_error(false)
-            .max_redirects(10)
-            .max_redirects_will_error(false)
-            .timeout_connect(Some(TIMEOUT))
-            .timeout_recv_response(Some(TIMEOUT))
-            .timeout_recv_body(Some(TIMEOUT))
-            .build()
-            .new_agent();
-        Net { agent }
+        let agent = |redirects: u32| {
+            let tls = ureq::tls::TlsConfig::builder()
+                .root_certs(ureq::tls::RootCerts::PlatformVerifier)
+                .build();
+            ureq::Agent::config_builder()
+                .tls_config(tls)
+                .user_agent(UA)
+                .http_status_as_error(false)
+                .max_redirects(redirects)
+                .max_redirects_will_error(false)
+                .timeout_connect(Some(TIMEOUT))
+                .timeout_recv_response(Some(TIMEOUT))
+                .timeout_recv_body(Some(TIMEOUT))
+                .build()
+                .new_agent()
+        };
+        Net {
+            agent: agent(10),
+            direct: agent(0),
+            started: std::time::Instant::now(),
+        }
     }
+}
+
+/// A header value as `http.client` decodes it: ISO-8859-1.
+fn latin1(bytes: &[u8]) -> String {
+    bytes.iter().map(|&b| char::from(b)).collect()
+}
+
+/// `seconds` since the Unix epoch as `YYYY-MM-DDTHH:MM:SSZ`.
+pub fn utc_text(seconds: u64) -> String {
+    let days = i64::try_from(seconds / 86_400).unwrap_or(0);
+    let rest = seconds % 86_400;
+    // 719163 is the proleptic Gregorian ordinal of 1970-01-01.
+    let date = crate::py::Date::from_ordinal(719_163 + days)
+        .map_or_else(|| "9999-12-31".to_string(), |d| d.isoformat());
+    format!(
+        "{date}T{:02}:{:02}:{:02}Z",
+        rest / 3600,
+        rest % 3600 / 60,
+        rest % 60
+    )
 }
 
 fn transport(name: &str) -> Failure {
@@ -157,12 +210,56 @@ impl Http for Net {
         })
     }
 
+    fn exchange(&mut self, url: &str, limit: usize) -> Result<Exchange, Failure> {
+        let mut response = self
+            .direct
+            .get(url)
+            .call()
+            .map_err(|_| transport("URLError"))?;
+        let status = response.status().as_u16();
+        let headers = response
+            .headers()
+            .iter()
+            .map(|(name, value)| (name.as_str().to_string(), latin1(value.as_bytes())))
+            .collect();
+        let body = if status == 200 {
+            let mut body = Vec::new();
+            response
+                .body_mut()
+                .with_config()
+                .limit(u64::MAX)
+                .reader()
+                .take(limit as u64)
+                .read_to_end(&mut body)
+                .map_err(|_| transport("IncompleteRead"))?;
+            Some(body)
+        } else {
+            None
+        };
+        Ok(Exchange {
+            status,
+            headers,
+            body,
+        })
+    }
+
     fn sleep(&mut self, seconds: f64) {
         std::thread::sleep(Duration::from_secs_f64(seconds));
     }
 
     fn today(&mut self) -> String {
         local_today()
+    }
+
+    fn monotonic(&mut self) -> f64 {
+        self.started.elapsed().as_secs_f64()
+    }
+
+    fn utc_now(&mut self) -> String {
+        let seconds = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map_or(0, |d| d.as_secs());
+        utc_text(seconds)
     }
 }
 
@@ -207,14 +304,17 @@ pub fn local_today() -> String {
 mod fake {
     use std::io::Write;
 
-    use super::{Failure, Http, Response};
+    use super::{Exchange, Failure, Http, Response};
     use crate::pyjson::{self, Json};
 
-    /// A scripted run: `{"today": "...", "responses": [...]}`, each response
-    /// `{"status": n, "url": "...", "type": "...", "body": "..."}` (body bytes
-    /// as code points below 256) or `{"error": "<exception class>"}`.
+    /// A scripted run: `{"today": "...", "now": "...", "responses": [...]}`,
+    /// each response `{"status": n, "url": "...", "type": "...", "headers":
+    /// [[name, value], ...], "body": "...", "read_error": true}` (body bytes
+    /// as code points below 256) or `{"error": "<exception class>"}`. The
+    /// clock stands still: `monotonic` is 0 and `utc_now` is `now`.
     pub struct Script {
         today: String,
+        now: String,
         responses: std::vec::IntoIter<Json>,
         log: Option<String>,
     }
@@ -232,8 +332,13 @@ mod fake {
                 _ => Vec::new(),
             };
             let log = std::env::var("FADDEN_FAKE_HTTP_LOG").ok();
+            let now = script
+                .get("now")
+                .and_then(Json::as_str)
+                .unwrap_or("2099-01-01T00:00:00Z");
             Script {
                 today: today.to_string(),
+                now: now.to_string(),
                 responses: responses.into_iter(),
                 log,
             }
@@ -298,12 +403,67 @@ mod fake {
             })
         }
 
+        fn exchange(&mut self, url: &str, limit: usize) -> Result<Exchange, Failure> {
+            self.log(&format!("GET {url}"));
+            let Some(next) = self.responses.next() else {
+                return Err(Failure::Transport("URLError".into()));
+            };
+            if let Some(name) = next.get("error").and_then(Json::as_str) {
+                return Err(Failure::Transport(name.to_string()));
+            }
+            let status = match next.get("status") {
+                Some(Json::Int(i)) => u16::try_from(i).unwrap_or(200),
+                _ => 200,
+            };
+            let text = |value: &Json| {
+                let points = match value {
+                    Json::Str(s) => s.code_points(),
+                    _ => Vec::new(),
+                };
+                points
+                    .into_iter()
+                    .filter_map(char::from_u32)
+                    .collect::<String>()
+            };
+            let headers = match next.get("headers") {
+                Some(Json::Array(pairs)) => pairs
+                    .iter()
+                    .filter_map(|pair| match pair {
+                        Json::Array(kv) if kv.len() == 2 => Some((text(&kv[0]), text(&kv[1]))),
+                        _ => None,
+                    })
+                    .collect(),
+                _ => Vec::new(),
+            };
+            if status == 200 && next.get("read_error").is_some_and(Json::truthy) {
+                return Err(Failure::Transport("IncompleteRead".into()));
+            }
+            let body = (status == 200).then(|| {
+                let mut body = bytes(next.get("body"));
+                body.truncate(limit);
+                body
+            });
+            Ok(Exchange {
+                status,
+                headers,
+                body,
+            })
+        }
+
         fn sleep(&mut self, seconds: f64) {
             self.log(&format!("sleep {}", crate::py::float_repr(seconds)));
         }
 
         fn today(&mut self) -> String {
             self.today.clone()
+        }
+
+        fn monotonic(&mut self) -> f64 {
+            0.0
+        }
+
+        fn utc_now(&mut self) -> String {
+            self.now.clone()
         }
     }
 }

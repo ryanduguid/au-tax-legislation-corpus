@@ -144,6 +144,12 @@ release, make a network request, or create a public development. Those
 authenticated release and publisher-admission steps remain separately
 authorised.
 
+`python -m fadden capture_register` and `export_live_evidence_bundles` run the
+Python stages, and the publication workflow uses them. The `fadden` binary also
+carries both stages (`fadden capture_register`, `fadden
+export_live_evidence_bundles`) so the port can be checked against them; using
+the binary in the publication workflow needs its own authorised change.
+
 ## Exporting publication evidence bundles
 
 The publisher contract currently has one synthetic conformance path:

@@ -203,6 +203,68 @@ pub fn makedirs_new(path: &str) -> Result<(), OsError> {
     std::fs::create_dir(path).map_err(|e| OsError::new(&e, Some(path), Style::Native))
 }
 
+/// `os.mkdir(path, 0o700)`. On Windows, CPython 3.13 and later give such a
+/// directory a protected DACL granting full access to SYSTEM, the
+/// Administrators group and the owner only; it is created with that
+/// descriptor rather than the parent's inherited permissions.
+#[cfg(unix)]
+pub fn mkdir_private(path: &str) -> io::Result<()> {
+    use std::os::unix::fs::DirBuilderExt;
+    std::fs::DirBuilder::new().mode(0o700).create(path)
+}
+
+/// `os.mkdir(path, 0o700)`. On Windows, CPython 3.13 and later give such a
+/// directory a protected DACL granting full access to SYSTEM, the
+/// Administrators group and the owner only; it is created with that
+/// descriptor rather than the parent's inherited permissions.
+#[cfg(windows)]
+pub fn mkdir_private(path: &str) -> io::Result<()> {
+    use std::os::windows::ffi::OsStrExt;
+    use windows_sys::Win32::Foundation::LocalFree;
+    use windows_sys::Win32::Security::Authorization::{
+        ConvertStringSecurityDescriptorToSecurityDescriptorW, SDDL_REVISION_1,
+    };
+    use windows_sys::Win32::Security::{PSECURITY_DESCRIPTOR, SECURITY_ATTRIBUTES};
+    use windows_sys::Win32::Storage::FileSystem::CreateDirectoryW;
+    let wide = |s: &str| -> Vec<u16> {
+        std::ffi::OsStr::new(s)
+            .encode_wide()
+            .chain(std::iter::once(0))
+            .collect()
+    };
+    let sddl = wide("D:P(A;OICI;FA;;;SY)(A;OICI;FA;;;BA)(A;OICI;FA;;;OW)");
+    let mut descriptor: PSECURITY_DESCRIPTOR = std::ptr::null_mut();
+    // SAFETY: the SDDL string is NUL-terminated and outlives the call, which
+    // writes a LocalAlloc'd descriptor into `descriptor`.
+    let converted = unsafe {
+        ConvertStringSecurityDescriptorToSecurityDescriptorW(
+            sddl.as_ptr(),
+            SDDL_REVISION_1,
+            &mut descriptor,
+            std::ptr::null_mut(),
+        )
+    };
+    if converted == 0 {
+        return Err(io::Error::last_os_error());
+    }
+    let attributes = SECURITY_ATTRIBUTES {
+        nLength: std::mem::size_of::<SECURITY_ATTRIBUTES>() as u32,
+        lpSecurityDescriptor: descriptor,
+        bInheritHandle: 0,
+    };
+    let target = wide(path);
+    // SAFETY: the path is NUL-terminated and the attributes and descriptor
+    // stay valid for the call.
+    let created = unsafe { CreateDirectoryW(target.as_ptr(), &attributes) };
+    let error = io::Error::last_os_error();
+    // SAFETY: `descriptor` came from LocalAlloc and is freed once.
+    unsafe { LocalFree(descriptor) };
+    if created == 0 {
+        return Err(error);
+    }
+    Ok(())
+}
+
 /// `os.link(src, dst, follow_symlinks=False)`.
 pub fn link(src: &str, dst: &str) -> Result<(), OsError> {
     std::fs::hard_link(src, dst).map_err(|e| OsError::two(&e, src, dst, Style::Native))
@@ -274,6 +336,56 @@ pub fn file_id(path: &str) -> Result<(u64, u64), OsError> {
     Ok((u64::from(info.dwVolumeSerialNumber), index))
 }
 
+/// `(st_dev, st_ino)` of an open file, as `os.fstat` reports them.
+#[cfg(unix)]
+pub fn handle_identity(file: &File) -> io::Result<(u64, u64)> {
+    use std::os::unix::fs::MetadataExt;
+    let meta = file.metadata()?;
+    Ok((meta.dev(), meta.ino()))
+}
+
+/// `(st_dev, st_ino)` of an open file, as `os.fstat` reports them: the volume
+/// serial number and the file index.
+#[cfg(windows)]
+pub fn handle_identity(file: &File) -> io::Result<(u64, u64)> {
+    use std::os::windows::io::AsRawHandle;
+    use windows_sys::Win32::Storage::FileSystem::{
+        BY_HANDLE_FILE_INFORMATION, GetFileInformationByHandle,
+    };
+    // SAFETY: an all-zero BY_HANDLE_FILE_INFORMATION is a valid value to be overwritten.
+    let mut info: BY_HANDLE_FILE_INFORMATION = unsafe { std::mem::zeroed() };
+    // SAFETY: the handle is open for the duration of the call and info is writable.
+    if unsafe { GetFileInformationByHandle(file.as_raw_handle(), &mut info) } == 0 {
+        return Err(io::Error::last_os_error());
+    }
+    let index = (u64::from(info.nFileIndexHigh) << 32) | u64::from(info.nFileIndexLow);
+    Ok((u64::from(info.dwVolumeSerialNumber), index))
+}
+
+/// `(st_dev, st_ino)` of `path` without following a final link, as `os.lstat`
+/// reports them.
+#[cfg(unix)]
+pub fn path_identity(path: &str) -> io::Result<(u64, u64)> {
+    use std::os::unix::fs::MetadataExt;
+    let meta = std::fs::symlink_metadata(path)?;
+    Ok((meta.dev(), meta.ino()))
+}
+
+/// `(st_dev, st_ino)` of `path` without following a final link, as `os.lstat`
+/// reports them.
+#[cfg(windows)]
+pub fn path_identity(path: &str) -> io::Result<(u64, u64)> {
+    use std::os::windows::fs::OpenOptionsExt;
+    use windows_sys::Win32::Storage::FileSystem::{
+        FILE_FLAG_BACKUP_SEMANTICS, FILE_FLAG_OPEN_REPARSE_POINT,
+    };
+    let file = OpenOptions::new()
+        .access_mode(0)
+        .custom_flags(FILE_FLAG_BACKUP_SEMANTICS | FILE_FLAG_OPEN_REPARSE_POINT)
+        .open(path)?;
+    handle_identity(&file)
+}
+
 /// Whether an `lstat` result is a Windows reparse point (`FILE_ATTRIBUTE_REPARSE_POINT`).
 pub fn is_reparse_point(meta: &Metadata) -> bool {
     #[cfg(windows)]
@@ -295,6 +407,15 @@ pub fn random_hex12() -> String {
 
 thread_local! {
     static FIXED_HEX: std::cell::RefCell<Option<String>> = const { std::cell::RefCell::new(None) };
+    static RANDOM_FAILURE: std::cell::Cell<Option<usize>> = const { std::cell::Cell::new(None) };
+}
+
+/// Make the `n`th following [`try_random_hex`] call on this thread fail, as
+/// an `os.urandom` failure inside `uuid.uuid4()` would; `None` stops it.
+/// For tests.
+#[doc(hidden)]
+pub fn set_random_failure(n: Option<usize>) {
+    RANDOM_FAILURE.with(|f| f.set(n));
 }
 
 /// Make [`random_hex`] return `value` on this thread, as patching
@@ -302,6 +423,28 @@ thread_local! {
 #[doc(hidden)]
 pub fn set_fixed_hex(value: Option<&str>) {
     FIXED_HEX.with(|f| *f.borrow_mut() = value.map(str::to_string));
+}
+
+/// `count` random lower-case hex digits, or the operating system's refusal
+/// to supply randomness, which `uuid.uuid4()` raises as an `OSError`.
+pub fn try_random_hex(count: usize) -> Result<String, OsError> {
+    if let Some(n) = RANDOM_FAILURE.with(std::cell::Cell::get) {
+        RANDOM_FAILURE.with(|f| f.set(n.checked_sub(1).filter(|&left| left > 0)));
+        if n == 1 {
+            let error = io::Error::other("simulated randomness failure");
+            return Err(OsError::new(&error, None, Style::Errno));
+        }
+    }
+    if let Some(fixed) = FIXED_HEX.with(|f| f.borrow().clone()) {
+        return Ok(fixed);
+    }
+    let mut bytes = vec![0u8; count.div_ceil(2)];
+    getrandom::fill(&mut bytes).map_err(|e| {
+        let error = io::Error::other(e.to_string());
+        OsError::new(&error, None, Style::Errno)
+    })?;
+    let text: String = bytes.iter().map(|b| format!("{b:02x}")).collect();
+    Ok(text[..count].to_string())
 }
 
 /// `count` random lower-case hex digits.

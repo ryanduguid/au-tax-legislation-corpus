@@ -7,8 +7,9 @@
 use std::cell::RefCell;
 use std::collections::BTreeSet;
 
+use super::corpus_paths::{self, abspath, ordinary, same_location};
 use super::monitor_contract::{self, COLLECTIONS, CONTENT_KINDS, CONTENT_MEDIA_TYPES};
-use super::{Exc, Run, corpus_paths};
+use super::{Exc, Run};
 use crate::argparse::{Action, Exit, Get, Parser};
 use crate::pyjson::{Json, PyStr};
 use crate::pyos::{self, OsError, Style};
@@ -614,9 +615,10 @@ fn producer_version() -> Result<Json, Exc> {
         Err(crate::pyio::ReadError::Os(_)) => {}
         Err(error) => return Err(error.into()),
     }
-    installed_version(&root.display())
-        .map(|version| Json::str(&version))
-        .ok_or_else(|| bundle_error("producer version metadata is unavailable."))
+    match installed_version(&root.display())? {
+        Some(version) => Ok(version),
+        None => Err(bundle_error("producer version metadata is unavailable.")),
+    }
 }
 
 fn trim(text: &str) -> P {
@@ -630,59 +632,120 @@ fn trim(text: &str) -> P {
     }
 }
 
-/// `importlib.metadata.version("tax-radar-au")` for a wheel installed beside
-/// the package: the `Version` of its `.dist-info/METADATA`.
-fn installed_version(site: &str) -> Option<String> {
-    let mut found: Vec<String> = std::fs::read_dir(site)
-        .ok()?
-        .filter_map(|entry| entry.ok()?.file_name().into_string().ok())
-        .filter(|name| {
-            // importlib.metadata's lookup: the lowercased stem before its first
-            // `-`, with runs of `-`, `_` and `.` read as one `_`.
-            let lower = name.to_lowercase();
-            let Some(stem) = lower.strip_suffix(".dist-info") else {
-                return false;
-            };
-            let project = stem.split('-').next().unwrap_or_default();
-            let normalized: Vec<&str> = project
-                .split(['-', '_', '.'])
-                .filter(|part| !part.is_empty())
-                .collect();
-            normalized.join("_") == "tax_radar_au"
-        })
-        .collect();
-    found.sort();
-    let metadata = std::fs::read_to_string(pypath::join(
-        &pypath::join(site, found.first()?),
-        "METADATA",
-    ))
-    .ok()?;
-    metadata
-        .lines()
-        .take_while(|line| !line.is_empty())
-        .find_map(|line| line.strip_prefix("Version:"))
-        .map(|v| v.trim().to_string())
-}
-
-fn abspath(path: &str) -> String {
-    let text = PyPath::new(path).display();
-    if pypath::isabs(&text) {
-        return pypath::normpath(&text);
+/// `importlib.metadata.version("tax-radar-au")` for a distribution beside the
+/// package: `None` when there is none (`PackageNotFoundError`), else the
+/// `Version` header of its metadata as `email` parses it, `null` when absent.
+/// A `.dist-info` precedes an `.egg-info`, each in directory-listing order.
+fn installed_version(site: &str) -> Result<Option<Json>, Exc> {
+    let Ok(entries) = std::fs::read_dir(site) else {
+        return Ok(None);
+    };
+    let (mut infos, mut eggs) = (Vec::new(), Vec::new());
+    for entry in entries.flatten() {
+        let Ok(name) = entry.file_name().into_string() else {
+            continue;
+        };
+        let lower = name.to_lowercase();
+        let (stem, egg) = match (
+            lower.strip_suffix(".dist-info"),
+            lower.strip_suffix(".egg-info"),
+        ) {
+            (Some(stem), _) => (stem.to_string(), false),
+            (None, Some(stem)) => (stem.to_string(), true),
+            _ => continue,
+        };
+        // Prepared.normalize: runs of "-", "_" and "." are one "_".
+        let project = stem.split('-').next().unwrap_or_default();
+        let normalized: Vec<&str> = project
+            .split(['-', '_', '.'])
+            .filter(|part| !part.is_empty())
+            .collect();
+        if normalized.join("_") == "tax_radar_au" {
+            if egg {
+                eggs.push(name)
+            } else {
+                infos.push(name)
+            }
+        }
     }
-    let cwd = std::env::current_dir().unwrap_or_default();
-    pypath::normpath(&pypath::join(&cwd.to_string_lossy(), &text))
+    let Some(found) = infos.into_iter().chain(eggs).next() else {
+        return Ok(None);
+    };
+    let base = pypath::join(site, &found);
+    // read_text suppresses a missing file, a directory and a denied read.
+    let read = |file: &str| -> Result<Option<String>, Exc> {
+        match std::fs::read(pypath::join(&base, file)) {
+            Ok(bytes) => String::from_utf8(bytes).map(Some).map_err(|e| {
+                let bytes = e.into_bytes();
+                Exc::Value {
+                    class: "UnicodeDecodeError",
+                    message: crate::py::decode_utf8(&bytes)
+                        .err()
+                        .map_or_else(String::new, |d| d.to_string()),
+                }
+            }),
+            Err(_) => Ok(None),
+        }
+    };
+    let text = match read("METADATA")? {
+        Some(text) => text,
+        None => read("PKG-INFO")?.unwrap_or_default(),
+    };
+    Ok(Some(
+        metadata_header(&text, "version").map_or(Json::Null, |v| Json::str(&v)),
+    ))
 }
 
-/// Whether an `lstat` result is an ordinary entry of the wanted kind.
-fn ordinary(path: &str, details: &std::fs::Metadata, directory: bool) -> bool {
-    let kind = details.file_type();
-    (if directory {
-        kind.is_dir()
-    } else {
-        kind.is_file()
-    }) && !pyos::islink(path)
-        && !pyos::isjunction(path)
-        && !pyos::is_reparse_point(details)
+/// The first header named `name` (any case) of an RFC 822 header block as
+/// `email.message_from_string` and the compat32 policy read it: the value
+/// after the colon with leading blanks removed, continuation lines appended
+/// with their line breaks, and the final line break removed.
+fn metadata_header(text: &str, name: &str) -> Option<String> {
+    let mut lines: Vec<&str> = Vec::new();
+    let mut rest = text;
+    while !rest.is_empty() {
+        let end = rest.find(['\r', '\n']).map_or(rest.len(), |i| {
+            if rest[i..].starts_with("\r\n") {
+                i + 2
+            } else {
+                i + 1
+            }
+        });
+        lines.push(&rest[..end]);
+        rest = &rest[end..];
+    }
+    let mut headers: Vec<Vec<&str>> = Vec::new();
+    for line in lines {
+        let bare = line.trim_end_matches(['\r', '\n']);
+        if bare.is_empty() {
+            break;
+        }
+        if line.starts_with([' ', '\t']) {
+            match headers.last_mut() {
+                Some(header) => header.push(line),
+                None => break,
+            }
+            continue;
+        }
+        let Some(colon) = bare.find(':') else {
+            break;
+        };
+        if !bare[..colon].bytes().all(|b| (0x21..=0x7e).contains(&b)) {
+            break;
+        }
+        headers.push(vec![line]);
+    }
+    headers.into_iter().find_map(|source| {
+        let (field, value) = source[0].split_once(':')?;
+        if field.to_lowercase() != name {
+            return None;
+        }
+        let mut value = value.trim_start_matches([' ', '\t']).to_string();
+        for continuation in &source[1..] {
+            value.push_str(continuation);
+        }
+        Some(value.trim_end_matches(['\r', '\n']).to_string())
+    })
 }
 
 /// `_require_regular_input(path, label)`.
@@ -773,18 +836,7 @@ fn require_absent(path: &str) -> Result<(), Exc> {
 /// `os.mkdir(path, 0o700)`.
 fn mkdir_private(path: &str) -> Result<(), OsError> {
     fault(Step::Mkdir(path))?;
-    #[cfg(unix)]
-    let builder = {
-        use std::os::unix::fs::DirBuilderExt;
-        let mut builder = std::fs::DirBuilder::new();
-        builder.mode(0o700);
-        builder
-    };
-    #[cfg(not(unix))]
-    let builder = std::fs::DirBuilder::new();
-    builder
-        .create(path)
-        .map_err(|e| OsError::new(&e, Some(path), Style::Native))
+    pyos::mkdir_private(path).map_err(|e| OsError::new(&e, Some(path), Style::Native))
 }
 
 /// `_write_bundle(path, content)`: `open(path, "xb")` and one write.
@@ -805,19 +857,53 @@ fn rename_no_replace(staging: &str, output: &str) -> Result<(), OsError> {
     pyos::rename_new(staging, output)
 }
 
+thread_local! {
+    static RENAMEAT2_MISSING: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+/// Behave as if the C library lacked `renameat2` on this thread. For tests.
+#[doc(hidden)]
+pub fn set_renameat2_missing(missing: bool) {
+    RENAMEAT2_MISSING.with(|m| m.set(missing));
+}
+
+/// `OSError(errno.ENOTSUP, message)`.
+#[cfg(unix)]
+fn unsupported(message: &str) -> OsError {
+    let error = std::io::Error::from_raw_os_error(libc::ENOTSUP);
+    let mut error = OsError::new(&error, None, Style::Errno);
+    error.text = format!("[Errno {}] {message}", libc::ENOTSUP);
+    error.strerror = message.to_string();
+    error
+}
+
 #[cfg(target_os = "linux")]
 fn rename_no_replace(staging: &str, output: &str) -> Result<(), OsError> {
     use std::os::unix::ffi::OsStrExt;
+    type RenameAt2 = unsafe extern "C" fn(
+        libc::c_int,
+        *const libc::c_char,
+        libc::c_int,
+        *const libc::c_char,
+        libc::c_uint,
+    ) -> libc::c_int;
+    // ctypes.CDLL(None).renameat2: the symbol the process's C library exports.
+    // SAFETY: dlsym with RTLD_DEFAULT only looks a name up.
+    let symbol = unsafe { libc::dlsym(libc::RTLD_DEFAULT, c"renameat2".as_ptr()) };
+    if symbol.is_null() || RENAMEAT2_MISSING.with(std::cell::Cell::get) {
+        return Err(unsupported("renameat2 is unavailable"));
+    }
+    // SAFETY: glibc and musl declare renameat2 with exactly this signature.
+    let rename: RenameAt2 = unsafe { std::mem::transmute::<*mut libc::c_void, RenameAt2>(symbol) };
     let c = |s: &str| std::ffi::CString::new(std::ffi::OsStr::new(s).as_bytes());
     let (Ok(from), Ok(to)) = (c(staging), c(output)) else {
         let error = std::io::Error::from_raw_os_error(libc::EINVAL);
         return Err(OsError::new(&error, Some(output), Style::Errno));
     };
-    // Never fall back to an overwriting rename.
+    // AT_FDCWD and RENAME_NOREPLACE; never fall back to an overwriting rename.
     // SAFETY: both paths are NUL-terminated and outlive the call.
     let result = unsafe {
-        libc::syscall(
-            libc::SYS_renameat2,
+        rename(
             libc::AT_FDCWD,
             from.as_ptr(),
             libc::AT_FDCWD,
@@ -834,13 +920,9 @@ fn rename_no_replace(staging: &str, output: &str) -> Result<(), OsError> {
 
 #[cfg(not(any(windows, target_os = "linux")))]
 fn rename_no_replace(_staging: &str, _output: &str) -> Result<(), OsError> {
-    let error = std::io::Error::from_raw_os_error(libc::ENOTSUP);
-    let mut error = OsError::new(&error, None, Style::Errno);
-    error.text = format!(
-        "[Errno {}] no-replace directory publication is unavailable",
-        libc::ENOTSUP
-    );
-    Err(error)
+    Err(unsupported(
+        "no-replace directory publication is unavailable",
+    ))
 }
 
 /// `_remove_owned_staging(staging, parent=..., prefix=...)`.
@@ -864,10 +946,6 @@ pub fn remove_owned_staging(staging: &PyPath, parent: &PyPath, prefix: &str) -> 
     }
     std::fs::remove_dir_all(&text)
         .map_err(|e| Exc::Os(OsError::new(&e, Some(&text), Style::Native)))
-}
-
-fn same_location(left: &str, right: &str) -> Result<bool, Exc> {
-    Ok(pypath::normcase(&pypath::realpath(left)?) == pypath::normcase(&pypath::realpath(right)?))
 }
 
 /// The error a snapshot, projection or version lookup raised, as the export
@@ -954,7 +1032,7 @@ pub fn export_publication_bundles(
     }
 
     let prefix = format!(".{}.publication-bundles-", output.name());
-    let staging = parent.join(&format!("{prefix}{}.tmp", pyos::random_hex(32)));
+    let staging = parent.join(&format!("{prefix}{}.tmp", pyos::try_random_hex(32)?));
     let staging_text = staging.display();
     let mut created_staging = false;
     let outcome = (|| -> Result<(), Exc> {

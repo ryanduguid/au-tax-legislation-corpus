@@ -52,11 +52,7 @@ fn realpath(path: &str) -> Result<String, Exc> {
 
 /// `os.path.abspath(path)`.
 fn abspath(path: &str) -> String {
-    if pypath::isabs(path) {
-        return pypath::normpath(path);
-    }
-    let cwd = std::env::current_dir().unwrap_or_default();
-    pypath::normpath(&pypath::join(&cwd.to_string_lossy(), path))
+    pypath::abspath(path)
 }
 
 // ----------------------------------------------------------- test hooks

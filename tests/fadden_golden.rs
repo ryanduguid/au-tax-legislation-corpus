@@ -22,7 +22,7 @@ use sha2::{Digest, Sha256};
 const PLATFORM: &str = if cfg!(windows) { "windows" } else { "linux" };
 
 static MANAGED_NAME: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(r"\.(stage|backup|publication-bundles|monitor-contract)-[0-9a-f]{32}").unwrap()
+    Regex::new(r"\.(stage|backup|publication-bundles|monitor-contract|live-evidence|register-capture)-[0-9a-f]{32}").unwrap()
 });
 static TEMP_NAME: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"\.[0-9a-f]{32}\.tmp").unwrap());
 static CONTACT_DETAIL: LazyLock<Regex> =
@@ -341,6 +341,17 @@ fn dist_verify_matches_python() {
 #[test]
 fn dist_matches_python() {
     family("dist");
+}
+
+#[cfg(feature = "fake-http")]
+#[test]
+fn capture_register_matches_python() {
+    family("capture_register");
+}
+
+#[test]
+fn export_live_evidence_bundles_matches_python() {
+    family("export_live_evidence_bundles");
 }
 
 #[test]
