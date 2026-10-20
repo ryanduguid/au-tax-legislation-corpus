@@ -162,7 +162,7 @@ jobs:
       # PyPI and test a release nobody built in this job. The wheel carries the
       # corpus builder only; the radar ships as the Rust binary.
       - name: install the wheel and import the builder from outside the checkout
-        run: python -m venv /tmp/venv && /tmp/venv/bin/pip install --no-index dist/tax_radar_au-*.whl && cd /tmp && /tmp/venv/bin/python -c "import fadden.source_snapshot"
+        run: python -m venv /tmp/venv && /tmp/venv/bin/pip install --no-index dist/tax_radar_au-*.whl && cd /tmp && /tmp/venv/bin/python -c "import fadden.capture_register"
 
   rust:
     permissions:

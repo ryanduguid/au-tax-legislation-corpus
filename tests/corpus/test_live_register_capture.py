@@ -6,6 +6,7 @@ import hashlib
 import io
 import json
 import os
+import subprocess  # nosec B404 - this checkout's fadden binary
 import tempfile
 import unittest
 import urllib.error
@@ -15,15 +16,12 @@ from pathlib import Path
 from unittest import mock
 
 import fadden.capture_register as capture_module
+from fadden.__main__ import rust_binary
 from fadden.capture_register import (
     CaptureRegisterError,
     RegisterExchange,
     capture_register_run,
     validate_capture_graph,
-)
-from fadden.export_publication_bundles import (
-    PublicationBundleError,
-    export_publication_bundles,
 )
 
 CURRENT_URL = (
@@ -2192,16 +2190,16 @@ class LiveRegisterPublicationBoundaryTests(unittest.TestCase):
                 ),
             )
             publication_output = root / "publication"
-
-            with self.assertRaisesRegex(
-                PublicationBundleError,
-                "schema_version is unsupported",
-            ):
-                export_publication_bundles(
-                    capture_paths["baseline"],
-                    capture_paths["observation"],
-                    publication_output,
-                )
+            # The publication exporter is the Rust fadden binary.
+            binary = rust_binary()
+            if binary is None:
+                self.skipTest("the Rust fadden binary is not built")
+            done = subprocess.run(  # noqa: S603 - this checkout's build
+                [binary, "export_publication_bundles", str(capture_paths["baseline"]),
+                 str(capture_paths["observation"]), "--out", str(publication_output)],
+                capture_output=True, check=False)
+            self.assertEqual(done.returncode, 2, done.stderr)
+            self.assertIn(b"schema_version is unsupported", done.stderr)
             self.assertFalse(publication_output.exists())
 
 

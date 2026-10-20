@@ -65,7 +65,7 @@ uv run --locked --extra dev coverage report
 uv run --locked --extra dev coverage run --branch --source=fadden -m pytest tests/corpus/test_live_evidence_bundle_export.py tests/corpus/test_live_evidence_publication_paths.py
 uv run --locked --extra dev coverage xml --fail-under=0 -o coverage-windows.xml
 uv run --locked --extra dev --python 3.14 python -m build
-python -m venv /tmp/venv && /tmp/venv/bin/pip install --no-index dist/tax_radar_au-*.whl && cd /tmp && /tmp/venv/bin/python -c "import fadden.source_snapshot"
+python -m venv /tmp/venv && /tmp/venv/bin/pip install --no-index dist/tax_radar_au-*.whl && cd /tmp && /tmp/venv/bin/python -c "import fadden.capture_register"
 rustup toolchain install
 cargo fmt --check
 cargo clippy --locked --all-targets --all-features -- -D warnings

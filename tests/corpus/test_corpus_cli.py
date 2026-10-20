@@ -52,21 +52,12 @@ class FaddenCliTests(unittest.TestCase):
             module.main.assert_called_once_with("2026-08-22")
 
     def test_stage_dispatch_forwards_remaining_arguments(self) -> None:
-        for stage in (
-            "export_monitor_contract",
-            "export_publication_bundles",
-            "capture_register",
-            "export_live_evidence_bundles",
-        ):
+        for stage in ("capture_register", "export_live_evidence_bundles"):
             with self.subTest(stage=stage), mock.patch("importlib.import_module") as importer:
                 module = mock.Mock()
                 module.main.return_value = 0
                 importer.return_value = module
-                forwarded = (
-                    ["a.json", "--out", "out"]
-                    if stage in {"capture_register", "export_live_evidence_bundles"}
-                    else ["a.json", "b.json", "--out", "out"]
-                )
+                forwarded = ["a.json", "--out", "out"]
                 self.assertEqual(main([stage, "--", *forwarded]), 0)
                 importer.assert_called_once_with(f"fadden.{stage}")
                 module.main.assert_called_once_with(forwarded)

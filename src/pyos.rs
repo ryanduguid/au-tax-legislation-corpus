@@ -293,8 +293,22 @@ pub fn random_hex12() -> String {
     random_hex(12)
 }
 
+thread_local! {
+    static FIXED_HEX: std::cell::RefCell<Option<String>> = const { std::cell::RefCell::new(None) };
+}
+
+/// Make [`random_hex`] return `value` on this thread, as patching
+/// `uuid.uuid4` to a fixed `hex` did; `None` restores randomness. For tests.
+#[doc(hidden)]
+pub fn set_fixed_hex(value: Option<&str>) {
+    FIXED_HEX.with(|f| *f.borrow_mut() = value.map(str::to_string));
+}
+
 /// `count` random lower-case hex digits.
 pub fn random_hex(count: usize) -> String {
+    if let Some(fixed) = FIXED_HEX.with(|f| f.borrow().clone()) {
+        return fixed;
+    }
     let mut bytes = vec![0u8; count.div_ceil(2)];
     getrandom::fill(&mut bytes).expect("operating system random source");
     let text: String = bytes.iter().map(|b| format!("{b:02x}")).collect();

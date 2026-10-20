@@ -21,8 +21,9 @@ use sha2::{Digest, Sha256};
 
 const PLATFORM: &str = if cfg!(windows) { "windows" } else { "linux" };
 
-static MANAGED_NAME: LazyLock<Regex> =
-    LazyLock::new(|| Regex::new(r"\.(stage|backup)-[0-9a-f]{32}").unwrap());
+static MANAGED_NAME: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r"\.(stage|backup|publication-bundles|monitor-contract)-[0-9a-f]{32}").unwrap()
+});
 static TEMP_NAME: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"\.[0-9a-f]{32}\.tmp").unwrap());
 static CONTACT_DETAIL: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r"(no unapproved contact identifiers +FAIL  ).*").unwrap());
@@ -340,6 +341,16 @@ fn dist_verify_matches_python() {
 #[test]
 fn dist_matches_python() {
     family("dist");
+}
+
+#[test]
+fn export_monitor_contract_matches_python() {
+    family("export_monitor_contract");
+}
+
+#[test]
+fn export_publication_bundles_matches_python() {
+    family("export_publication_bundles");
 }
 
 #[test]

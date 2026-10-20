@@ -2,16 +2,19 @@
 use std::io::Write;
 
 use super::{
-    Run, as_at, compare_builds, dist, dist_verify, pii_scan, probe13, rates, rulings, search,
+    Run, as_at, compare_builds, dist, dist_verify, monitor_contract, pii_scan, probe13,
+    publication_bundles, rates, rulings, search,
 };
 use crate::argparse::Exit;
 
 /// The stages this binary runs; the others remain in the Python package.
-pub const STAGES: [&str; 10] = [
+pub const STAGES: [&str; 12] = [
     "as_at",
     "compare_builds",
     "dist",
     "dist_verify",
+    "export_monitor_contract",
+    "export_publication_bundles",
     "pii_scan",
     "pii_scan2",
     "probe13",
@@ -20,7 +23,7 @@ pub const STAGES: [&str; 10] = [
     "search",
 ];
 
-const USAGE: &str = "usage: fadden {as_at,compare_builds,dist,dist_verify,pii_scan,pii_scan2,probe13,rates,rulings,search} [arguments ...]\n";
+const USAGE: &str = "usage: fadden {as_at,compare_builds,dist,dist_verify,export_monitor_contract,export_publication_bundles,pii_scan,pii_scan2,probe13,rates,rulings,search} [arguments ...]\n";
 
 /// Text-mode output: newlines become the platform's line separator.
 fn text_mode(bytes: &[u8]) -> Vec<u8> {
@@ -52,6 +55,12 @@ pub fn main(argv: &[String]) -> i32 {
         Some((stage, rest)) if stage == "probe13" => probe13::main(rest, &mut run),
         Some((stage, rest)) if stage == "dist_verify" => dist_verify::main(rest, &mut run),
         Some((stage, rest)) if stage == "dist" => dist::main(rest, &mut run),
+        Some((stage, rest)) if stage == "export_monitor_contract" => {
+            monitor_contract::main(rest, &mut run)
+        }
+        Some((stage, rest)) if stage == "export_publication_bundles" => {
+            publication_bundles::main(rest, &mut run)
+        }
         Some((flag, _)) if flag == "-h" || flag == "--help" => Err(Exit::Help(format!(
             "{USAGE}\nRun one ported corpus-builder stage; `python -m fadden` forwards these stages here.\n"
         ))),
