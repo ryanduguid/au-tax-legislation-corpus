@@ -490,14 +490,13 @@ The workflow performs these steps in order:
    before the next batch. The release carries deterministic attribution notes
    and its title is the tag; the already-created exact ref binds it to the
    checked-out `GITHUB_SHA` without resolving a moving branch.
-10. Publish the draft with `& gh release edit` and `latest: false`. Publishing
-   under the repository's immutable-releases setting freezes the release and
-   creates the GitHub
-   release attestation used by `gh release verify`. Publication starts only
-   after every upload batch succeeds.
+10. Stop at the draft. The producer workflow never publishes; a human reviews
+   the draft and publishes it only through the separate approval workflow
+   below.
 
-The workflow must never publish before every candidate is uploaded and the
-artifact attestation succeeds. A pre-publication failure creates no public
+Publication must never start before every candidate is uploaded and the
+artifact attestation succeeds, and never for a draft whose assets differ from
+the attested candidate set. A pre-publication failure creates no public
 release. After exact-ref creation succeeds, a later create, upload or publish
 failure can leave an orphan public tag. GitHub may also retain a private failed
 draft, including one containing only the batches uploaded before a later batch
@@ -515,6 +514,63 @@ an operator explicitly handles the orphan tag, draft and attestation state.
 A pre-existing tag, draft or release for the deterministic identity is a
 bounded failure. The workflow does not modify it or treat a new run as a
 replacement.
+
+### Approval workflow
+
+`.github/workflows/approve-live-evidence.yml` is the only publication path. It
+has only `workflow_dispatch` with one `release-tag` input, the same repository,
+`main`, `windows-latest`, `publication` environment and concurrency group as
+the producer, a 10-minute timeout and only these job permissions:
+
+```yaml
+permissions:
+  attestations: read
+  contents: write
+```
+
+Its one PowerShell step checks every `gh` exit immediately and, in order:
+
+1. requires the input to match `^live-evidence-v2-[0-9a-f]{64}$`;
+2. reads the release and requires an existing draft for that exact tag with
+   between 1 and 1,000 assets, a `Candidates: N` line equal to the asset count,
+   and every asset a non-empty, `uploaded` `.json` file whose REST `digest` is
+   `sha256:` followed by 64 lowercase hexadecimal characters;
+3. requires the tag ref to point directly at a commit, whose SHA becomes the
+   expected attestation source digest;
+4. downloads every asset into a new private directory under
+   `$env:RUNNER_TEMP`, requires the downloaded files to be exactly the asset
+   names, and requires each file's SHA-256 to equal that asset's REST digest;
+5. runs, on one downloaded asset:
+
+   ```text
+   gh attestation verify <asset-path> \
+     --repo ryanduguid/au-tax-legislation-corpus \
+     --signer-workflow ryanduguid/au-tax-legislation-corpus/.github/workflows/publish-live-evidence.yml \
+     --source-ref refs/heads/main \
+     --source-digest <tag-commit-sha> \
+     --predicate-type https://slsa.dev/provenance/v1 \
+     --deny-self-hosted-runners \
+     --format json
+   ```
+
+   and requires at least one verified attestation whose subjects are exactly
+   the draft's assets: the same number, each subject name an asset, each
+   subject SHA-256 equal to that asset's verified bytes, and every asset
+   covered once. Because the producer attests all candidates in one statement,
+   a missing, extra or changed asset fails this step;
+6. reads the release again and requires the same asset names and digests, so
+   an asset replaced after the download also stops publication; and
+7. only then runs `& gh release edit <tag> --draft=false --latest=false`.
+   Publishing under the repository's immutable-releases setting freezes the
+   release and creates the GitHub release attestation used by
+   `gh release verify`.
+
+Any failure leaves the draft unpublished and unmodified. The approval workflow
+never creates, uploads, deletes or replaces a tag, draft, asset or
+attestation. The second read narrows, but cannot close, the interval in which a
+maintainer with write access could replace an asset before `gh release edit`
+freezes the release; the publisher's own `gh release verify-asset` and
+`gh attestation verify` checks remain the admission authority.
 
 ### Release notes and rights
 
@@ -876,6 +932,16 @@ creation of `refs/tags/$releaseTag` at `$env:GITHUB_SHA`, `--verify-tag` with no
 `--target`, no `--clobber`, publication only after the batch loop, and an
 immediate `$LASTEXITCODE` failure check after every `& gh` invocation,
 including ref creation and each upload batch.
+
+Approval workflow tests require its exact permissions, its `gh` command order
+with an immediate exit check after each, and the verification flags above.
+Where PowerShell 7 is available they also run its script against a stub `gh`
+and require publication only when every asset matches the attested subjects,
+and refusal for an unattested extra asset, an attested asset missing from the
+draft, changed bytes, a repeated subject, downloaded bytes that differ from the
+REST digest, a download outside the asset list, an asset replaced after
+verification, a failed verification, a tag that is not a commit and an asset
+without a digest.
 
 ### Publisher tests
 

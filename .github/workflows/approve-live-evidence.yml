@@ -20,6 +20,7 @@ jobs:
     # Protected environment: a required reviewer approves each run before it can publish.
     environment: publication
     permissions:
+      attestations: read
       contents: write
     runs-on: windows-latest
     timeout-minutes: 10
@@ -35,23 +36,92 @@ jobs:
           if ($releaseTag -cnotmatch '^live-evidence-v2-[0-9a-f]{64}$') {
             throw 'Select an existing live-evidence v2 draft tag.'
           }
-          $raw = & gh release view $releaseTag --repo ryanduguid/au-tax-legislation-corpus --json tagName,isDraft,assets,body
-          if ($LASTEXITCODE -ne 0) { throw 'The selected draft could not be read.' }
-          $release = $raw | ConvertFrom-Json
-          if ($release.tagName -cne $releaseTag -or $release.isDraft -ne $true) {
-            throw 'The selected release must be an existing draft.'
+
+          # Returns the draft's assets as an ordinal name -> SHA-256 map.
+          function Read-DraftAssets {
+            $raw = & gh release view $releaseTag --repo ryanduguid/au-tax-legislation-corpus --json tagName,isDraft,assets,body
+            if ($LASTEXITCODE -ne 0) { throw 'The selected draft could not be read.' }
+            $release = $raw | ConvertFrom-Json
+            if ($release.tagName -cne $releaseTag -or $release.isDraft -ne $true) {
+              throw 'The selected release must be an existing draft.'
+            }
+            if ($release.assets.Count -lt 1 -or $release.assets.Count -gt 1000) {
+              throw 'The selected draft has an invalid candidate count.'
+            }
+            if ($release.body -cnotmatch '(?m)^Candidates: ([1-9][0-9]{0,3})\r?$' -or
+                [int]$Matches[1] -ne $release.assets.Count) {
+              throw 'The draft does not contain its complete declared candidate set.'
+            }
+            $assets = [System.Collections.Generic.Dictionary[string, string]]::new([System.StringComparer]::Ordinal)
+            foreach ($asset in $release.assets) {
+              if ($asset.name -cnotmatch '\.json$' -or $asset.size -le 0 -or $asset.state -ne 'uploaded' -or
+                  $asset.digest -cnotmatch '^sha256:[0-9a-f]{64}$') {
+                throw 'The selected draft contains an incomplete candidate asset.'
+              }
+              $assets.Add([string]$asset.name, $asset.digest.Substring(7))
+            }
+            return ,$assets
           }
-          if ($release.assets.Count -lt 1 -or $release.assets.Count -gt 1000) {
-            throw 'The selected draft has an invalid candidate count.'
+
+          $assets = Read-DraftAssets
+
+          # The producer creates the tag at its run's commit, so the attestation must
+          # name that commit as its source.
+          $tagTarget = & gh api "repos/ryanduguid/au-tax-legislation-corpus/git/ref/tags/$releaseTag" --jq '.object.type + " " + .object.sha'
+          if ($LASTEXITCODE -ne 0) { throw 'The selected draft tag could not be read.' }
+          if ([string]$tagTarget -cnotmatch '^commit ([0-9a-f]{40})$') {
+            throw 'The selected draft tag must point directly at a commit.'
           }
-          if ($release.body -cnotmatch '(?m)^Candidates: ([1-9][0-9]{0,3})\r?$' -or
-              [int]$Matches[1] -ne $release.assets.Count) {
-            throw 'The draft does not contain its complete declared candidate set.'
+          $sourceDigest = $Matches[1]
+
+          $downloadDir = Join-Path $env:RUNNER_TEMP 'reviewed-live-evidence'
+          New-Item -ItemType Directory -Path $downloadDir | Out-Null
+          & gh release download $releaseTag --repo ryanduguid/au-tax-legislation-corpus --dir $downloadDir
+          if ($LASTEXITCODE -ne 0) { throw 'The draft assets could not be downloaded.' }
+          $files = @(Get-ChildItem -LiteralPath $downloadDir -Force | Sort-Object -Property Name)
+          if ($files.Count -ne $assets.Count) {
+            throw 'The downloaded draft assets do not match the draft.'
           }
-          foreach ($asset in $release.assets) {
-            if ($asset.name -cnotmatch '\.json$' -or $asset.size -le 0 -or $asset.state -ne 'uploaded') {
-              throw 'The selected draft contains an incomplete candidate asset.'
+          foreach ($file in $files) {
+            if ($file -isnot [System.IO.FileInfo] -or -not $assets.ContainsKey($file.Name) -or
+                (Get-FileHash -Algorithm SHA256 -LiteralPath $file.FullName).Hash.ToLowerInvariant() -cne $assets[$file.Name]) {
+              throw 'The downloaded draft assets do not match the draft.'
             }
           }
+
+          # One attestation from the producer run covers every candidate. Find it
+          # through any one asset, then require its subjects to be exactly the
+          # draft's assets: a missing, extra or changed asset stops publication.
+          $verified = & gh attestation verify $files[0].FullName --repo ryanduguid/au-tax-legislation-corpus --signer-workflow ryanduguid/au-tax-legislation-corpus/.github/workflows/publish-live-evidence.yml --source-ref refs/heads/main --source-digest $sourceDigest --predicate-type https://slsa.dev/provenance/v1 --deny-self-hosted-runners --format json --jq '.[].verificationResult.statement.subject | tojson'
+          if ($LASTEXITCODE -ne 0) { throw 'The draft assets have no verified artifact attestation.' }
+          $attested = $false
+          # One line per verified attestation, each its JSON subject array.
+          foreach ($line in @($verified)) {
+            $subjects = @($line | ConvertFrom-Json)
+            $matched = [System.Collections.Generic.HashSet[string]]::new([System.StringComparer]::Ordinal)
+            foreach ($subject in $subjects) {
+              $name = [string]$subject.name
+              if ($assets.ContainsKey($name) -and [string]$subject.digest.sha256 -ceq $assets[$name]) {
+                [void]$matched.Add($name)
+              }
+            }
+            if ($subjects.Count -eq $assets.Count -and $matched.Count -eq $assets.Count) {
+              $attested = $true
+              break
+            }
+          }
+          if (-not $attested) {
+            throw 'The draft assets do not match the attested candidate set.'
+          }
+
+          # Re-read so an asset replaced since the download also stops publication.
+          $current = Read-DraftAssets
+          if ($current.Count -ne $assets.Count) { throw 'The draft changed during verification.' }
+          foreach ($name in $assets.Keys) {
+            if (-not $current.ContainsKey($name) -or $current[$name] -cne $assets[$name]) {
+              throw 'The draft changed during verification.'
+            }
+          }
+
           & gh release edit $releaseTag --repo ryanduguid/au-tax-legislation-corpus --draft=false --latest=false
           if ($LASTEXITCODE -ne 0) { throw 'Publication failed.' }
