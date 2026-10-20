@@ -1,14 +1,15 @@
 # Decision note: reusing an existing live-evidence tag or draft
 
-Status: proposed, 20 October 2026. Local note only; no workflow run, tag,
-release, push or PR.
+Status: accepted, 20 October 2026: option A. The workflow now fails closed and
+the tests pin that behaviour. Line references below describe the code before
+that change.
 
 ## Conflict
 
 [`publish-live-evidence.yml`](../../.github/workflows/publish-live-evidence.yml)
-lines 178-199, added in #118 (16 September 2026), reuse an existing
-`live-evidence-v2-*` tag when it points at `GITHUB_SHA`, and reuse an existing
-draft for that tag. Only a tag on another commit or a published release fails.
+lines 178-199, added in #118 (16 September 2026), reused an existing
+`live-evidence-v2-*` tag when it pointed at `GITHUB_SHA`, and reused an existing
+draft for that tag. Only a tag on another commit or a published release failed.
 
 The [admission design](../superpowers/specs/2026-08-29-authenticated-live-evidence-admission-design.md)
 says the opposite:
@@ -20,8 +21,8 @@ says the opposite:
   pre-existing tag, draft or release is a bounded failure.
 
 [`test_live_evidence_workflow.py`](../../tests/corpus/test_live_evidence_workflow.py)
-(about lines 366-373 and 442-444) pins the workflow's reuse branches, so the
-tests also disagree with the design.
+(about lines 366-373 and 442-444) pinned the workflow's reuse branches, so the
+tests also disagreed with the design.
 
 ## Findings
 
