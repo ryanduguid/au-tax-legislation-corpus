@@ -110,22 +110,49 @@ class LiveEvidenceWorkflowPolicyTests(unittest.TestCase):
                 self.assertEqual(result.errors, [])
                 self.assertEqual(len(result.failures), 1)
 
-    def test_exit_policy_rejects_unchecked_lookups(self) -> None:
+    _CREATE_REF_AND_DRAFT = (
+        "          & gh api --method POST repos/ryanduguid/au-tax-legislation-corpus/git/refs "
+        "--raw-field \"ref=refs/tags/$releaseTag\" --raw-field \"sha=$env:GITHUB_SHA\"\n"
+        "          if ($LASTEXITCODE -ne 0) { throw 'GitHub CLI release operation failed.' }\n"
+        "          & gh release create $releaseTag --repo ryanduguid/au-tax-legislation-corpus "
+        "--draft --verify-tag --title $releaseTag --notes $notes\n"
+        "          if ($LASTEXITCODE -ne 0) { throw 'GitHub CLI release operation failed.' }\n"
+    )
+
+    def test_existing_tag_or_draft_fails_closed(self) -> None:
+        # The admission design fails a pre-existing tag, draft or release and never
+        # reuses it, so ref and draft creation run unconditionally at step level.
+        release_step = self._step_containing("Create draft and upload candidates")
+        self.assertEqual(release_step.count(self._CREATE_REF_AND_DRAFT), 1)
+        for reuse in ("git/ref/tags/", "gh release view", "2>$null", "existingSha", "isDraft", "} else {"):
+            with self.subTest(reuse=reuse):
+                self.assertNotIn(reuse, release_step)
+
+    def test_fail_closed_policy_rejects_reuse_branches(self) -> None:
         workflow = self._workflow()
-        for variable in ("existingSha", "isDraft"):
-            with self.subTest(variable=variable):
-                guard = (
-                    "if ($LASTEXITCODE -eq 0 -and -not "
-                    f"[string]::IsNullOrWhiteSpace(${variable})) {{"
-                )
-                self.assertEqual(workflow.count(guard), 1)
-                unchecked = guard.replace("$LASTEXITCODE -eq 0 -and ", "")
-                case = LiveEvidenceWorkflowPolicyTests("test_native_gh_calls_handle_exit_codes_immediately")
+        self.assertEqual(workflow.count(self._CREATE_REF_AND_DRAFT), 1)
+        create_ref, ref_check, create_draft, draft_check = self._CREATE_REF_AND_DRAFT.splitlines()
+        lookup = (
+            '          $existingSha = & gh api "repos/ryanduguid/au-tax-legislation-corpus/'
+            "git/ref/tags/$releaseTag\" --jq '.object.sha' 2>$null\n"
+        )
+        mutations = {
+            "tag lookup": lookup + self._CREATE_REF_AND_DRAFT,
+            "conditional creation": (
+                "          if ($env:REUSE -ne 'true') {\n"
+                + "\n".join("  " + line for line in (create_ref, ref_check, create_draft, draft_check))
+                + "\n          }\n"
+            ),
+        }
+        for name, replacement in mutations.items():
+            with self.subTest(mutation=name):
+                changed = workflow.replace(self._CREATE_REF_AND_DRAFT, replacement)
+                case = LiveEvidenceWorkflowPolicyTests("test_existing_tag_or_draft_fails_closed")
                 result = unittest.TestResult()
-                with patch.object(case, "_workflow", return_value=workflow.replace(guard, unchecked)):
+                with patch.object(case, "_workflow", return_value=changed):
                     case.run(result)
                 self.assertEqual(result.errors, [])
-                self.assertEqual(len(result.failures), 1)
+                self.assertTrue(result.failures)
 
     def test_yaml_oracle_exposes_comments_blank_lines_and_scalar_decoys(self) -> None:
         decoy = (
@@ -363,14 +390,10 @@ class LiveEvidenceWorkflowPolicyTests(unittest.TestCase):
             if self._is_gh_command(line)
         ]
         expected_gh_commands = [
-            '$existingSha = & gh api "repos/ryanduguid/au-tax-legislation-corpus/'
-            'git/ref/tags/$releaseTag" --jq \'.object.sha\' 2>$null',
             "& gh api --method POST "
             "repos/ryanduguid/au-tax-legislation-corpus/git/refs "
             "--raw-field \"ref=refs/tags/$releaseTag\" "
             "--raw-field \"sha=$env:GITHUB_SHA\"",
-            "$isDraft = & gh release view $releaseTag "
-            "--repo ryanduguid/au-tax-legislation-corpus --json isDraft --jq '.isDraft' 2>$null",
             "& gh release create $releaseTag "
             "--repo ryanduguid/au-tax-legislation-corpus --draft --verify-tag "
             "--title $releaseTag --notes $notes",
@@ -386,7 +409,7 @@ class LiveEvidenceWorkflowPolicyTests(unittest.TestCase):
             gh_commands,
             expected_gh_commands,
         )
-        self.assertNotIn("--target", gh_commands[3])
+        self.assertNotIn("--target", gh_commands[1])
 
         enumeration = (
             "          $assetPaths = @(\n"
@@ -438,13 +461,7 @@ class LiveEvidenceWorkflowPolicyTests(unittest.TestCase):
             index for index, line in enumerate(lines) if self._is_gh_command(line)
         ]
         mutation_check = "if ($LASTEXITCODE -ne 0) { throw 'GitHub CLI release operation failed.' }"
-        expected_checks = (
-            "if ($LASTEXITCODE -eq 0 -and -not [string]::IsNullOrWhiteSpace($existingSha)) {",
-            mutation_check,
-            "if ($LASTEXITCODE -eq 0 -and -not [string]::IsNullOrWhiteSpace($isDraft)) {",
-            mutation_check,
-            mutation_check,
-        )
+        expected_checks = (mutation_check, mutation_check, mutation_check)
         self.assertEqual(len(gh_indexes), len(expected_checks))
         for index, expected in zip(gh_indexes, expected_checks):
             with self.subTest(command=lines[index].strip()):
