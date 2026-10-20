@@ -1,4 +1,4 @@
-//! Python parity, frozen. `tests/golden/<stage>.json` holds cases from the
+//! Python parity, frozen. `tests/golden/<stage>.cases.json` holds cases from the
 //! port's differential harness, each run through the Python stages this binary
 //! replaced (the base revision, 43b5e0c) on Windows and on Linux. Every input
 //! is fabricated. For each case the binary must exit as Python did, print what
@@ -26,6 +26,22 @@ static MANAGED_NAME: LazyLock<Regex> =
 static TEMP_NAME: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"\.[0-9a-f]{32}\.tmp").unwrap());
 static CONTACT_DETAIL: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r"(no unapproved contact identifiers +FAIL  ).*").unwrap());
+// dist_verify tallies file extensions in directory-listing order, which the
+// filesystem decides; Python's order differs between NTFS, ext4, btrfs and tmpfs.
+static EXTS: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"(no image files +(?:PASS|FAIL)  )\{([^\n]*)\}").unwrap());
+static ITEM: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r#"('(?:[^'\\]|\\.)*'|"(?:[^"\\]|\\.)*"): \d+"#).unwrap());
+
+fn sorted_exts(text: &str) -> String {
+    EXTS.replace_all(text, |c: &regex::Captures| {
+        let mut items: Vec<&str> = ITEM.find_iter(&c[2]).map(|m| m.as_str()).collect();
+        items.sort_unstable();
+        format!("{}{{{}}}", &c[1], items.join(", "))
+    })
+    .into_owned()
+}
+
 static UNORDERABLE: LazyLock<Regex> = LazyLock::new(|| {
     Regex::new(r"TypeError: '<' not supported between instances of '(\w+)' and '(\w+)'").unwrap()
 });
@@ -205,8 +221,11 @@ fn run_case(family: &str, case: &Value, shared_module: &Path) -> Option<String> 
             std::fs::write(work.join("proj").join(name.as_str().unwrap()), marker).unwrap();
         }
     }
-    let files = input["files"].as_object().unwrap();
-    for (name, value) in files {
+    // In the harness's order: a directory listing on some filesystems shows it.
+    let files = input["files"].as_array().unwrap();
+    let scripted = files.iter().any(|f| f[0] == "script.json");
+    for file in files {
+        let (name, value) = (file[0].as_str().unwrap(), &file[1]);
         let target = work.join(name);
         match content(value) {
             None => std::fs::create_dir_all(&target).unwrap(),
@@ -235,14 +254,14 @@ fn run_case(family: &str, case: &Value, shared_module: &Path) -> Option<String> 
         for name in ["COLUMNS", "LINES", "FORCE_COLOR", "NO_COLOR"] {
             command.env_remove(name);
         }
-        if files.contains_key("script.json") {
+        if scripted {
             command
                 .env("FADDEN_FAKE_HTTP", work.join("script.json"))
                 .env("FADDEN_FAKE_HTTP_LOG", work.join("http.log"));
         }
         let out = command.output().unwrap();
         let stdout = normalise(&out.stdout, &work, &module);
-        let stdout = CONTACT_DETAIL.replace_all(&stdout, "$1<findings>");
+        let stdout = sorted_exts(&CONTACT_DETAIL.replace_all(&stdout, "$1<findings>"));
         let stderr = normalise(&out.stderr, &work, &module).replace("\r\n", "\n");
         let want = &expected["steps"][n];
         let code = out.status.code().unwrap_or(-1);
@@ -280,7 +299,7 @@ fn family(name: &str) {
     let path = Path::new(env!("CARGO_MANIFEST_DIR"))
         .join("tests")
         .join("golden")
-        .join(format!("{name}.json"));
+        .join(format!("{name}.cases.json"));
     let cases: Vec<Value> = serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
     assert!(!cases.is_empty(), "{name} has no cases");
     let shared = tempfile::tempdir().unwrap();
