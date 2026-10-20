@@ -122,37 +122,24 @@ class LiveEvidenceWorkflowPolicyTests(unittest.TestCase):
     def test_existing_tag_or_draft_fails_closed(self) -> None:
         # The admission design fails a pre-existing tag, draft or release and never
         # reuses it, so ref and draft creation run unconditionally at step level.
+        # Reintroduced gh lookups are caught by the exact command list.
         release_step = self._step_containing("Create draft and upload candidates")
         self.assertEqual(release_step.count(self._CREATE_REF_AND_DRAFT), 1)
-        for reuse in ("git/ref/tags/", "gh release view", "2>$null", "existingSha", "isDraft", "} else {"):
-            with self.subTest(reuse=reuse):
-                self.assertNotIn(reuse, release_step)
 
-    def test_fail_closed_policy_rejects_reuse_branches(self) -> None:
+    def test_fail_closed_policy_rejects_conditional_creation(self) -> None:
         workflow = self._workflow()
         self.assertEqual(workflow.count(self._CREATE_REF_AND_DRAFT), 1)
-        create_ref, ref_check, create_draft, draft_check = self._CREATE_REF_AND_DRAFT.splitlines()
-        lookup = (
-            '          $existingSha = & gh api "repos/ryanduguid/au-tax-legislation-corpus/'
-            "git/ref/tags/$releaseTag\" --jq '.object.sha' 2>$null\n"
+        nested = "".join("  " + line for line in self._CREATE_REF_AND_DRAFT.splitlines(keepends=True))
+        changed = workflow.replace(
+            self._CREATE_REF_AND_DRAFT,
+            "          if ($env:REUSE -ne 'true') {\n" + nested + "          }\n",
         )
-        mutations = {
-            "tag lookup": lookup + self._CREATE_REF_AND_DRAFT,
-            "conditional creation": (
-                "          if ($env:REUSE -ne 'true') {\n"
-                + "\n".join("  " + line for line in (create_ref, ref_check, create_draft, draft_check))
-                + "\n          }\n"
-            ),
-        }
-        for name, replacement in mutations.items():
-            with self.subTest(mutation=name):
-                changed = workflow.replace(self._CREATE_REF_AND_DRAFT, replacement)
-                case = LiveEvidenceWorkflowPolicyTests("test_existing_tag_or_draft_fails_closed")
-                result = unittest.TestResult()
-                with patch.object(case, "_workflow", return_value=changed):
-                    case.run(result)
-                self.assertEqual(result.errors, [])
-                self.assertTrue(result.failures)
+        case = LiveEvidenceWorkflowPolicyTests("test_existing_tag_or_draft_fails_closed")
+        result = unittest.TestResult()
+        with patch.object(case, "_workflow", return_value=changed):
+            case.run(result)
+        self.assertEqual(result.errors, [])
+        self.assertEqual(len(result.failures), 1)
 
     def test_yaml_oracle_exposes_comments_blank_lines_and_scalar_decoys(self) -> None:
         decoy = (
