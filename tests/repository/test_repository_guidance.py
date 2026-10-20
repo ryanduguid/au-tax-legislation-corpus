@@ -57,6 +57,11 @@ The radar is the Rust `tax-radar-au` binary. The `rust` job runs its formatting,
 tests and release build on Ubuntu and Windows, and the Ubuntu test legs build it for the
 cross-system contract test in `tests/corpus/test_monitor_contract.py`.
 
+`tests/fadden_golden.rs` replays `tests/golden/`: fabricated cases each run through the
+Python stages the `fadden` binary replaced, on Windows and Linux, with what Python printed
+and wrote. A failure there is a departure from the Python behaviour, not a stale fixture;
+regenerate fixtures only with the port's differential harness against the base revision.
+
 The fenced list records the unique single-line commands. The multiline binary-smoke gate
 is reproduced exactly in the next section.
 """
