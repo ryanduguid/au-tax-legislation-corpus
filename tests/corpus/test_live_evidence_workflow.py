@@ -27,6 +27,7 @@ function gh {
   $callArgs = $args
   $fixture = Get-Content -Raw -LiteralPath $env:FAKE_GH_FIXTURE | ConvertFrom-Json -AsHashtable
   Add-Content -LiteralPath $env:FAKE_GH_LOG -Value ($callArgs -join ' ')
+  Add-Content -LiteralPath $env:FAKE_GH_ARGS -Value (ConvertTo-Json -Compress -InputObject @($callArgs | ForEach-Object { [string]$_ }))
   $key = if ($callArgs[0] -in @('api', '--version')) { $callArgs[0] } else { "$($callArgs[0]) $($callArgs[1])" }
   $calls = @(Get-Content -LiteralPath $env:FAKE_GH_LOG | Where-Object { "$_ ".StartsWith("$key ") }).Count
   $failed = $fixture.fail -contains $key -or $fixture.fail -contains "$key#$calls"
@@ -90,6 +91,18 @@ class ApproveLiveEvidenceScriptTests(unittest.TestCase):
         version: str = "gh version 2.102.0 (2026-09-30)",
         fail: list[str] | None = None,
     ) -> tuple[int, list[str], str]:
+        return self._run(views=views, attestations=attestations, files=files, tags=tags, version=version, fail=fail)[:3]
+
+    def _run(
+        self,
+        *,
+        views: list[str] | None = None,
+        attestations: list[str] | None = None,
+        files: dict[str, bytes] | None = None,
+        tags: list[str] | None = None,
+        version: str = "gh version 2.102.0 (2026-09-30)",
+        fail: list[str] | None = None,
+    ) -> tuple[int, list[str], str, list[list[str]]]:
         lines = APPROVAL.read_text(encoding="utf-8").splitlines()
         script = "\n".join(line[10:] for line in lines[lines.index("        run: |") + 1 :])
         with tempfile.TemporaryDirectory() as temporary:
@@ -115,6 +128,8 @@ class ApproveLiveEvidenceScriptTests(unittest.TestCase):
             )
             log = root / "gh.log"
             log.write_text("", encoding="utf-8")
+            argv_log = root / "gh-args.log"
+            argv_log.write_text("", encoding="utf-8")
             path = root / "approve.ps1"
             path.write_text(FAKE_GH + script + "\n", encoding="utf-8")
             env = {
@@ -123,6 +138,7 @@ class ApproveLiveEvidenceScriptTests(unittest.TestCase):
                 "RUNNER_TEMP": str(root / "runner"),
                 "FAKE_GH_FIXTURE": str(fixture),
                 "FAKE_GH_LOG": str(log),
+                "FAKE_GH_ARGS": str(argv_log),
             }
             # nosemgrep: python.lang.security.audit.dangerous-subprocess-use-audit.dangerous-subprocess-use-audit
             result = subprocess.run(  # nosec B603
@@ -134,7 +150,8 @@ class ApproveLiveEvidenceScriptTests(unittest.TestCase):
                 check=False,
             )
             calls = log.read_text(encoding="utf-8").splitlines()
-            return result.returncode, calls, result.stdout + result.stderr
+            argv = [json.loads(line) for line in argv_log.read_text(encoding="utf-8").splitlines()]
+            return result.returncode, calls, result.stdout + result.stderr, argv
 
     def _assert_refused(self, outcome: tuple[int, list[str], str], message: str = "") -> None:
         status, calls, output = outcome
@@ -183,6 +200,49 @@ class ApproveLiveEvidenceScriptTests(unittest.TestCase):
         self.assertEqual(
             calls[7], f"release edit {TAG} --repo ryanduguid/au-tax-legislation-corpus --draft=false --latest=false"
         )
+
+    def test_each_gh_call_receives_its_exact_arguments(self) -> None:
+        status, _, output, argv = self._run()
+        self.assertEqual(status, 0, output)
+        repo = ["--repo", "ryanduguid/au-tax-legislation-corpus"]
+        view = ["release", "view", TAG, *repo, "--json", "tagName,isDraft,assets,body"]
+        tag = [
+            "api",
+            f"repos/ryanduguid/au-tax-legislation-corpus/git/ref/tags/{TAG}",
+            "--jq",
+            '.object.type + " " + .object.sha',
+        ]
+        self.assertEqual(argv[0], ["--version"])
+        self.assertEqual(argv[1], view)
+        self.assertEqual(argv[2], tag)
+        self.assertEqual(argv[3][:-1], ["release", "download", TAG, *repo, "--dir"])
+        download_dir = argv[3][-1]
+        self.assertTrue(download_dir.endswith("reviewed-live-evidence"), download_dir)
+        self.assertEqual(
+            argv[4],
+            [
+                "attestation",
+                "verify",
+                str(Path(download_dir) / "a.json"),
+                *repo,
+                "--signer-workflow",
+                "ryanduguid/au-tax-legislation-corpus/.github/workflows/publish-live-evidence.yml",
+                "--source-ref",
+                "refs/heads/main",
+                "--source-digest",
+                SOURCE_SHA,
+                "--predicate-type",
+                "https://slsa.dev/provenance/v1",
+                "--deny-self-hosted-runners",
+                "--format",
+                "json",
+                "--jq",
+                ".[].verificationResult.statement.subject | tojson",
+            ],
+        )
+        self.assertEqual(argv[5], view)
+        self.assertEqual(argv[6], tag)
+        self.assertEqual(argv[7], ["release", "edit", TAG, *repo, "--draft=false", "--latest=false"])
 
     def test_publishes_a_single_asset_draft(self) -> None:
         files = {"a.json": self.FILES["a.json"]}

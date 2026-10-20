@@ -945,15 +945,17 @@ including ref creation and each upload batch.
 Approval workflow tests require its exact permissions, its `gh` command order
 with an immediate exit check after each, and the verification flags above.
 Where PowerShell 7 is available they also run its script against a stub `gh`.
-They require the exact runtime call order and arguments, and publication of
-one-asset and two-asset drafts that match an attestation. They require refusal
-before `gh release edit` for: an unattested extra asset, an attested asset
+They require the exact runtime call order and each call's argument array, and
+publication of one-asset and two-asset drafts that match an attestation. They
+require refusal before `gh release edit` for: an unattested extra asset, an attested asset
 missing from the draft, changed bytes, a case-only rename, a repeated subject,
 a repeated draft asset name, partial attestations, empty, null or malformed
 verification output, downloaded bytes that differ from the REST digest, a
 download outside the asset list, a draft or tag changed after verification, a
-tag that is not a commit, an asset without a digest, a failed `gh` call at each
-step and a GitHub CLI older than 2.102.0 or with an unrecognised version.
+tag that is not a commit, an asset without a digest, a failed pre-publication
+`gh` call at each step and a GitHub CLI older than 2.102.0 or with an
+unrecognised version. A failed publication command is tested separately: it
+fails the job after `gh release edit` has run.
 
 ### Publisher tests
 
