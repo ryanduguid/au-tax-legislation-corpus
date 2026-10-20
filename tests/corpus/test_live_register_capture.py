@@ -2080,8 +2080,8 @@ class LiveRegisterCaptureFilesystemTests(unittest.TestCase):
             destination = root / "promotion-failure"
             with (
                 mock.patch.object(
-                    capture_module.os,
-                    "rename",
+                    capture_module,
+                    "_rename_no_replace",
                     side_effect=OSError("private rename detail"),
                 ),
                 self.assertRaisesRegex(CaptureRegisterError, "could not be promoted"),
