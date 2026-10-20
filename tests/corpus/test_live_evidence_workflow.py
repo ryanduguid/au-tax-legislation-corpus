@@ -121,25 +121,44 @@ class LiveEvidenceWorkflowPolicyTests(unittest.TestCase):
 
     def test_existing_tag_or_draft_fails_closed(self) -> None:
         # The admission design fails a pre-existing tag, draft or release and never
-        # reuses it, so ref and draft creation run unconditionally at step level.
-        # Reintroduced gh lookups are caught by the exact command list.
+        # reuses it, so ref and draft creation run unconditionally. Everything after
+        # the notes is pinned as active lines, which ignore indentation, so control
+        # flow cannot wrap creation however it is indented. Reintroduced gh lookups
+        # are caught by the exact command list.
         release_step = self._step_containing("Create draft and upload candidates")
         self.assertEqual(release_step.count(self._CREATE_REF_AND_DRAFT), 1)
+        active = self._active_run_lines(release_step)
+        notes_end = active.index(') -join "`n"')
+        self.assertEqual(
+            active[notes_end + 1 :],
+            [
+                *(line.strip() for line in self._CREATE_REF_AND_DRAFT.splitlines()),
+                "$batchSize = 64",
+                "for ($offset = 0; $offset -lt $assetPaths.Count; $offset += $batchSize) {",
+                "$last = [Math]::Min($offset + $batchSize - 1, $assetPaths.Count - 1)",
+                "$batch = $assetPaths[$offset..$last]",
+                "& gh release upload $releaseTag @batch --repo ryanduguid/au-tax-legislation-corpus",
+                "if ($LASTEXITCODE -ne 0) { throw 'GitHub CLI release operation failed.' }",
+                "}",
+            ],
+        )
 
     def test_fail_closed_policy_rejects_conditional_creation(self) -> None:
         workflow = self._workflow()
         self.assertEqual(workflow.count(self._CREATE_REF_AND_DRAFT), 1)
         nested = "".join("  " + line for line in self._CREATE_REF_AND_DRAFT.splitlines(keepends=True))
-        changed = workflow.replace(
-            self._CREATE_REF_AND_DRAFT,
-            "          if ($env:REUSE -ne 'true') {\n" + nested + "          }\n",
-        )
-        case = LiveEvidenceWorkflowPolicyTests("test_existing_tag_or_draft_fails_closed")
-        result = unittest.TestResult()
-        with patch.object(case, "_workflow", return_value=changed):
-            case.run(result)
-        self.assertEqual(result.errors, [])
-        self.assertEqual(len(result.failures), 1)
+        for name, body in (("same indentation", self._CREATE_REF_AND_DRAFT), ("nested", nested)):
+            with self.subTest(wrapper=name):
+                changed = workflow.replace(
+                    self._CREATE_REF_AND_DRAFT,
+                    "          if ($env:REUSE -ne 'true') {\n" + body + "          }\n",
+                )
+                case = LiveEvidenceWorkflowPolicyTests("test_existing_tag_or_draft_fails_closed")
+                result = unittest.TestResult()
+                with patch.object(case, "_workflow", return_value=changed):
+                    case.run(result)
+                self.assertEqual(result.errors, [])
+                self.assertEqual(len(result.failures), 1)
 
     def test_yaml_oracle_exposes_comments_blank_lines_and_scalar_decoys(self) -> None:
         decoy = (
