@@ -1823,8 +1823,9 @@ fn the_command_reports_the_candidates() {
     );
 }
 
-/// A snapshot source that grows after the export opened it is refused, not copied with its
-/// new tail. (On Windows the export's open denies writers, so it cannot grow there.)
+/// A manifest that grows after the export opened it is refused with no output. As in Python,
+/// file identity is device, inode and link count, so the copy takes the new tail and the
+/// snapshot's digest check refuses it. (On Windows the export's open denies writers.)
 #[cfg(unix)]
 #[test]
 fn a_manifest_that_grows_after_opening_is_refused() {
@@ -1849,7 +1850,7 @@ fn a_manifest_that_grows_after_opening_is_refused() {
     );
     assert_eq!(
         message(outcome.unwrap_err()),
-        "capture snapshot source file changed."
+        "capture graph is not a verified Stage 3A graph."
     );
     assert!(!root.join("output").exists());
 }
