@@ -537,6 +537,38 @@ fn scanstring(doc: &str, end: usize) -> Result<(PyStr, usize), DecodeError> {
     }
 }
 
+/// The `json_decode` fuzz target's invariants for one input: no input panics
+/// the decoder, and a decoded value written as `json.dumps` writes it decodes
+/// back to the same JSON. The unit tests replay seeds through this.
+#[doc(hidden)]
+pub fn check_round_trip(data: &[u8]) -> Result<(), String> {
+    let _ = loads_bytes(data);
+    let Ok(text) = std::str::from_utf8(data) else {
+        return Ok(());
+    };
+    for decoded in [loads_standard(text), loads(text)] {
+        let Ok(value) = decoded else {
+            continue;
+        };
+        let once: String = crate::pyvalue::dumps_with(&value, None, true, false)
+            .into_iter()
+            .map(|cp| char::from_u32(cp).ok_or("json.dumps wrote a lone surrogate"))
+            .collect::<Result<_, _>>()?;
+        let again =
+            loads_standard(&once).map_err(|e| format!("{once:?} does not decode: {e:?}"))?;
+        let twice: Vec<u32> = crate::pyvalue::dumps_with(&again, None, true, false);
+        if twice
+            .into_iter()
+            .filter_map(char::from_u32)
+            .collect::<String>()
+            != once
+        {
+            return Err(format!("{once:?} changed in a round trip"));
+        }
+    }
+    Ok(())
+}
+
 /// `json.loads(bytes)`: the encoding `json.detect_encoding` picks, decoded with
 /// `surrogatepass`. The error is None for a `UnicodeDecodeError`, else what
 /// the scanner refused.

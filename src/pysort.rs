@@ -571,6 +571,32 @@ impl<E, F: FnMut(usize, usize) -> Result<bool, E>> Sorter<'_, F> {
     }
 }
 
+/// The `python_sort` fuzz target's invariants for one input: under a total
+/// order the sort is the stable sort, and under one that is not (NaN) it
+/// still returns every item once. The unit tests replay seeds through this.
+#[doc(hidden)]
+pub fn check_one_input(data: &[u8]) -> Result<(), String> {
+    let mut items: Vec<(u8, usize)> = data.iter().enumerate().map(|(i, &b)| (b % 16, i)).collect();
+    let mut expected = items.clone();
+    expected.sort_by_key(|item| item.0);
+    sort(&mut items, |a, b| Ok::<_, ()>(a.0 < b.0)).map_err(|()| "no comparison fails")?;
+    if items != expected {
+        return Err(format!("{items:?} is not the stable sort {expected:?}"));
+    }
+    let mut floats: Vec<(f64, usize)> = data
+        .iter()
+        .enumerate()
+        .map(|(i, &b)| (if b > 240 { f64::NAN } else { f64::from(b % 32) }, i))
+        .collect();
+    sort(&mut floats, |a, b| Ok::<_, ()>(a.0 < b.0)).map_err(|()| "no comparison fails")?;
+    let mut seen: Vec<usize> = floats.iter().map(|item| item.1).collect();
+    seen.sort_unstable();
+    if !seen.iter().copied().eq(0..data.len()) {
+        return Err("the sort lost or repeated an item".into());
+    }
+    Ok(())
+}
+
 /// The power of the run at `s1` of length `n1`, followed by one of length `n2`.
 fn powerloop(s1: usize, n1: usize, n2: usize, n: usize) -> u32 {
     let mut result = 0;

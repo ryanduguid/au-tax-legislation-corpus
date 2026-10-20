@@ -246,6 +246,33 @@ pub fn load_contact_allowlist(path: &str) -> Result<Vec<Approved>, Exc> {
     Ok(approved)
 }
 
+/// The `pattern_engines` fuzz target's invariant for one input: wherever a
+/// detector's pattern runs on the regex crate, it finds the same groups at
+/// the same places as `fancy_regex`. The unit tests replay seeds through this.
+#[doc(hidden)]
+pub fn check_engines(data: &[u8]) -> Result<(), String> {
+    let text = String::from_utf8_lossy(data);
+    let name = name_pattern();
+    let patterns: [(&str, u8); 10] = [
+        (&name, 0),
+        (REGNO, 0),
+        (EMAIL, 0),
+        (PHONE, 0),
+        (PHONE_ANY, 0),
+        (TFN_ANY, pyre::I),
+        (TFN_BARE_ANY, 0),
+        (TFN_BARE, 0),
+        (STATUTORY, 0),
+        (STATUTORY, pyre::I),
+    ];
+    for (pattern, flags) in patterns {
+        if !pyre::re(pattern, flags).engines_agree(&text) {
+            return Err(format!("{pattern:?} differs between engines on {text:?}"));
+        }
+    }
+    Ok(())
+}
+
 /// The fuzz target's invariants for one input (fuzz/fuzz_targets): every
 /// reported name and registration number occurs in the text, and every
 /// contact fingerprint names a known kind and carries a SHA-256 digest, never

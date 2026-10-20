@@ -1,0 +1,1 @@
+{"register_id": "C2004A00001", "rows": [1, -0, 2.5e10, 12345678901234567890123], "flags": [true, false, null, NaN, Infinity, -Infinity], "text": "tab\tquote\" slash\/ é 😀 lone \udc80", "nested": {"a": {"b": [[], {}]}}, "a": 1, "a": 2}

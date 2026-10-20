@@ -34,3 +34,13 @@ jobs:
         run: >-
           cargo +nightly fuzz run privacy_patterns fuzz/corpus --
           -max_total_time=60 -max_len=4096 -timeout=2 -rss_limit_mb=1024
+      # The other targets grow a scratch copy of their seeds, never the checkout.
+      - name: Fuzz the pattern engines, JSON decoder and sort
+        shell: bash
+        run: |
+          for target in pattern_engines json_decode python_sort; do
+            corpus="$RUNNER_TEMP/$target"
+            mkdir -p "$corpus"
+            cp fuzz/seeds/"$target"/* "$corpus"/
+            cargo +nightly fuzz run "$target" "$corpus" -- -max_total_time=60 -max_len=4096 -timeout=2 -rss_limit_mb=1024
+          done

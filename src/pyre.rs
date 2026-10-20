@@ -144,6 +144,31 @@ impl Re {
         }
     }
 
+    /// Whether the regex crate and `fancy_regex` find the same groups at the
+    /// same places in `text`, for the compilation `text` gets: the fast path
+    /// must not change a match. For the fuzz target.
+    #[doc(hidden)]
+    pub fn engines_agree(&self, text: &str) -> bool {
+        let Some(plain) = self.plain(text) else {
+            return true;
+        };
+        let spans = |c: &Caps<'_>| -> Vec<Option<(usize, usize)>> {
+            (0..c.len())
+                .map(|i| c.get(i).map(|m| (m.start(), m.end())))
+                .collect()
+        };
+        let fast: Vec<_> = plain
+            .captures_iter(text)
+            .map(|c| spans(&Caps::Plain(c)))
+            .collect();
+        let slow: Vec<_> = self
+            .engine(text)
+            .captures_iter(text)
+            .map(|c| spans(&Caps::Fancy(c.expect("unbounded backtracking"))))
+            .collect();
+        fast == slow
+    }
+
     /// `pattern.finditer(text)` as the text of each whole match. Without
     /// groups to fill, a pattern with no lookaround runs on the regex crate.
     pub fn find_iter<'r, 't>(&'r self, text: &'t str) -> Box<dyn Iterator<Item = &'t str> + 'r>

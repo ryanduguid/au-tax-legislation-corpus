@@ -18,6 +18,27 @@ test = false
 doc = false
 bench = false
 
+[[bin]]
+name = "json_decode"
+path = "fuzz_targets/json_decode.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "python_sort"
+path = "fuzz_targets/python_sort.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "pattern_engines"
+path = "fuzz_targets/pattern_engines.rs"
+test = false
+doc = false
+bench = false
+
 # Its own workspace, so the repository's stable builds never compile it.
 [workspace]
 members = ["."]
