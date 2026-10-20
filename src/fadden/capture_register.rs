@@ -1904,17 +1904,17 @@ fn write_new(path: &str, content: &[u8]) -> std::io::Result<()> {
     std::io::Write::write_all(&mut file, content)
 }
 
-/// `os.rename(staging, output)`: on Windows it refuses an existing
-/// destination; on POSIX it replaces only an empty directory.
+/// `_rename_no_replace(staging, output)`: never replaces a destination on
+/// Windows or Linux; elsewhere `os.rename`, as the Python stage does.
 fn promote(staging: &str, output: &str) -> Result<(), OsError> {
     if let Some(error) = injected(Step::Promote(staging, output)) {
         return Err(error);
     }
-    #[cfg(windows)]
+    #[cfg(any(windows, target_os = "linux"))]
     {
-        pyos::rename_new(staging, output)
+        pyos::rename_no_replace(staging, output)
     }
-    #[cfg(not(windows))]
+    #[cfg(not(any(windows, target_os = "linux")))]
     {
         std::fs::rename(staging, output)
             .map_err(|e| OsError::two(&e, staging, output, Style::Native))
@@ -2008,9 +2008,11 @@ pub fn capture_register_run(
     let prefix = format!(".{}.register-capture-", output.name());
     let staging = parent.join(&format!("{prefix}{}.tmp", pyos::try_random_hex(32)?));
     let staging_text = staging.display();
+    let created = std::cell::Cell::new(false);
     let outcome = (|| -> Result<(), Exc> {
         let written = (|| -> std::io::Result<()> {
             mkdir_private(&staging_text)?;
+            created.set(true);
             mkdir_private(&staging.join("evidence").display())?;
             write_new(
                 &staging.join("monitor-baseline.json").display(),
@@ -2037,8 +2039,11 @@ pub fn capture_register_run(
         promote(&staging_text, &output_text)
             .map_err(|_| capture_error("capture output could not be promoted."))
     })();
-    // A cleanup failure replaces any earlier one, as in Python's `finally`.
-    remove_owned_staging(&staging, &parent, &prefix)?;
+    // A cleanup failure replaces any earlier one, as in Python's `finally`;
+    // only a staging directory this run created is its to remove.
+    if created.get() {
+        remove_owned_staging(&staging, &parent, &prefix)?;
+    }
     outcome?;
     Ok(CapturePaths {
         baseline: output.join("monitor-baseline.json").display(),

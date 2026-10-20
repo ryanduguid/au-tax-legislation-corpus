@@ -852,78 +852,8 @@ fn promote_no_replace(staging: &str, output: &str) -> Result<(), OsError> {
     rename_no_replace(staging, output)
 }
 
-#[cfg(windows)]
-fn rename_no_replace(staging: &str, output: &str) -> Result<(), OsError> {
-    pyos::rename_new(staging, output)
-}
-
-thread_local! {
-    static RENAMEAT2_MISSING: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
-}
-
-/// Behave as if the C library lacked `renameat2` on this thread. For tests.
-#[doc(hidden)]
-pub fn set_renameat2_missing(missing: bool) {
-    RENAMEAT2_MISSING.with(|m| m.set(missing));
-}
-
-/// `OSError(errno.ENOTSUP, message)`.
-#[cfg(unix)]
-fn unsupported(message: &str) -> OsError {
-    let error = std::io::Error::from_raw_os_error(libc::ENOTSUP);
-    let mut error = OsError::new(&error, None, Style::Errno);
-    error.text = format!("[Errno {}] {message}", libc::ENOTSUP);
-    error.strerror = message.to_string();
-    error
-}
-
-#[cfg(target_os = "linux")]
-fn rename_no_replace(staging: &str, output: &str) -> Result<(), OsError> {
-    use std::os::unix::ffi::OsStrExt;
-    type RenameAt2 = unsafe extern "C" fn(
-        libc::c_int,
-        *const libc::c_char,
-        libc::c_int,
-        *const libc::c_char,
-        libc::c_uint,
-    ) -> libc::c_int;
-    // ctypes.CDLL(None).renameat2: the symbol the process's C library exports.
-    // SAFETY: dlsym with RTLD_DEFAULT only looks a name up.
-    let symbol = unsafe { libc::dlsym(libc::RTLD_DEFAULT, c"renameat2".as_ptr()) };
-    if symbol.is_null() || RENAMEAT2_MISSING.with(std::cell::Cell::get) {
-        return Err(unsupported("renameat2 is unavailable"));
-    }
-    // SAFETY: glibc and musl declare renameat2 with exactly this signature.
-    let rename: RenameAt2 = unsafe { std::mem::transmute::<*mut libc::c_void, RenameAt2>(symbol) };
-    let c = |s: &str| std::ffi::CString::new(std::ffi::OsStr::new(s).as_bytes());
-    let (Ok(from), Ok(to)) = (c(staging), c(output)) else {
-        let error = std::io::Error::from_raw_os_error(libc::EINVAL);
-        return Err(OsError::new(&error, Some(output), Style::Errno));
-    };
-    // AT_FDCWD and RENAME_NOREPLACE; never fall back to an overwriting rename.
-    // SAFETY: both paths are NUL-terminated and outlive the call.
-    let result = unsafe {
-        rename(
-            libc::AT_FDCWD,
-            from.as_ptr(),
-            libc::AT_FDCWD,
-            to.as_ptr(),
-            libc::RENAME_NOREPLACE,
-        )
-    };
-    if result != 0 {
-        let error = std::io::Error::last_os_error();
-        return Err(OsError::new(&error, Some(output), Style::Errno));
-    }
-    Ok(())
-}
-
-#[cfg(not(any(windows, target_os = "linux")))]
-fn rename_no_replace(_staging: &str, _output: &str) -> Result<(), OsError> {
-    Err(unsupported(
-        "no-replace directory publication is unavailable",
-    ))
-}
+use crate::pyos::rename_no_replace;
+pub use crate::pyos::set_renameat2_missing;
 
 /// `_remove_owned_staging(staging, parent=..., prefix=...)`.
 #[doc(hidden)]

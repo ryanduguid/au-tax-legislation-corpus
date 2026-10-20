@@ -2676,6 +2676,68 @@ fn session() -> MemorySession {
     )
 }
 
+/// A staging directory this run did not create is not its to remove.
+#[test]
+fn a_staging_name_collision_is_never_removed() {
+    let w = Work::new();
+    let manifest = w.manifest(&json!([manifest_row(json!({}))]));
+    let hex = "0".repeat(32);
+    let staging = w.root.join(format!(".capture.register-capture-{hex}.tmp"));
+    std::fs::create_dir(&staging).unwrap();
+    std::fs::write(staging.join("sentinel"), b"keep").unwrap();
+    tax_radar_au::pyos::set_fixed_hex(Some(&hex));
+    let outcome = capture_register_run(s(&manifest), s(&w.root.join("capture")), &mut session());
+    tax_radar_au::pyos::set_fixed_hex(None);
+    assert_eq!(
+        message(outcome.unwrap_err()),
+        "capture output could not be written."
+    );
+    assert_eq!(std::fs::read(staging.join("sentinel")).unwrap(), b"keep");
+    assert!(!w.root.join("capture").exists());
+}
+
+/// An empty destination that appears after the final absence check is kept:
+/// promotion never replaces it.
+#[test]
+fn promotion_never_replaces_a_destination_that_appears_last() {
+    let w = Work::new();
+    let manifest = w.manifest(&json!([manifest_row(json!({}))]));
+    let destination = w.root.join("capture");
+    let racer = destination.clone();
+    let outcome = with_hooks(
+        move |step| {
+            if let Step::Promote(..) = step {
+                std::fs::create_dir(&racer).unwrap();
+            }
+            None
+        },
+        || capture_register_run(s(&manifest), s(&destination), &mut session()),
+    );
+    assert_eq!(
+        message(outcome.unwrap_err()),
+        "capture output could not be promoted."
+    );
+    assert!(destination.is_dir());
+    assert_eq!(std::fs::read_dir(&destination).unwrap().count(), 0);
+}
+
+/// Without `renameat2` the Linux capture refuses to promote rather than fall
+/// back to a replacing rename.
+#[cfg(target_os = "linux")]
+#[test]
+fn promotion_fails_closed_without_renameat2() {
+    let w = Work::new();
+    let manifest = w.manifest(&json!([manifest_row(json!({}))]));
+    tax_radar_au::pyos::set_renameat2_missing(true);
+    let outcome = capture_register_run(s(&manifest), s(&w.root.join("capture")), &mut session());
+    tax_radar_au::pyos::set_renameat2_missing(false);
+    assert_eq!(
+        message(outcome.unwrap_err()),
+        "capture output could not be promoted."
+    );
+    assert!(!w.root.join("capture").exists());
+}
+
 #[test]
 fn creates_exactly_one_missing_output_parent_after_validation() {
     let w = Work::new();
