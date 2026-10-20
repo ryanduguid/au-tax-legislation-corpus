@@ -2,8 +2,8 @@
 use std::io::Write;
 
 use super::{
-    Run, as_at, capture_register, compare_builds, dist, dist_verify, live_evidence,
-    monitor_contract, pii_scan, probe13, publication_bundles, rates, rulings, search,
+    Run, as_at, capture_register, compare_builds, discover, dist, dist_verify, live_evidence,
+    monitor_contract, pii_scan, probe13, publication_bundles, rates, rulings, search, versions,
 };
 use crate::argparse::Exit;
 
@@ -11,10 +11,11 @@ use crate::argparse::Exit;
 /// `capture_register` and `export_live_evidence_bundles` are here for
 /// verification only: `python -m fadden` still runs their Python stages,
 /// which the publication workflow uses.
-pub const STAGES: [&str; 14] = [
+pub const STAGES: [&str; 16] = [
     "as_at",
     "capture_register",
     "compare_builds",
+    "discover",
     "dist",
     "dist_verify",
     "export_live_evidence_bundles",
@@ -26,9 +27,10 @@ pub const STAGES: [&str; 14] = [
     "rates",
     "rulings",
     "search",
+    "versions",
 ];
 
-const USAGE: &str = "usage: fadden {as_at,capture_register,compare_builds,dist,dist_verify,export_live_evidence_bundles,export_monitor_contract,export_publication_bundles,pii_scan,pii_scan2,probe13,rates,rulings,search} [arguments ...]\n";
+const USAGE: &str = "usage: fadden {as_at,capture_register,compare_builds,discover,dist,dist_verify,export_live_evidence_bundles,export_monitor_contract,export_publication_bundles,pii_scan,pii_scan2,probe13,rates,rulings,search,versions} [arguments ...]\n";
 
 /// Text-mode output: newlines become the platform's line separator.
 fn text_mode(bytes: &[u8]) -> Vec<u8> {
@@ -61,6 +63,8 @@ pub fn main(argv: &[String]) -> i32 {
         Some((stage, rest)) if stage == "pii_scan" => pii_scan::main(rest, &mut run),
         Some((stage, rest)) if stage == "pii_scan2" => pii_scan::main2(rest, &mut run),
         Some((stage, rest)) if stage == "probe13" => probe13::main(rest, &mut run),
+        Some((stage, rest)) if stage == "discover" => discover::main(rest, &mut run),
+        Some((stage, rest)) if stage == "versions" => versions::main(rest, &mut run),
         Some((stage, rest)) if stage == "dist_verify" => dist_verify::main(rest, &mut run),
         Some((stage, rest)) if stage == "dist" => dist::main(rest, &mut run),
         Some((stage, rest)) if stage == "export_live_evidence_bundles" => {

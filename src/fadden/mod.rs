@@ -10,6 +10,7 @@ pub mod capture_register;
 pub mod cli;
 pub mod compare_builds;
 pub mod corpus_paths;
+pub mod discover;
 pub mod dist;
 pub mod dist_verify;
 pub mod http;
@@ -23,6 +24,7 @@ pub mod publication_bundles;
 pub mod rates;
 pub mod rulings;
 pub mod search;
+pub mod versions;
 
 use crate::pyjson::Json;
 use crate::pyos::OsError;

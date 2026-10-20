@@ -99,7 +99,7 @@ class FaddenCliTests(unittest.TestCase):
         stage_main.assert_called_once_with("2026-10-13")
 
     def test_a_stage_without_parameters_is_called_bare(self) -> None:
-        self._dispatch("discover").assert_called_once_with()
+        self._dispatch("download").assert_called_once_with()
 
     def test_a_separator_left_by_argparse_is_stripped(self) -> None:
         # Whether argparse keeps "--" in a REMAINDER list depends on the
