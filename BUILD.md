@@ -551,4 +551,10 @@ It captures and attests candidate assets, then leaves the draft for review.
 It does not publish that release. After reviewing the
 complete draft, an authorised operator runs `approve-live-evidence.yml` on `main`
 with that existing draft's exact tag. That dispatch authorises only the selected
-draft. Capture, export and passing tests alone do not authorise publication.
+draft. Before publishing, it downloads every asset and stops unless the assets'
+names and SHA-256 digests equal one verified artifact attestation from
+`publish-live-evidence.yml` at the tag's commit; the
+[admission design](docs/superpowers/specs/2026-08-29-authenticated-live-evidence-admission-design.md)
+lists every check. If the publication command itself fails, check the release
+state before any retry. Capture, export and passing tests alone do not
+authorise publication.
