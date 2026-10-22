@@ -1,5 +1,7 @@
 # au-tax-legislation-corpus: trace a change to its source
 
+<div align="center">
+
 [![tests](https://img.shields.io/github/actions/workflow/status/ryanduguid/au-tax-legislation-corpus/ci.yml?branch=main&label=tests&labelColor=000000&style=flat)](https://github.com/ryanduguid/au-tax-legislation-corpus/actions/workflows/ci.yml)
 [![Codecov](https://img.shields.io/codecov/c/github/ryanduguid/au-tax-legislation-corpus?label=coverage&labelColor=000000&style=flat)](https://codecov.io/gh/ryanduguid/au-tax-legislation-corpus)
 [![CodeQL](https://img.shields.io/github/actions/workflow/status/ryanduguid/au-tax-legislation-corpus/codeql.yml?branch=main&label=CodeQL&labelColor=000000&style=flat)](https://github.com/ryanduguid/au-tax-legislation-corpus/actions/workflows/codeql.yml)
@@ -13,6 +15,8 @@
 [![release](https://img.shields.io/github/v/release/ryanduguid/au-tax-legislation-corpus?color=66023C&labelColor=000000&style=flat)](https://github.com/ryanduguid/au-tax-legislation-corpus/releases/latest)
 ![python: 3.14+](https://img.shields.io/badge/python-3.14%2B-66023C?labelColor=000000&style=flat&color=66023C)
 [![licence: Apache-2.0](https://img.shields.io/badge/licence-Apache--2.0-66023C?labelColor=000000&style=flat&color=66023C)](LICENSE)
+
+</div>
 
 Synthetic example. This is a finding aid derived from the Register's EPUB reading view, not authorised legislation, tax advice or a conclusion about legal effect.
 
