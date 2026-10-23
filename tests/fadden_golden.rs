@@ -7,8 +7,9 @@
 //!
 //! Outputs are normalised as the harness normalised them: the case directory
 //! reads `ROOT`, the module directory `MODULE`, generated stage, backup and
-//! temporary names `HEX`, and bytes that are not UTF-8 `\xNN`. `rulings` and
-//! `probe13` fetch over HTTP, so their cases need the scripted responses of
+//! temporary names `HEX`, whole-second sleeps in the discover and versions
+//! fake-http logs `sleep N`, and bytes that are not UTF-8 `\xNN`. `rulings`, `probe13`, `discover` and
+//! `versions` fetch over HTTP, so their cases need the scripted responses of
 //! the `fake-http` feature: `cargo test --features fake-http --test fadden_golden`.
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
@@ -25,6 +26,9 @@ static MANAGED_NAME: LazyLock<Regex> = LazyLock::new(|| {
     Regex::new(r"\.(stage|backup|publication-bundles|monitor-contract|live-evidence|register-capture)-[0-9a-f]{32}").unwrap()
 });
 static TEMP_NAME: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"\.[0-9a-f]{32}\.tmp").unwrap());
+// The fake-http log: Python logs time.sleep(3) as 3, the binary's f64 as 3.0.
+static WHOLE_SLEEP: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"(?m)^sleep (\d+)\.0$").unwrap());
 static CONTACT_DETAIL: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r"(no unapproved contact identifiers +FAIL  ).*").unwrap());
 // dist_verify tallies file extensions in directory-listing order, which the
@@ -124,7 +128,7 @@ fn files_under(dir: &Path, found: &mut Vec<PathBuf>) {
 
 /// Every file and directory the case left, the copied module's unchanged data
 /// left out, as the SHA-256 of its normalised text (None for a directory).
-fn snapshot(work: &Path, module: &Path) -> BTreeMap<String, Option<String>> {
+fn snapshot(family: &str, work: &Path, module: &Path) -> BTreeMap<String, Option<String>> {
     let base: BTreeMap<String, Vec<u8>> = module_data().into_iter().collect();
     let mut paths = Vec::new();
     files_under(work, &mut paths);
@@ -148,8 +152,15 @@ fn snapshot(work: &Path, module: &Path) -> BTreeMap<String, Option<String>> {
                 continue;
             }
         }
-        let value = (!path.is_dir())
-            .then(|| sha256(&normalise(&std::fs::read(&path).unwrap(), work, module)));
+        let value = (!path.is_dir()).then(|| {
+            let text = normalise(&std::fs::read(&path).unwrap(), work, module);
+            // Stage 5 fixtures were recorded after the harness began this rewrite.
+            if rel == "http.log" && matches!(family, "discover" | "versions") {
+                sha256(&WHOLE_SLEEP.replace_all(&text, "sleep $1"))
+            } else {
+                sha256(&text)
+            }
+        });
         found.insert(
             MANAGED_NAME.replace_all(&rel, ".$1-HEX").into_owned(),
             value,
@@ -281,7 +292,7 @@ fn run_case(family: &str, case: &Value, shared_module: &Path) -> Option<String> 
             problems.push(format!("step {n}: stderr\n{stderr}\nPython\n{want_err}"));
         }
     }
-    let left = snapshot(&work, &module);
+    let left = snapshot(family, &work, &module);
     let want: BTreeMap<String, Option<String>> =
         serde_json::from_value(expected["files"].clone()).unwrap();
     if left != want {
@@ -384,4 +395,16 @@ fn rulings_matches_python() {
 #[test]
 fn probe13_matches_python() {
     family("probe13");
+}
+
+#[cfg(feature = "fake-http")]
+#[test]
+fn discover_matches_python() {
+    family("discover");
+}
+
+#[cfg(feature = "fake-http")]
+#[test]
+fn versions_matches_python() {
+    family("versions");
 }
