@@ -14,6 +14,8 @@ pub mod discover;
 pub mod dist;
 pub mod dist_verify;
 pub mod epub;
+pub mod extract;
+pub mod extract_doc;
 pub mod http;
 pub mod iso;
 pub mod live_evidence;
