@@ -8,6 +8,7 @@ pub mod fadden;
 pub mod html;
 pub mod htmlparser;
 pub mod py;
+pub mod pydatetime;
 pub mod pyio;
 pub mod pyjson;
 pub mod pyos;
