@@ -1007,7 +1007,7 @@ fn copy2(from: &str, to: &str) -> Result<(), CopyFailure> {
 /// `shutil.copyfile(src, dst)`, `src` shown as `shown`: the same file or a
 /// named pipe on either side is refused before anything is opened, so a
 /// destination linked to its source is never truncated.
-fn copyfile(src: &str, dst: &str, shown: &str) -> Result<(), Exc> {
+pub(crate) fn copyfile(src: &str, dst: &str, shown: &str) -> Result<(), Exc> {
     if let (Ok(a), Ok(b)) = (pyos::file_id(src), pyos::file_id(dst))
         && a == b
     {

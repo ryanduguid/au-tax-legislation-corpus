@@ -50,13 +50,16 @@ fn row_text(row: &Json) -> Result<String, Exc> {
 }
 
 /// `json.load(open(path))`.
-fn load(path: &str) -> Result<Json, Exc> {
+pub(crate) fn load(path: &str) -> Result<Json, Exc> {
     let text = crate::pyio::read_text(path)?;
     pyjson::loads_standard(&text).map_err(json_error)
 }
 
 /// `for line in open(sections.jsonl)`, one decoded row per non-blank line.
-fn for_each_row(path: &str, mut f: impl FnMut(Json) -> Result<(), Exc>) -> Result<(), Exc> {
+pub(crate) fn for_each_row(
+    path: &str,
+    mut f: impl FnMut(Json) -> Result<(), Exc>,
+) -> Result<(), Exc> {
     let mut lines = Lines::open(path)?;
     while let Some(line) = lines.next_line() {
         let line = line?;
@@ -68,7 +71,7 @@ fn for_each_row(path: &str, mut f: impl FnMut(Json) -> Result<(), Exc>) -> Resul
     Ok(())
 }
 
-fn dict_key(value: &Json, container: &str) -> Result<Key, Exc> {
+pub(crate) fn dict_key(value: &Json, container: &str) -> Result<Key, Exc> {
     pyvalue::key(value).map_err(|m| {
         Exc::Type(format!(
             "cannot use '{}' as a {container} ({m})",

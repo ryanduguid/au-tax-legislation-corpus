@@ -185,6 +185,16 @@ pub fn markdown_text(text: &[u32]) -> Vec<u32> {
 /// mode (`\n` is the platform's line separator) and strict UTF-8, staged in a
 /// unique sibling that replaces `path` only when every chunk was written.
 pub fn write_text_atomic(path: &str, chunks: &[Vec<u32>]) -> Result<(), Exc> {
+    write_text_atomic_then(path, chunks, None)
+}
+
+/// `write_text_atomic`, where `failure`, if any, is the exception the writing
+/// block raises after its last chunk: the staged file is removed instead.
+pub fn write_text_atomic_then(
+    path: &str,
+    chunks: &[Vec<u32>],
+    failure: Option<Exc>,
+) -> Result<(), Exc> {
     let destination = PyPath::new(path);
     let (temporary, mut file) = loop {
         let candidate = destination
@@ -216,6 +226,9 @@ pub fn write_text_atomic(path: &str, chunks: &[Vec<u32>]) -> Result<(), Exc> {
             let bytes: String = text.iter().filter_map(|&cp| char::from_u32(cp)).collect();
             file.write_all(bytes.as_bytes())
                 .map_err(|e| OsError::new(&e, None, Style::Errno))?;
+        }
+        if let Some(error) = failure {
+            return Err(error);
         }
         file.sync_all()
             .map_err(|e| OsError::new(&e, None, Style::Errno))?;

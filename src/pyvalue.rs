@@ -219,11 +219,11 @@ pub fn dumps_line(value: &Json, ensure_ascii: bool) -> Vec<u32> {
     out
 }
 
-fn push(out: &mut Vec<u32>, text: &str) {
+pub(crate) fn push(out: &mut Vec<u32>, text: &str) {
     out.extend(text.chars().map(u32::from));
 }
 
-fn dump_str(points: &[u32], ensure_ascii: bool, out: &mut Vec<u32>) {
+pub(crate) fn dump_str(points: &[u32], ensure_ascii: bool, out: &mut Vec<u32>) {
     out.push(u32::from('"'));
     for &cp in points {
         match cp {

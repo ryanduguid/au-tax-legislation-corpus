@@ -834,7 +834,7 @@ fn mtime_date(path: &str) -> Result<py::Date, Exc> {
 }
 
 #[cfg(windows)]
-fn local_date(stamp: i64) -> Result<py::Date, Exc> {
+pub(crate) fn local_date(stamp: i64) -> Result<py::Date, Exc> {
     #[repr(C)]
     #[derive(Default)]
     struct Tm {
@@ -868,7 +868,7 @@ fn local_date(stamp: i64) -> Result<py::Date, Exc> {
 }
 
 #[cfg(unix)]
-fn local_date(stamp: i64) -> Result<py::Date, Exc> {
+pub(crate) fn local_date(stamp: i64) -> Result<py::Date, Exc> {
     // SAFETY: localtime_r fills `tm` from the time value it is given.
     let tm = unsafe {
         let mut tm: libc::tm = std::mem::zeroed();

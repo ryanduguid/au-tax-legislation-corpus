@@ -16,6 +16,7 @@ pub mod dist_verify;
 pub mod epub;
 pub mod extract;
 pub mod extract_doc;
+pub mod finalize;
 pub mod http;
 pub mod iso;
 pub mod live_evidence;
@@ -63,6 +64,9 @@ pub enum Exc {
         class: &'static str,
         message: String,
     },
+    /// An exception with the notes `add_note` gave it, which a traceback
+    /// prints after the message, one per line.
+    Noted(Box<Exc>, Vec<String>),
 }
 
 impl Exc {
@@ -87,11 +91,23 @@ impl Exc {
             Exc::Sqlite(_) => "sqlite3.Error",
             Exc::Recursion(_) => "RecursionError",
             Exc::Shutil { class, .. } | Exc::Other { class, .. } => class,
+            Exc::Noted(error, _) => error.class(),
         }
     }
 
     pub fn is_value(&self) -> bool {
         matches!(self, Exc::Value { .. })
+    }
+
+    /// `self.add_note(note)`.
+    pub fn noted(self, note: String) -> Exc {
+        match self {
+            Exc::Noted(error, mut notes) => {
+                notes.push(note);
+                Exc::Noted(error, notes)
+            }
+            error => Exc::Noted(Box::new(error), vec![note]),
+        }
     }
 }
 
@@ -110,6 +126,10 @@ impl std::fmt::Display for Exc {
             | Exc::Other { message, .. } => f.write_str(message),
             Exc::Key(message) => f.write_str(message),
             Exc::Os(error) => f.write_str(&error.text),
+            Exc::Noted(error, notes) => {
+                write!(f, "{error}")?;
+                notes.iter().try_for_each(|note| write!(f, "\n{note}"))
+            }
         }
     }
 }
