@@ -375,16 +375,23 @@ impl Parser {
         if endpos < 0 {
             return endpos;
         }
-        let endpos = endpos as usize;
-        let rawdata = self.rawdata.clone();
+        // Moved out, not cloned: a copy per start tag made parsing quadratic.
+        // Nothing below reads self.rawdata.
+        let rawdata = std::mem::take(&mut self.rawdata);
+        let result = self.parse_starttag_at(&rawdata, i, endpos as usize);
+        self.rawdata = rawdata;
+        result
+    }
+
+    fn parse_starttag_at(&mut self, rawdata: &str, i: usize, endpos: usize) -> isize {
         let m = re(TAGFIND_TOLERANT, 0)
-            .match_at(&rawdata, i + 1)
+            .match_at(rawdata, i + 1)
             .expect("unexpected call to parse_starttag()");
         let mut k = m.get(0).expect("group 0").end();
         let tag = m[1].to_lowercase();
         let mut attrs = Vec::new();
         while k < endpos {
-            let Some(m) = re(ATTRFIND_TOLERANT, 0).match_at(&rawdata, k) else {
+            let Some(m) = re(ATTRFIND_TOLERANT, 0).match_at(rawdata, k) else {
                 break;
             };
             let name = m[1].to_lowercase();

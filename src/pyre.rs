@@ -29,6 +29,10 @@ pub struct Re {
     /// slower, so matching without groups goes to these directly.
     plain_exact: Option<regex::Regex>,
     plain_native: Option<regex::Regex>,
+    /// The patterns behind `\G`, for `match_at`: an unanchored search would scan
+    /// the rest of the text whenever there is no match at the position.
+    anchored_exact: Regex,
+    anchored_native: Option<Regex>,
 }
 
 fn build(pattern: &str, translated: &str) -> Regex {
@@ -50,7 +54,10 @@ pub fn re(pattern: &str, flags: u8) -> Arc<Re> {
             let translated = translate(pattern, flags);
             let native = translate_with(pattern, flags, true);
             let plain = |p: &str| regex::Regex::new(p).ok();
+            let anchored = |p: &str| build(pattern, &format!(r"\G(?:{p})"));
             Arc::new(Re {
+                anchored_native: (native != translated).then(|| anchored(&native)),
+                anchored_exact: anchored(&translated),
                 plain_native: (native != translated).then(|| plain(&native)).flatten(),
                 plain_exact: plain(&translated),
                 native: (native != translated).then(|| build(pattern, &native)),
@@ -117,8 +124,14 @@ impl Re {
 
     /// `pattern.match(text, pos)`: a match that starts at `pos`.
     pub fn match_at<'t>(&self, text: &'t str, pos: usize) -> Option<Caps<'t>> {
-        self.search_at(text, pos)
-            .filter(|c| c.get(0).is_some_and(|m| m.start() == pos))
+        let engine = match &self.anchored_native {
+            Some(native) if self.native_fits(text) => native,
+            _ => &self.anchored_exact,
+        };
+        engine
+            .captures_from_pos(text, pos)
+            .expect("unbounded backtracking")
+            .map(Caps::Fancy)
     }
 
     pub fn is_match(&self, text: &str) -> bool {
@@ -692,6 +705,21 @@ fn translate_with(pattern: &str, flags: u8, native: bool) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn match_at_is_anchored_and_sees_behind_pos() {
+        // pattern.match(text, pos): no match at pos is None even when one follows.
+        assert!(re("b+", 0).match_at("abba", 0).is_none());
+        assert_eq!(&re("b+", 0).match_at("abba", 1).expect("match")[0], "bb");
+        // Lookbehind and \b look at the text before pos, as Python's do.
+        assert!(re("(?<=a)b", 0).match_at("ab", 1).is_some());
+        assert!(re("(?<=c)b", 0).match_at("ab", 1).is_none());
+        assert!(re(r"\bb", 0).match_at("ab", 1).is_none());
+        assert!(re(r"\bb", 0).match_at("a b", 2).is_some());
+        // An alternation keeps Python's first-alternative choice at pos.
+        assert_eq!(&re("a|ab", 0).match_at("xab", 1).expect("match")[0], "a");
+        assert_eq!(&re("(x)?y", 0).match_at("zy", 1).expect("match")[0], "y");
+    }
 
     #[test]
     fn python_classes_boundaries_and_anchors() {
