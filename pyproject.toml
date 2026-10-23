@@ -40,6 +40,10 @@ include-package-data = false
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 addopts = "-q"
+# Dump every thread's traceback when one test runs past 5 minutes (the slowest
+# takes about 40 s), so a hang names its test long before CI's 30-minute job
+# timeout kills the run with no clue (#218's Ubuntu jobs on 20 October 2026).
+faulthandler_timeout = 300
 
 [tool.ruff]
 target-version = "py314"

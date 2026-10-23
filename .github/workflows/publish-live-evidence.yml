@@ -47,7 +47,7 @@ jobs:
           python-version: "3.14"
 
       - name: Install the locked toolchain
-        uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7 # v10.2.0
+        uses: astral-sh/setup-uv@1c37ad07a6a961277cf70c0d37d6f313000f5884 # v10.3.0
         with:
           version: "0.12.0"
           enable-cache: false
@@ -175,28 +175,12 @@ jobs:
             'contains the Federal Register attribution for its own response retrieval date.'
           ) -join "`n"
 
-          # Retry-safe. A failure after the tag was created used to block every later
-          # run, because creating an existing ref fails. Reuse a tag only when it
-          # already points at this commit; a tag on another commit is a different
-          # capture and must not be published under this run's assets.
-          $existingSha = & gh api "repos/ryanduguid/au-tax-legislation-corpus/git/ref/tags/$releaseTag" --jq '.object.sha' 2>$null
-          if ($LASTEXITCODE -eq 0 -and -not [string]::IsNullOrWhiteSpace($existingSha)) {
-            if ($existingSha.Trim() -ne $env:GITHUB_SHA) {
-              throw "Tag $releaseTag already exists on another commit."
-            }
-          } else {
-            & gh api --method POST repos/ryanduguid/au-tax-legislation-corpus/git/refs --raw-field "ref=refs/tags/$releaseTag" --raw-field "sha=$env:GITHUB_SHA"
-            if ($LASTEXITCODE -ne 0) { throw 'GitHub CLI release operation failed.' }
-          }
-          $isDraft = & gh release view $releaseTag --repo ryanduguid/au-tax-legislation-corpus --json isDraft --jq '.isDraft' 2>$null
-          if ($LASTEXITCODE -eq 0 -and -not [string]::IsNullOrWhiteSpace($isDraft)) {
-            if ($isDraft.Trim() -ne 'true') {
-              throw "Release $releaseTag is already published; it is never rewritten."
-            }
-          } else {
-            & gh release create $releaseTag --repo ryanduguid/au-tax-legislation-corpus --draft --verify-tag --title $releaseTag --notes $notes
-            if ($LASTEXITCODE -ne 0) { throw 'GitHub CLI release operation failed.' }
-          }
+          # Fail closed. A pre-existing tag, draft or release for this identity fails
+          # here and is never moved, replaced or reused; an operator handles it by hand.
+          & gh api --method POST repos/ryanduguid/au-tax-legislation-corpus/git/refs --raw-field "ref=refs/tags/$releaseTag" --raw-field "sha=$env:GITHUB_SHA"
+          if ($LASTEXITCODE -ne 0) { throw 'GitHub CLI release operation failed.' }
+          & gh release create $releaseTag --repo ryanduguid/au-tax-legislation-corpus --draft --verify-tag --title $releaseTag --notes $notes
+          if ($LASTEXITCODE -ne 0) { throw 'GitHub CLI release operation failed.' }
           $batchSize = 64
           for ($offset = 0; $offset -lt $assetPaths.Count; $offset += $batchSize) {
             $last = [Math]::Min($offset + $batchSize - 1, $assetPaths.Count - 1)
