@@ -321,6 +321,10 @@ fn to_markdown(blocks: &[Block], meta: &Json, force_bare: bool) -> Result<Markdo
             let t = py::strip(&cut);
             let n = py::char_len(t);
             if 2 < n && n < 120 {
+                // to_lowercase stands in for str.lower: both apply Unicode's full
+                // lowercase mapping with Final_Sigma, and the same mapping builds
+                // and probes this set, so a match could differ from Python's only
+                // where the 2 Unicode versions or Final_Sigma contexts disagree.
                 toc_titles.insert(t.to_lowercase());
             }
         }
