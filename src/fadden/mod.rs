@@ -13,6 +13,7 @@ pub mod corpus_paths;
 pub mod discover;
 pub mod dist;
 pub mod dist_verify;
+pub mod epub;
 pub mod http;
 pub mod iso;
 pub mod live_evidence;
@@ -54,6 +55,12 @@ pub enum Exc {
         class: &'static str,
         message: String,
     },
+    /// Any other exception, named by `class`, that callers catch only as
+    /// `Exception` (`DownloadError`, `zipfile.BadZipFile`).
+    Other {
+        class: &'static str,
+        message: String,
+    },
 }
 
 impl Exc {
@@ -77,7 +84,7 @@ impl Exc {
             Exc::Overflow(_) => "OverflowError",
             Exc::Sqlite(_) => "sqlite3.Error",
             Exc::Recursion(_) => "RecursionError",
-            Exc::Shutil { class, .. } => class,
+            Exc::Shutil { class, .. } | Exc::Other { class, .. } => class,
         }
     }
 
@@ -97,7 +104,8 @@ impl std::fmt::Display for Exc {
             | Exc::Overflow(message)
             | Exc::Sqlite(message)
             | Exc::Recursion(message)
-            | Exc::Shutil { message, .. } => f.write_str(message),
+            | Exc::Shutil { message, .. }
+            | Exc::Other { message, .. } => f.write_str(message),
             Exc::Key(message) => f.write_str(message),
             Exc::Os(error) => f.write_str(&error.text),
         }
