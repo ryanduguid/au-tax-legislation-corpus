@@ -11,6 +11,11 @@
 //! sets are refused, and an incomplete set is accepted only for literal/length
 //! and distance codes whose longest code is 1 bit, the missing code then
 //! decoding as invalid after 1 bit.
+//!
+//! Scope: the subset `fadden/download.py`'s EPUB reader uses. `decompress`
+//! always gets a positive `max_length` (0, unbounded in CPython, is refused),
+//! there is no `flush()`, and `ZlibError` drops zlib's message, because the
+//! reader turns every `zlib.error` into one `DownloadError`.
 
 const ORDER: [usize; 19] = [
     16, 17, 18, 0, 8, 7, 9, 6, 10, 5, 11, 4, 12, 3, 13, 2, 14, 1, 15,
@@ -553,13 +558,17 @@ pub struct Decompress {
     pub eof: bool,
 }
 
-/// The `zlib.error` a decompress call raised.
+/// The `zlib.error` a decompress call raised, without zlib's message.
 #[derive(Debug, PartialEq, Eq)]
 pub struct ZlibError;
 
 impl Decompress {
     /// `decompress(data, max_length)` with `max_length` at least 1.
     pub fn decompress(&mut self, data: &[u8], max_length: usize) -> Result<Vec<u8>, ZlibError> {
+        assert!(
+            max_length > 0,
+            "max_length 0 is unbounded in CPython; not supported"
+        );
         let mut out = Vec::new();
         // CPython grows its output buffer in steps and calls inflate until it
         // fills max_length or inflate stops short; zlib's state carries across

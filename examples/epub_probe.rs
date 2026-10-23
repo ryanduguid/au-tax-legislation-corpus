@@ -3,8 +3,12 @@
 //! Each stdin line is an archive path. Each stdout line is `E<hex error>` when
 //! `open_epub` fails, or one `<hex name>,<file_size>,<result>` per member in
 //! `namelist()` order, separated by `;`, where the result is the member's
-//! bytes in hex or `E<hex error>`. An error is `<class>: <str(exc)>`.
+//! bytes in hex or `E<hex error>`. An error is `<class>: <str(exc)>`. With
+//! EPUB_PROBE_DIGEST set, member bytes are `H<sha256 hex>` instead, for
+//! members too large to print.
 use std::io::{BufRead, Write};
+
+use sha2::{Digest, Sha256};
 use tax_radar_au::fadden::Exc;
 use tax_radar_au::fadden::epub;
 
@@ -18,6 +22,7 @@ fn error(exc: &Exc) -> String {
 }
 
 fn main() {
+    let digest = std::env::var_os("EPUB_PROBE_DIGEST").is_some();
     let stdin = std::io::stdin();
     let mut stdout = std::io::BufWriter::new(std::io::stdout().lock());
     for line in stdin.lock().lines() {
@@ -29,6 +34,7 @@ fn main() {
                 .iter()
                 .map(|m| {
                     let result = match archive.read(&m.filename) {
+                        Ok(bytes) if digest => format!("H{}", hex(&Sha256::digest(&bytes))),
                         Ok(bytes) => hex(&bytes),
                         Err(exc) => error(&exc),
                     };
