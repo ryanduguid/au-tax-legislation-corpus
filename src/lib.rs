@@ -18,6 +18,7 @@ mod pytext;
 mod pyunicode;
 pub mod pyurl;
 pub mod pyvalue;
+pub mod pyzlib;
 pub mod radar;
 mod termsize;
 mod textwrap;
