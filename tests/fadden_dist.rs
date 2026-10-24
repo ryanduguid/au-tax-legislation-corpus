@@ -933,8 +933,9 @@ fn the_table_block_paragraph_is_replaced_with_the_subset_figure() {
     // finalize writes the paragraph dist rewrites; a reworded lead would stop the rewrite.
     let finalize = std::fs::read_to_string(
         Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("src")
             .join("fadden")
-            .join("finalize.py"),
+            .join("finalize.rs"),
     )
     .unwrap();
     assert!(finalize.contains(dist::TABLE_BLOCK_LEAD));

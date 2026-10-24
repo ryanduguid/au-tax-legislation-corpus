@@ -12,17 +12,18 @@ use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
 use tax_radar_au::fadden::{Exc, Run, finalize};
 
-const SUPPORT: [&str; 8] = [
+/// The staleness checker finalize copies to the corpus root.
+const SUPPORT: [&str; 3] = ["check_current.py", "corpus_paths.py", "http_fetch.py"];
+/// The builder stages the Python finalize also copied into build/.
+const BUILDER: [&str; 5] = [
     "discover.py",
     "versions.py",
     "download.py",
     "extract.py",
     "finalize.py",
-    "check_current.py",
-    "corpus_paths.py",
-    "http_fetch.py",
 ];
-/// `OUTPUT_HASHES` in test_finalize_phases.py.
+/// `OUTPUT_HASHES` in test_finalize_phases.py; README.md now has its
+/// "Build record" section.
 const OUTPUT_HASHES: [(&str, &str); 4] = [
     (
         "INDEX.md",
@@ -34,7 +35,7 @@ const OUTPUT_HASHES: [(&str, &str); 4] = [
     ),
     (
         "README.md",
-        "9070510df8a853a935d4fc3cecf078edc664153958e71d308b44b0e795bfe980",
+        "e407a8238190af5d3846b7a14b32d6461b4fe0ea98334c1f6e85bae97b9d65fb",
     ),
     (
         "sources.json",
@@ -208,20 +209,150 @@ fn the_phase_fixture_publishes_pythons_bytes() {
         );
     }
     assert_eq!(stdout, STDOUT);
-    for name in ["check_current.py", "corpus_paths.py", "http_fetch.py"] {
+    for name in SUPPORT {
         assert_eq!(
             std::fs::read(tree.root.join(name)).unwrap(),
             std::fs::read(tree.scratch.join(name)).unwrap(),
             "{name}"
         );
     }
-    for name in SUPPORT {
-        assert_eq!(
-            std::fs::read(tree.root.join("build").join(name)).unwrap(),
-            std::fs::read(tree.scratch.join(name)).unwrap(),
-            "{name}"
+    let built: Vec<_> = std::fs::read_dir(tree.root.join("build"))
+        .unwrap()
+        .map(|e| e.unwrap().file_name().into_string().unwrap())
+        .collect();
+    assert_eq!(built, ["build-record.json"]);
+}
+
+fn sha256_hex(bytes: &[u8]) -> String {
+    Sha256::digest(bytes)
+        .iter()
+        .map(|b| format!("{b:02x}"))
+        .collect()
+}
+
+fn digest_of(path: &Path) -> Value {
+    let bytes = std::fs::read(path).unwrap();
+    json!({"bytes": bytes.len(), "sha256": sha256_hex(&bytes)})
+}
+
+/// The build record: what it states, and that every digest is of the bytes on disk.
+#[test]
+fn the_build_record_describes_the_finalisation() {
+    let tree = phase_fixture();
+    tree.run(DATE).0.unwrap();
+    let record: Value =
+        serde_json::from_str(&read(&tree.root.join("build/build-record.json"))).unwrap();
+    assert_eq!(record["schema"], "au-tax-corpus-build-record.v1");
+    assert_eq!(record["scope"], "finalize");
+    let at = record["finalized_at"].as_str().unwrap();
+    assert!(
+        at.len() == 20 && at.ends_with('Z') && at.as_bytes()[10] == b'T',
+        "{at}"
+    );
+    assert_eq!(
+        record["source"],
+        json!({
+            "repository": "https://github.com/ryanduguid/au-tax-legislation-corpus",
+            "revision": null, "dirty": null,
+            "reason": "the binary carries no verified record of the source it was built from",
+        })
+    );
+    let exe = std::env::current_exe().unwrap();
+    assert_eq!(
+        record["implementation"],
+        json!({
+            "language": "rust",
+            "program": exe.file_name().unwrap().to_string_lossy(),
+            "version": env!("CARGO_PKG_VERSION"),
+            "sha256": sha256_hex(&std::fs::read(&exe).unwrap()),
+            "cargo_lock_sha256": null,
+            "cargo_lock_reason": "the binary carries no record of the lockfile it was built with",
+        })
+    );
+    let input = |root: &str, path: &str, file: &Path| {
+        let mut entry = json!({"root": root, "path": path});
+        entry
+            .as_object_mut()
+            .unwrap()
+            .extend(digest_of(file).as_object().unwrap().clone());
+        entry
+    };
+    let sections = |rid: &str| {
+        let path = format!("markdown/{rid}/sections.jsonl");
+        input("corpus", &path, &tree.root.join(&path))
+    };
+    let module = |name: &str| input("module", name, &tree.scratch.join(name));
+    assert_eq!(
+        record["inputs"],
+        json!([
+            sections("C2026A00001"),
+            sections("F2026L00002"),
+            module("manifest_md.json"),
+            module("manifest_raw.json"),
+            module("pii_flagged.json"),
+        ])
+    );
+    assert_eq!(record["lineage"]["known"], json!([]));
+    let tools: Vec<Value> = SUPPORT
+        .iter()
+        .map(|name| {
+            let mut entry = json!({"name": name});
+            entry.as_object_mut().unwrap().extend(
+                digest_of(&tree.root.join(name))
+                    .as_object()
+                    .unwrap()
+                    .clone(),
+            );
+            entry
+        })
+        .collect();
+    assert_eq!(
+        record["shipped_tools"],
+        json!({"requires": "Python 3.14 or later, standard library only", "files": tools})
+    );
+    assert_eq!(
+        record["environment"]["platform"],
+        format!("{}-{}", std::env::consts::OS, std::env::consts::ARCH)
+    );
+    assert!(read(&tree.root.join("README.md")).contains("\n## Build record\n"));
+}
+
+/// An earlier finalize's builder copies in build/ stop the stage before it
+/// changes anything; the copies stay.
+#[test]
+fn a_build_holding_the_python_builder_is_refused_before_any_output() {
+    for name in BUILDER {
+        let tree = phase_fixture();
+        tree.previous_outputs();
+        let build = tree.root.join("build");
+        std::fs::create_dir(&build).unwrap();
+        std::fs::write(build.join(name), "old\n").unwrap();
+        let message = runtime_error(tree.run(DATE).0);
+        assert!(
+            message.contains(&format!(
+                "holds builder scripts an earlier finalize copied there ({name})"
+            )),
+            "{message}"
         );
+        tree.assert_previous_outputs();
+        assert_eq!(read(&build.join(name)), "old\n");
+        assert!(!build.join("build-record.json").exists());
     }
+}
+
+/// A rerun discards the earlier record before its first write, so a run that
+/// fails part way leaves none.
+#[test]
+fn a_failed_rerun_leaves_no_record() {
+    let tree = phase_fixture();
+    tree.run(DATE).0.unwrap();
+    let record = tree.root.join("build/build-record.json");
+    assert!(record.exists());
+    // README.md is written after sources.json, INDEX.md and LICENCE-NOTICE.md.
+    std::fs::remove_file(tree.root.join("README.md")).unwrap();
+    std::fs::create_dir(tree.root.join("README.md")).unwrap();
+    assert!(tree.run(DATE).0.is_err());
+    assert!(!record.exists());
 }
 
 /// test_retrieval_inventory_and_assembly_are_direct_exact_phases, read from

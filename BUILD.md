@@ -6,10 +6,11 @@ intermediate JSON files beside those modules are both the inputs and the
 outputs of the pipeline. Derived corpus files are written below `./corpus/`.
 
 The builder does not accept an environment-selected output root. To build at a
-different location, copy the stage modules into that location's `build/`
-directory as shown below; the parent of `build/` is the deterministic corpus
-root. `finalize.py` still publishes that flat `build/` layout into a completed
-corpus so operators can keep running `python discover.py` there.
+different location, use a source checkout there. A completed corpus does not
+carry the builder: its `build/` holds `build-record.json` (see "The build
+record" under "Running the pipeline"), and stages are re-run from a source
+checkout. Corpora finalised before the Rust port carry the Python stage scripts
+in `build/`, and `finalize` refuses to publish beside them.
 
 ```bash
 # source checkout
@@ -25,15 +26,11 @@ python -m fadden finalize      # -> ./corpus/sources.json, INDEX.md, README.md, 
 python -m fadden rates         # -> ./corpus/rates/rates.jsonl, RATES.md
 python -m fadden capture_register -- fadden/manifest_md.json --out build/register-capture-20260829
 python -m fadden export_live_evidence_bundles -- build/register-capture-20260829 --out build/live-evidence-20260829
-
-# deployed corpus (flat scripts copied into build/)
-cd C:\ato-kb\build
-python discover.py
 ```
 
 ## Exporting monitor inputs
 
-After `finalize.py` has written a completed `sources.json`, a separately
+After the `finalize` stage has written a completed `sources.json`, a separately
 collected fabricated or reviewed observation-facts document can be projected
 by the `export_monitor_contract` stage (`src/fadden/monitor_contract.rs` in the `fadden` binary) for `tax-radar-au` (formerly `au_tax_change_impact_monitor`) without
 giving that project access to this build tree:
@@ -187,16 +184,16 @@ publication.
 In a source checkout the intermediates are regenerated, not shipped: the
 .gitignore keeps titles_all.json, acts_resolved.json, manifest_raw.json and the
 probe patches out of the tree, and only manifest_md.json and the title lists
-travel with the repository. The deployed corpus at the build root carries the
-full set that produced the current corpus, and there any single stage can be
-re-run without repeating the earlier ones.
+travel with the repository. A corpus published before the Rust port carries in
+`build/` the full set, with the Python stage scripts that produced it, and
+there any single stage can be re-run with those scripts.
 
 **`manifest_md.json` and the published corpus predate the volume-gate fix
 below.** They were produced by the extractor as it stood before it, so
 F2025L00281 is still recorded as `sections=20, words=18583` - the lossy parse,
-not what `extract.py` now produces for it. Re-running `extract.py` changes that
-entry, and `finalize.py` reads the manifest, so the corpus README's title, row
-and word totals move with it. In the deployed corpus, re-running `finalize.py` on its own reproduces
+not what the `extract` stage now produces for it. Re-running `extract` changes that
+entry, and `finalize` reads the manifest, so the corpus README's title, row
+and word totals move with it. In the corpus deployed before the Rust port, re-running its `build/finalize.py` on its own reproduces
 today's published figures, because it is fed the pre-fix manifest. Those
 intermediates are still re-runnable; they are simply not a description of what
 this code does now.
@@ -205,7 +202,7 @@ The same is true of the table stack added after that run. A table nested inside
 a cell used to discard the rows its enclosing table had already parsed. Four
 titles carry nested tables (F2005B01198, F2005L00211, F2005L01901, F2026L00716)
 and between them recovered 84 text fragments; the other 942 parse identically,
-so re-running `extract.py` moves those 4 titles' figures as well.
+so re-running `extract` moves those 4 titles' figures as well.
 
 Two more changes move the figures further. Text ahead of a document's first
 section had no row to hold it, so it reached the markdown and never
@@ -221,10 +218,10 @@ https://www.legislation.gov.au/robots.txt. All 946 titles take about 2 hours
 40 minutes. It skips any EPUB already present whose sidecar `.meta.json`
 records the same version, so re-runs cost only the new titles.
 
-`discover.py` waits 3 seconds after each keyword/collection query and 2 seconds
+`discover` waits 3 seconds after each keyword/collection query and 2 seconds
 between full pages. Its request count depends on the matching titles.
 
-`versions.py` makes one diagnostic request, then resolves up to 8 principal
+`versions` makes one diagnostic request, then resolves up to 8 principal
 titles per request, with a 1.5-second pause after each resolution request.
 Multi-title requests ask for one extra row to detect multiple current versions;
 single-title requests retain `$top=1`. Every returned row must pass the existing
@@ -242,7 +239,7 @@ is ambiguous, the 119 batch attempts and 946 singleton retries make 1,065 resolu
 requests, costing more than serial resolution. These figures are arithmetic, not
 measured full-build times; network latency and retries add time.
 
-`extract.py`, `finalize.py` and the `rates` stage are local: about 3 minutes for all 3
+The `extract`, `finalize` and `rates` stages are local: about 3 minutes for all 3
 over 946 titles.
 
 `check_current.py` is 946 API calls at 1.5 seconds, so allow half an hour. It
@@ -287,7 +284,7 @@ and rate metadata are escaped as literal Markdown.
   `fetch_json` reads each response off the socket, so no attempt can
   inherit a file from the one before it.
 - **Unordered `$skip`/`$top` paging drops rows.** `$orderby=id` is mandatory,
-  and `discover.py` raises if paged ids are not unique.
+  and `discover` raises if paged ids are not unique.
 - **`$top` is capped at 100.** Above that the API returns 400.
 - **Any filter containing `isPrincipal` returns 400.** It is applied in Python.
 - **The download endpoint answers in 2 shapes**: raw EPUB bytes, or a JSON
@@ -334,7 +331,7 @@ and rate metadata are escaped as literal Markdown.
   - No classes at all, headings as bare paragraphs (`3 Definition`).
 - **Do not decide the template from the markup.** Two attempts failed: cosmetic
   Word classes (`Header`, `ListParagraph`, `Normal`) look structural, and the
-  one-off families run past 25. `extract.py` runs the structural pass, and only
+  one-off families run past 25. `extract` runs the structural pass, and only
   when that yields no section at all re-runs with `force_bare=True`. A document
   that parsed keeps its result untouched, so this cannot corrupt an Act.
   Verified across all 175, which come out row-for-row identical.
@@ -487,14 +484,13 @@ The builder deliberately does **not** read `ATO_KB_ROOT` or `ATO_DIST`.
 Environment-selected output roots made it possible for a poisoned process
 environment to redirect downloads, deletes, or distribution output. In a source
 checkout, generated corpus files live in the deterministic `./corpus/`
-directory. To build at another location, place the scripts in that location's
-`build/` directory; they then use the parent directory as the corpus root.
+directory. To build at another location, use a source checkout there.
 
 From an empty checkout, run the stages in order. Stage names are unchanged;
 the dispatcher lives at `python -m fadden <stage>`. Intermediate JSON files
 are written beside the stage modules under `fadden/`.
 
-The `as_at`, `compare_builds`, `discover`, `dist`, `dist_verify`, `pii_scan`, `pii_scan2`, `probe13`, `rates`, `rulings`, `search` and `versions` stages are the Rust `fadden` binary, built
+The `as_at`, `compare_builds`, `discover`, `dist`, `dist_verify`, `export_monitor_contract`, `export_publication_bundles`, `extract`, `finalize`, `pii_scan`, `pii_scan2`, `probe13`, `rates`, `rulings`, `search` and `versions` stages are the Rust `fadden` binary, built
 with `cargo build --locked --release`; the dispatcher runs it with the same
 arguments and the binary keeps their command lines, messages and exit
 statuses. `FADDEN_BIN` names another build of it. An exception those Python
@@ -519,16 +515,41 @@ python -m fadden capture_register -- fadden/manifest_md.json --out build/registe
 python -m fadden export_live_evidence_bundles -- build/register-capture-20260829 --out build/live-evidence-20260829
 ```
 
-The PII scans run before `finalize.py` because the generated corpus README
-reports the scan's totals; `finalize.py` refuses to run without
+The PII scans run before `finalize` because the generated corpus README
+reports the scan's totals; `finalize` refuses to run without
 `pii_flagged.json` rather than print counts no scan produced.
 
 A rebuild that drops a title leaves its `markdown/<id>/` directory behind, and
-the rates index and MCP search would go on reading it as in force. `finalize.py`
+the rates index and MCP search would go on reading it as in force. `finalize`
 therefore stops before writing anything when `markdown/` holds a title entry
 that `manifest_md.json` does not list, and the `rates` stage does the same against the
 titles in `sources.json`. Dot-directories are ignored. Neither stage deletes
 anything: move the listed directories out of the corpus, then re-run.
+
+### The build record
+
+`finalize` writes `build/build-record.json` (schema
+`au-tax-corpus-build-record.v1`) after everything else it publishes, and
+removes the previous run's record before its first write, so a run that stops
+part way leaves none: a missing record means finalisation did not finish. The
+record holds:
+
+| Field | Content |
+| --- | --- |
+| `schema`, `scope` | The schema name, and `finalize`: the record covers this finalisation and the files it read, not the whole build (`rates` runs after it) |
+| `finalized_at` | UTC time the record was written |
+| `source` | The repository; `revision` and `dirty` are `null` with a `reason`, because the binary carries no verified record of the source it was built from |
+| `implementation` | `rust`, the program's file name, the crate version and the SHA-256 of the running executable (`FADDEN_BIN` can name any build); `cargo_lock_sha256` is `null` with a reason |
+| `inputs` | `root` (`module` for the stage's directory, `corpus` for the corpus root), `path`, `bytes` and `sha256` of each file read: `manifest_md.json`, `manifest_raw.json`, `pii_flagged.json` and each published title's `sections.jsonl`, hashed as they were read |
+| `lineage` | `known` is empty and `unknown` says why: the inputs carry no record of the stage or revision that produced them |
+| `shipped_tools` | The Python requirement and the `name`, `bytes` and `sha256` of `check_current.py`, `corpus_paths.py` and `http_fetch.py` as copied to the corpus root |
+| `environment` | The operating system and architecture |
+
+A corpus finalised by the Python stage carries the builder's scripts
+(`discover.py`, `versions.py`, `download.py`, `extract.py`, `finalize.py`) in
+`build/`. `finalize` stops before writing anything when `build/` holds any of
+them, and deletes none: finalise into a new corpus directory, or move them out
+first. Published corpora are not re-finalised in place.
 
 ### The verifier's exit status has three states
 

@@ -1,6 +1,7 @@
 //! `fadden/finalize.py`: the last corpus stage. It writes sources.json,
 //! INDEX.md, LICENCE-NOTICE.md and README.md under the corpus root, copies
-//! the support scripts there and into build/, and prints the totals.
+//! the staleness checker there, writes `build/build-record.json` and prints
+//! the totals. Unlike the Python stage it ships no builder sources in build/.
 use std::collections::{BTreeSet, HashMap};
 
 use num_bigint::BigInt;
@@ -9,12 +10,13 @@ use super::corpus_paths::{
     child, corpus_root, markdown_text, module_dir, refuse_unlisted_titles, register_id,
     require_builder_layout, script_dir_in, write_text_atomic, write_text_atomic_then,
 };
-use super::pii_scan::{dict_key, for_each_row, load};
+use super::pii_scan::{dict_key, for_each_row_hashed};
 use super::rates::{py_lt, thousands};
 use super::{Exc, Run, get, getitem, iterate, too_deep};
 use crate::argparse::Exit;
 use crate::py;
-use crate::pyjson::{Json, PyStr};
+use crate::pyio::{self, Digest};
+use crate::pyjson::{self, Json, PyStr};
 use crate::pyos::{self, OsError, Style};
 use crate::pypath::{self, PyPath};
 use crate::pyvalue::{self, Key, str_points, type_name};
@@ -111,6 +113,16 @@ interchangeable. The {notcurrent} titles listed in `sources.json` under
 `titles_not_current_version` belong to the second bucket, not the first: their
 in-force version has no published compilation, so there is no newer document to
 re-download and the path built from that date answers 404.
+
+## Build record
+
+`build/build-record.json` records this finalisation: when it ran, the `fadden`
+program that ran it (its version and SHA-256), the size and SHA-256 of every
+file it read, and the checker files copied beside this README. What the program
+cannot know, such as the source revision it was built from, is null with a
+reason rather than guessed. The record covers finalisation and its inputs, not
+the whole build. Earlier corpora shipped the builder's Python scripts in
+`build/`; the builder is now the `fadden` program in the source repository.
 
 ## Licence and attribution
 
@@ -507,10 +519,10 @@ fn py_len(value: &Json) -> Result<usize, Exc> {
 
 /// `pii_summary()`: the titles pii_flagged.json lists and its name
 /// mentions, rounded to the nearest 50.
-fn pii_summary(scratch: &str) -> Result<(usize, BigInt), Exc> {
+fn pii_summary(scratch: &str) -> Result<((usize, BigInt), Digest), Exc> {
     let path = pypath::join(scratch, "pii_flagged.json");
-    let counted = (|| -> Result<(usize, BigInt), Exc> {
-        let flagged = load(&path)?;
+    let counted = (|| -> Result<(usize, BigInt, Digest), Exc> {
+        let (flagged, digest) = load_hashed(&path)?;
         let titles = py_len(&flagged)?;
         let mut names = BigInt::from(0);
         for t in iterate(&flagged)? {
@@ -519,9 +531,9 @@ fn pii_summary(scratch: &str) -> Result<(usize, BigInt), Exc> {
                 _ => {}
             }
         }
-        Ok((titles, names))
+        Ok((titles, names, digest))
     })();
-    let (titles, names) = match counted {
+    let (titles, names, digest) = match counted {
         Err(error @ (Exc::Os(_) | Exc::Value { .. } | Exc::Type(_))) => {
             return Err(Exc::Runtime(format!(
                 "pii_flagged.json is missing or unreadable ({error}); run pii_scan.py and \
@@ -531,7 +543,14 @@ fn pii_summary(scratch: &str) -> Result<(usize, BigInt), Exc> {
         other => other?,
     };
     let rounded = (int_to_float(&names)? / 50.0).round_ties_even();
-    Ok((titles, pyvalue::float_to_int(rounded) * 50))
+    Ok(((titles, pyvalue::float_to_int(rounded) * 50), digest))
+}
+
+/// `load(path)` (`json.load` of the UTF-8 text), with the digest of the bytes read.
+fn load_hashed(path: &str) -> Result<(Json, Digest), Exc> {
+    let (text, digest) = pyio::read_text_hashed(path)?;
+    let value = pyjson::loads_standard(&text).map_err(super::json_error)?;
+    Ok((value, digest))
 }
 
 /// A title the stage publishes, with the rows its sections.jsonl holds.
@@ -595,6 +614,8 @@ struct Inventory {
     epub_bytes: Num,
     acts: usize,
     instruments: usize,
+    /// Each sections.jsonl read, relative to the corpus root.
+    read: Vec<(String, Digest)>,
 }
 
 fn str_key(text: &str) -> Key {
@@ -642,12 +663,13 @@ fn assemble(raw: &Json, markdown: &Json, root: &str) -> Result<Inventory, Exc> {
 
     let mut kinds: HashMap<Key, usize> = HashMap::new();
     let mut titles = Vec::with_capacity(order.len());
+    let mut read = Vec::with_capacity(order.len());
     for i in order {
         let entry = listed[i].clone();
         let rid = register_id(getitem(&entry, "id")?)?;
         let path = child(root, &["markdown", &rid, "sections.jsonl"])?;
         let (mut rows, mut section_rows) = (0, 0);
-        for_each_row(&path, |row| {
+        let digest = for_each_row_hashed(&path, |row| {
             rows += 1;
             let section = get(&row, "section")?.is_some_and(Json::truthy);
             if section {
@@ -661,6 +683,7 @@ fn assemble(raw: &Json, markdown: &Json, root: &str) -> Result<Inventory, Exc> {
             *kinds.entry(dict_key(&kind, "dict key")?).or_insert(0) += 1;
             Ok(())
         })?;
+        read.push((format!("markdown/{rid}/sections.jsonl"), digest));
         titles.push(Title {
             entry,
             rows,
@@ -708,6 +731,7 @@ fn assemble(raw: &Json, markdown: &Json, root: &str) -> Result<Inventory, Exc> {
         epub_bytes,
         acts: 0,
         instruments: 0,
+        read,
     };
     inventory.acts = inventory.collection("Act").map_or(0, |c| c.titles);
     inventory.instruments = inventory.titles.len() - inventory.acts;
@@ -1207,6 +1231,7 @@ fn finish(
     scratch: &str,
     retrieved: &str,
     pii: &(usize, BigInt),
+    inputs: Vec<Input>,
     run: &mut Run,
 ) -> Result<(), Exc> {
     let path = child(root, &["README.md"])?;
@@ -1214,21 +1239,21 @@ fn finish(
 
     let build = child(root, &["build"])?;
     pyos::makedirs(&PyPath::new(&build))?;
-    for name in ["check_current.py", "corpus_paths.py", "http_fetch.py"] {
-        copy_if_different(&pypath::join(scratch, name), &child(root, &[name])?)?;
+    let mut tools = Vec::new();
+    for name in ROOT_TOOLS {
+        let source = pypath::join(scratch, name);
+        copy_if_different(&source, &child(root, &[name])?)?;
+        // The copied bytes are the source's; the copy may sit inside a
+        // directory of that name, as `shutil.copy` puts it.
+        let bytes =
+            std::fs::read(&source).map_err(|e| OsError::new(&e, Some(&source), Style::Native))?;
+        tools.push((name, Digest::of(&bytes)));
     }
-    for name in [
-        "discover.py",
-        "versions.py",
-        "download.py",
-        "extract.py",
-        "finalize.py",
-        "check_current.py",
-        "corpus_paths.py",
-        "http_fetch.py",
-    ] {
-        copy_if_different(&pypath::join(scratch, name), &child(&build, &[name])?)?;
-    }
+    // Installed last: a run that stops before here leaves no record.
+    let record = build_record(inputs, &tools);
+    let mut text = pyvalue::dumps_with(&record, Some(1), false, false);
+    text.push(u32::from('\n'));
+    write_text_atomic(&child(&build, &[RECORD])?, &[text])?;
 
     let epub_mb = match &inv.epub_bytes {
         Num::Int(i) => int_to_float(i)?,
@@ -1261,8 +1286,8 @@ pub fn run(scratch: &str, retrieved: &str, run: &mut Run) -> Result<(), Exc> {
     let directory = script_dir_in(scratch, "finalize.py")?;
     let root = corpus_root(&directory);
     require_builder_layout(&directory)?;
-    let markdown = load(&pypath::join(scratch, "manifest_md.json"))?;
-    let raw = load(&pypath::join(scratch, "manifest_raw.json"))?;
+    let (markdown, markdown_digest) = load_hashed(&pypath::join(scratch, "manifest_md.json"))?;
+    let (raw, raw_digest) = load_hashed(&pypath::join(scratch, "manifest_raw.json"))?;
     let mut listed = BTreeSet::new();
     for a in iterate(&markdown)? {
         if get(&a, "markdown")?.is_some_and(Json::truthy) {
@@ -1270,8 +1295,27 @@ pub fn run(scratch: &str, retrieved: &str, run: &mut Run) -> Result<(), Exc> {
         }
     }
     refuse_unlisted_titles(&root, &listed)?;
-    let pii = pii_summary(scratch)?;
-    let inv = assemble(&raw, &markdown, &root)?;
+    let (pii, pii_digest) = pii_summary(scratch)?;
+    let mut inv = assemble(&raw, &markdown, &root)?;
+    let mut inputs = vec![
+        Input::module("manifest_md.json", markdown_digest),
+        Input::module("manifest_raw.json", raw_digest),
+        Input::module("pii_flagged.json", pii_digest),
+    ];
+    inputs.extend(
+        std::mem::take(&mut inv.read)
+            .into_iter()
+            .map(|(path, digest)| Input {
+                root: "corpus",
+                path,
+                digest,
+            }),
+    );
+
+    // The last checks before the first output changes.
+    let build = child(&root, &["build"])?;
+    refuse_legacy_build(&build)?;
+    discard_record(&child(&build, &[RECORD])?)?;
 
     let sources = sources_document(&inv, retrieved)?;
     let path = child(&root, &["sources.json"])?;
@@ -1288,7 +1332,186 @@ pub fn run(scratch: &str, retrieved: &str, run: &mut Run) -> Result<(), Exc> {
         .replacen("%s", &percent_s(ATTR_CHANGED, &[retrieved]), 1);
     write_document(&path, Ok(points(&notice)))?;
 
-    finish(&inv, &root, scratch, retrieved, &pii, run)
+    finish(&inv, &root, scratch, retrieved, &pii, inputs, run)
+}
+
+/// The checker shipped at the corpus root, with the 2 modules it imports.
+const ROOT_TOOLS: [&str; 3] = ["check_current.py", "corpus_paths.py", "http_fetch.py"];
+/// The builder stages the Python finalize copied into build/, beside copies of
+/// `ROOT_TOOLS`.
+const LEGACY_BUILDER: [&str; 5] = [
+    "discover.py",
+    "versions.py",
+    "download.py",
+    "extract.py",
+    "finalize.py",
+];
+const RECORD: &str = "build-record.json";
+const RECORD_SCHEMA: &str = "au-tax-corpus-build-record.v1";
+
+/// A file finalize read, with the digest of the bytes it consumed; `root` is
+/// `module` (the stage's directory) or `corpus` (the corpus root).
+struct Input {
+    root: &'static str,
+    path: String,
+    digest: Digest,
+}
+
+impl Input {
+    fn module(path: &str, digest: Digest) -> Input {
+        Input {
+            root: "module",
+            path: path.to_string(),
+            digest,
+        }
+    }
+}
+
+/// Refuses a build/ holding the Python builder an earlier finalize copied
+/// there: the record does not describe those files, and a second way to
+/// rewrite the corpus beside it would misdescribe how the corpus was made.
+fn refuse_legacy_build(build: &str) -> Result<(), Exc> {
+    let stale: Vec<&str> = LEGACY_BUILDER
+        .into_iter()
+        .filter(|name| std::fs::symlink_metadata(pypath::join(build, name)).is_ok())
+        .collect();
+    if stale.is_empty() {
+        return Ok(());
+    }
+    Err(Exc::Runtime(format!(
+        "{build} holds builder scripts an earlier finalize copied there ({}); this finalize \
+         writes a build record instead and does not publish beside them. Finalise into a new \
+         corpus directory, or move them out of build/ first",
+        stale.join(", ")
+    )))
+}
+
+/// Removes an earlier run's record before the first output changes, so a run
+/// that stops part way leaves no record that looks current.
+fn discard_record(path: &str) -> Result<(), Exc> {
+    match std::fs::symlink_metadata(path) {
+        Ok(meta) if !meta.is_dir() => std::fs::remove_file(path)
+            .map_err(|e| OsError::new(&e, Some(path), Style::Native).into()),
+        _ => Ok(()),
+    }
+}
+
+fn digest_json(digest: &Digest) -> [(&'static str, Json); 2] {
+    [
+        ("bytes", Json::Int(digest.bytes.into())),
+        ("sha256", Json::str(&digest.hex())),
+    ]
+}
+
+/// `build/build-record.json`: this finalisation, the binary that ran it, the
+/// bytes it read and the checker it shipped. What the binary cannot know (the
+/// source revision it was built from, its lockfile) is null with a reason.
+// "Write the vision, and make it plain upon tables" (Habakkuk 2:2, KJV).
+fn build_record(mut inputs: Vec<Input>, tools: &[(&str, Digest)]) -> Json {
+    let seconds = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |d| d.as_secs());
+    let exe = std::env::current_exe().ok();
+    let program = exe
+        .as_ref()
+        .and_then(|p| p.file_name())
+        .map_or(Json::Null, |n| Json::str(&n.to_string_lossy()));
+    let mut implementation = vec![
+        ("language", Json::str("rust")),
+        ("program", program),
+        ("version", Json::str(env!("CARGO_PKG_VERSION"))),
+    ];
+    match exe.and_then(|p| std::fs::read(p).ok()) {
+        Some(bytes) => implementation.push(("sha256", Json::str(&Digest::of(&bytes).hex()))),
+        None => {
+            implementation.push(("sha256", Json::Null));
+            implementation.push((
+                "sha256_reason",
+                Json::str("the running program could not be read"),
+            ));
+        }
+    }
+    implementation.push(("cargo_lock_sha256", Json::Null));
+    implementation.push((
+        "cargo_lock_reason",
+        Json::str("the binary carries no record of the lockfile it was built with"),
+    ));
+    inputs.sort_by(|a, b| (a.root, &a.path).cmp(&(b.root, &b.path)));
+    inputs.dedup_by(|a, b| a.root == b.root && a.path == b.path);
+    let inputs = inputs
+        .iter()
+        .map(|input| {
+            let mut pairs = vec![
+                ("root", Json::str(input.root)),
+                ("path", Json::str(&input.path)),
+            ];
+            pairs.extend(digest_json(&input.digest));
+            obj(pairs)
+        })
+        .collect();
+    let files = tools
+        .iter()
+        .map(|(name, digest)| {
+            let mut pairs = vec![("name", Json::str(name))];
+            pairs.extend(digest_json(digest));
+            obj(pairs)
+        })
+        .collect();
+    obj(vec![
+        ("schema", Json::str(RECORD_SCHEMA)),
+        ("scope", Json::str("finalize")),
+        ("finalized_at", Json::str(&super::http::utc_text(seconds))),
+        (
+            "source",
+            obj(vec![
+                ("repository", Json::str(env!("CARGO_PKG_REPOSITORY"))),
+                ("revision", Json::Null),
+                ("dirty", Json::Null),
+                (
+                    "reason",
+                    Json::str(
+                        "the binary carries no verified record of the source it was built from",
+                    ),
+                ),
+            ]),
+        ),
+        ("implementation", obj(implementation)),
+        ("inputs", Json::Array(inputs)),
+        (
+            "lineage",
+            obj(vec![
+                ("known", Json::Array(Vec::new())),
+                (
+                    "unknown",
+                    Json::str(
+                        "finalize cannot check which stage or revision produced its inputs; \
+                         they carry no record of their producer",
+                    ),
+                ),
+            ]),
+        ),
+        (
+            "shipped_tools",
+            obj(vec![
+                (
+                    "requires",
+                    Json::str("Python 3.14 or later, standard library only"),
+                ),
+                ("files", Json::Array(files)),
+            ]),
+        ),
+        (
+            "environment",
+            obj(vec![(
+                "platform",
+                Json::str(&format!(
+                    "{}-{}",
+                    std::env::consts::OS,
+                    std::env::consts::ARCH
+                )),
+            )]),
+        ),
+    ])
 }
 
 /// `datetime.date.today().isoformat()`.

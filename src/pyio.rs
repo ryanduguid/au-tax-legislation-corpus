@@ -8,6 +8,8 @@
 use std::fs::File;
 use std::io::{self, Read};
 
+use sha2::{Digest as _, Sha256};
+
 use crate::py;
 use crate::pyos::{OsError, Style};
 
@@ -40,15 +42,40 @@ fn translate(text: &str) -> String {
     py::universal_newlines(text)
 }
 
+/// The size and SHA-256 of the bytes a read consumed.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Digest {
+    pub bytes: u64,
+    pub sha256: [u8; 32],
+}
+
+impl Digest {
+    pub fn of(data: &[u8]) -> Digest {
+        Digest {
+            bytes: data.len() as u64,
+            sha256: Sha256::digest(data).into(),
+        }
+    }
+
+    pub fn hex(&self) -> String {
+        self.sha256.iter().map(|b| format!("{b:02x}")).collect()
+    }
+}
+
 /// `open(path, encoding="utf-8").read()`.
 pub fn read_text(path: &str) -> Result<String, ReadError> {
+    read_text_hashed(path).map(|(text, _)| text)
+}
+
+/// `read_text`, with the digest of the bytes it decoded.
+pub fn read_text_hashed(path: &str) -> Result<(String, Digest), ReadError> {
     let mut bytes = Vec::new();
     open(path)
         .map_err(ReadError::Os)?
         .read_to_end(&mut bytes)
         .map_err(|e| read_error(&e))?;
     let text = py::decode_utf8(&bytes).map_err(|e| ReadError::Decode(e.to_string()))?;
-    Ok(translate(&text))
+    Ok((translate(&text), Digest::of(&bytes)))
 }
 
 /// `for line in open(path, encoding="utf-8")`.
@@ -58,6 +85,7 @@ pub struct Lines {
     pending_cr: bool,
     text: String,
     eof: bool,
+    read: Option<(u64, Sha256)>,
 }
 
 impl Lines {
@@ -68,6 +96,24 @@ impl Lines {
             pending_cr: false,
             text: String::new(),
             eof: false,
+            read: None,
+        })
+    }
+
+    /// `open`, keeping a digest of the bytes read.
+    pub fn open_hashed(path: &str) -> Result<Lines, OsError> {
+        let mut lines = Lines::open(path)?;
+        lines.read = Some((0, Sha256::new()));
+        Ok(lines)
+    }
+
+    /// For `open_hashed`, the digest of the bytes read so far: the whole
+    /// file's once `next_line` has returned None.
+    pub fn digest(&self) -> Option<Digest> {
+        let (bytes, hasher) = self.read.as_ref()?;
+        Some(Digest {
+            bytes: *bytes,
+            sha256: hasher.clone().finalize().into(),
         })
     }
 
@@ -84,6 +130,10 @@ impl Lines {
             }
         }
         chunk.truncate(read);
+        if let Some((bytes, hasher)) = &mut self.read {
+            *bytes += read as u64;
+            hasher.update(&chunk);
+        }
         let last = read == 0;
         let mut input = std::mem::take(&mut self.pending);
         input.extend_from_slice(&chunk);

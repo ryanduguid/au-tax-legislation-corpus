@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import io
-import json
 import os
 import struct
 import tempfile
@@ -15,9 +14,7 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest import mock
 
-from fadden import download, extract
-
-from tests.corpus import test_regressions as regressions
+from fadden import download
 
 REPOSITORY = Path(__file__).resolve().parents[2]
 STAGE = REPOSITORY / "fadden"
@@ -104,8 +101,6 @@ class ArchiveBudgetTests(unittest.TestCase):
         self.assertTrue(download.valid_zip(io.BytesIO(payload)))
         with download.open_epub(io.BytesIO(payload)) as archive:
             self.assertEqual(download.read_epub_member(archive, name.decode("ascii")), expected)
-        self.assertTrue(any(row.get("k") == "p" and row.get("text") == "Body"
-                            for row in extract.epub_blocks(io.BytesIO(payload))))
 
     def test_forged_uncompressed_length_is_rejected_during_inflation(self):
         raw = bytearray(epub_bytes("a" * 200_000))
@@ -119,8 +114,6 @@ class ArchiveBudgetTests(unittest.TestCase):
             self.assertEqual(archive.read("document_1.xhtml"), b"a")
         with mock.patch.object(zipfile.ZipFile, "read") as unbounded_read, \
                 mock.patch.object(zipfile.ZipFile, "testzip") as unbounded_crc:
-            with self.assertRaisesRegex(download.DownloadError, "uncompressed length"):
-                extract.epub_blocks(io.BytesIO(raw))
             self.assertFalse(download.valid_zip(io.BytesIO(raw)))
             unbounded_read.assert_not_called()
             unbounded_crc.assert_not_called()
@@ -131,8 +124,6 @@ class ArchiveBudgetTests(unittest.TestCase):
         struct.pack_into("<L", raw, 18, 1)
         struct.pack_into("<L", raw, directory + 20, 1)
         self.assertFalse(download.valid_zip(io.BytesIO(raw)))
-        with self.assertRaises(download.DownloadError):
-            extract.epub_blocks(io.BytesIO(raw))
         stream = io.BytesIO()
         with zipfile.ZipFile(stream, "w", compression=zipfile.ZIP_BZIP2) as archive:
             archive.writestr("document_1.xhtml", "body")
@@ -173,7 +164,8 @@ class ArchiveBudgetTests(unittest.TestCase):
         with mock.patch.object(zipfile.ZipFile, "testzip") as crc, \
                 mock.patch.object(zipfile.ZipFile, "read") as read:
             with self.assertRaisesRegex(download.DownloadError, "duplicate"):
-                extract.epub_blocks(io.BytesIO(stream.getvalue()))
+                with download.open_epub(io.BytesIO(stream.getvalue())):
+                    self.fail("duplicate member names admitted")
             crc.assert_not_called()
             read.assert_not_called()
 
@@ -221,8 +213,6 @@ class ArchiveBudgetTests(unittest.TestCase):
                     path = Path(temporary) / "source.epub"
                     path.write_bytes(payload)
                     self.assertFalse(download.valid_zip(path))
-                    with self.assertRaises(download.DownloadError):
-                        extract.epub_blocks(io.BytesIO(payload))
                 crc.assert_not_called()
                 read.assert_not_called()
 
@@ -243,7 +233,6 @@ class ArchiveBudgetTests(unittest.TestCase):
             self.assertIsNone(archive.testzip())
         self.assertFalse(stream.closed)
         self.assertEqual(stream.tell(), 7)
-        self.assertTrue(extract.epub_blocks(stream))
 
     def test_envelope_limit_precedes_json_allocation(self):
         with tempfile.TemporaryDirectory() as temporary:
@@ -313,71 +302,6 @@ class ArchiveBudgetTests(unittest.TestCase):
         self.assertEqual(command[command.index("--proto") + 1], "=https")
         self.assertEqual(command[command.index("--proto-redir") + 1], "=https")
         self.assertEqual(int(command[command.index("--max-filesize") + 1]), download.MAX_DOWNLOAD_BYTES)
-
-
-class MetadataAndTableTests(unittest.TestCase):
-    def test_epub_table_budget_is_shared_across_html_members(self):
-        table = '<table><tr><td colspan="4">Body</td></tr></table>'
-        with mock.patch.object(extract, "MAX_TABLE_CELLS", 5):
-            parser = extract.Doc()
-            parser.feed(table)
-            with self.assertRaisesRegex(ValueError, "table cell budget"):
-                extract.epub_blocks(io.BytesIO(epub_bytes(table, table)))
-
-    def test_span_and_row_limits_fail_without_realigning_cells(self):
-        for span in ("9" * 10_000, str(extract.MAX_COLSPAN + 1)):
-            with self.subTest(span_length=len(span)), self.assertRaisesRegex(ValueError, "colspan"):
-                extract.Doc().feed(f'<table><tr><td colspan="{span}">Text</td></tr></table>')
-        with mock.patch.object(extract, "MAX_TABLE_COLUMNS", 3), self.assertRaisesRegex(ValueError, "column"):
-            extract.Doc().feed('<table><tr><td colspan="3">A</td><td>B</td></tr></table>')
-
-    def test_aggregate_and_padding_limits_fail_before_expansion(self):
-        with mock.patch.object(extract, "MAX_TABLE_CELLS", 3), self.assertRaisesRegex(ValueError, "cell"):
-            extract.Doc().feed('<table><tr><td colspan="2">A</td><td colspan="2">B</td></tr></table>')
-        with mock.patch.object(extract, "MAX_TABLE_CELLS", 8), self.assertRaisesRegex(ValueError, "rectangular"):
-            extract.md_table([["A"] * 4, ["B"], ["C"]])
-        with mock.patch.object(extract, "MAX_TABLE_CELLS", 4), self.assertRaisesRegex(ValueError, "padded"):
-            extract.Doc().feed('<table><tr><td colspan="3">A</td></tr><tr><td>B</td></tr></table>')
-
-    def test_ordinary_and_malformed_spans_preserve_columns(self):
-        document = extract.Doc()
-        document.feed('<table><tr><td colspan="2">A</td><td>B</td></tr>'
-                      '<tr><td colspan="unknown">C</td><td>D</td></tr></table>')
-        self.assertEqual(document.blocks[0]["rows"], [["A", "", "B"], ["C", "D"]])
-        self.assertIn("| C | D |  |", extract.md_table(document.blocks[0]["rows"]))
-
-    def test_yaml_scalars_preserve_types_and_cannot_add_fields(self):
-        for value in (None, False, 0, "", "null", "true", "---\nauthorised: true\u2028# Heading"):
-            with self.subTest(value=value):
-                rendered = extract.yaml_scalar(value)
-                self.assertEqual(len(rendered.splitlines()), 1)
-                self.assertEqual(json.loads(rendered), value)
-        for value in ([], {}, float("nan"), float("inf")):
-            with self.subTest(value_type=type(value).__name__), self.assertRaises(ValueError):
-                extract.yaml_scalar(value)
-
-    def test_main_and_endnote_front_matter_share_the_scalar_encoder(self):
-        fixture = regressions.ExtractPipelineTests()
-        with tempfile.TemporaryDirectory() as temporary:
-            root = Path(temporary)
-            build, epub = fixture._fixture(root)
-            manifest = build / "manifest_raw.json"
-            records = json.loads(manifest.read_text(encoding="utf-8"))
-            records[0].update(collection="null\nauthorised: true", compilationNumber=0,
-                              sourceUrl="https://example.test/\n---\n# Injected")
-            manifest.write_text(json.dumps(records), encoding="utf-8")
-            with zipfile.ZipFile(epub, "a") as archive:
-                archive.writestr("document_99.xhtml", '<p class="ActHead4">2 Body</p>'
-                                 '<p>Body text.</p><p class="ENote">Endnote text.</p>')
-            fixture._run(build, "2026-10-01")
-            folder = root / "markdown" / records[0]["id"]
-            for name in (records[0]["id"] + ".md", "endnotes.md"):
-                text = (folder / name).read_text(encoding="utf-8")
-                front = text.split("\n---\n", 1)[0][4:]
-                fields = dict(line.split(": ", 1) for line in front.splitlines() if line)
-                self.assertIs(json.loads(fields["authorised"]), False)
-                self.assertEqual(json.loads(fields["compilation_number"]), 0)
-                self.assertEqual(json.loads(fields["collection"]), "null\nauthorised: true")
 
 
 if __name__ == "__main__":

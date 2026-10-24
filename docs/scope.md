@@ -70,7 +70,7 @@ them out:
    has not cleared. Stripping the image would also destroy the only thing that
    makes shipping EPUBs worthwhile, which is that they are byte-identical to
    what the Register served. The markdown and JSONL carry no image data at all, because
-   `extract.py` never emits any, so they need nothing removed.
+   the `extract` stage never emits any, so they need nothing removed.
 2. **Twelve titles name private individuals.** The Tax Practitioners Board
    registers terminations and suspensions of tax and BAS agents as notifiable
    instruments: tables of named people with registration numbers and the

@@ -82,22 +82,6 @@ class AtomicTextWriterTests(TemporaryDirectoryTestCase):
         self.assertIs(error.__cause__, cleanup)
 
 
-class DiscoverTests(TemporaryDirectoryTestCase):
-    def test_a_title_matched_by_two_keywords_is_listed_once(self) -> None:
-        discover = regressions.load_module("discover_paths", STAGE / "discover.py")
-        discover.SCRATCH = str(self.base)
-        discover.COLLECTIONS = ["Act"]
-        discover.KEYWORDS = ["Tax", "Income"]
-        title = {"id": RID, "name": "Income Tax Act", "isPrincipal": True}
-        stdout = io.StringIO()
-        with mock.patch.object(discover, "page_titles", return_value=[title]), \
-                mock.patch.object(discover.time, "sleep"), contextlib.redirect_stdout(stdout):
-            discover.main()
-        self.assertEqual(json.loads((self.base / "titles_all.json").read_text(encoding="utf-8")),
-                         [title])
-        self.assertRegex(stdout.getvalue(), r"Act +Income +matched +1, new +0")
-
-
 class Retry13Tests(TemporaryDirectoryTestCase):
     def setUp(self) -> None:
         super().setUp()

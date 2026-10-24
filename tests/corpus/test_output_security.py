@@ -52,54 +52,19 @@ class PathAndWriteTests(unittest.TestCase):
             fetch.assert_not_called()
 
     def test_network_stages_reject_filter_injection_before_requesting(self):
-        for name in ("versions", "check_current"):
-            with self.subTest(stage=name), tempfile.TemporaryDirectory() as temporary:
-                root = Path(temporary)
-                module = regressions.load_module("injection_" + name, STAGE / (name + ".py"))
-                injected = "C2099A00001' or isCurrent eq true"
-                if name == "versions":
-                    module.SCRATCH = str(root)
-                    (root / "titles_all.json").write_text(json.dumps([
-                        {"id": injected, "name": "Synthetic", "isPrincipal": True}
-                    ]), encoding="utf-8")
-                elif name == "probe13":
-                    module.SCRATCH = str(root)
-                    (root / "manifest_raw.json").write_text(json.dumps([
-                        {"id": injected, "name": "Synthetic", "epub": None}
-                    ]), encoding="utf-8")
-                else:
-                    module.ROOT = str(root)
-                    (root / "sources.json").write_text(json.dumps({
-                        "retrieved": "2099-01-01", "titles": [{"register_id": injected}]
-                    }), encoding="utf-8")
-                with mock.patch.object(module, "fetch_json") as fetch, \
-                        mock.patch.object(sys, "argv", [name]), contextlib.redirect_stdout(io.StringIO()):
-                    with self.assertRaises(ValueError):
-                        module.main()
-                fetch.assert_not_called()
-
-    def test_malformed_version_rows_cannot_replace_resolved_or_probe_manifests(self):
-        for name in ("versions",):
-            for response in ({"value": 1}, {"value": ["wrong shape"]},
-                             {"value": [{"titleId": "C2099A00002"}]},
-                             {"value": [{"titleId": "C2099A00001", "start": "2099-02-30", "registerId": None}]},
-                             {"value": [{"titleId": "C2099A00001", "start": "2099-01-01"}]}):
-                with self.subTest(stage=name, response=response), tempfile.TemporaryDirectory() as temporary:
-                    root = Path(temporary)
-                    module = regressions.load_module("bad_rows_" + name, STAGE / (name + ".py"))
-                    module.SCRATCH = str(root)
-                    input_name = "titles_all.json" if name == "versions" else "manifest_raw.json"
-                    output_name = "acts_resolved.json" if name == "versions" else "probe13.json"
-                    (root / input_name).write_text(json.dumps([{
-                        "id": "C2099A00001", "name": "Synthetic", "isPrincipal": True, "epub": None
-                    }]), encoding="utf-8")
-                    output = root / output_name
-                    output.write_text("previous manifest", encoding="utf-8")
-                    with mock.patch.object(module, "fetch_json", return_value=response), \
-                            mock.patch.object(module.time, "sleep"), contextlib.redirect_stdout(io.StringIO()):
-                        with self.assertRaises((ValueError, RuntimeError)):
-                            module.main()
-                    self.assertEqual(output.read_text(encoding="utf-8"), "previous manifest")
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            module = regressions.load_module("injection_check_current", STAGE / "check_current.py")
+            injected = "C2099A00001' or isCurrent eq true"
+            module.ROOT = str(root)
+            (root / "sources.json").write_text(json.dumps({
+                "retrieved": "2099-01-01", "titles": [{"register_id": injected}]
+            }), encoding="utf-8")
+            with mock.patch.object(module, "fetch_json") as fetch, \
+                    mock.patch.object(sys, "argv", ["check_current"]), contextlib.redirect_stdout(io.StringIO()):
+                with self.assertRaises(ValueError):
+                    module.main()
+            fetch.assert_not_called()
 
     def test_bad_download_dates_never_reach_fetch_or_change_existing_documents(self):
         for name in ("download", "retry13"):
@@ -132,6 +97,10 @@ class PathAndWriteTests(unittest.TestCase):
             with self.subTest(value=value), self.assertRaises(ValueError):
                 corpus_paths.version_date(value)
         self.assertEqual(corpus_paths.version_date("2099-01-01T00:00:00.1234567Z"), "2099-01-01")
+        # A missing registerId is an API failure; only an explicit null means no document.
+        with self.assertRaises(ValueError):
+            corpus_paths.compilation_id({})
+        self.assertIsNone(corpus_paths.compilation_id({"registerId": None}))
 
     def test_atomic_writer_preserves_prior_bytes_and_unowned_temp(self):
         with tempfile.TemporaryDirectory() as temporary:
@@ -151,16 +120,12 @@ class PathAndWriteTests(unittest.TestCase):
             self.assertEqual(path.read_text(encoding="utf-8"), "complete replacement\n")
 
     def test_installed_locations_refuse_legacy_stages_before_side_effects(self):
-        for name in ("discover", "versions", "download", "retry13", "extract",
-                     "finalize", "check_current"):
+        for name in ("download", "retry13", "check_current"):
             module = regressions.load_module("installed_guard_" + name, STAGE / (name + ".py"))
             with self.subTest(stage=name), tempfile.TemporaryDirectory() as temporary, \
                     mock.patch.object(module, "__file__", str(Path(temporary) / "fadden" / (name + ".py"))):
                 with self.assertRaisesRegex(RuntimeError, "source checkout"):
-                    if name == "finalize":
-                        module.main("2026-10-01")
-                    else:
-                        module.main()
+                    module.main()
                 self.assertEqual(list(Path(temporary).iterdir()), [])
 
     def test_clean_package_imports_ignore_bare_helper_modules(self):

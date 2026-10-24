@@ -16,7 +16,7 @@ use super::pii::{self, contact_fingerprints, private_person_registration_details
 use super::{Exc, Run, get, getitem, head, iterate, json_error};
 use crate::argparse::Exit;
 use crate::py;
-use crate::pyio::Lines;
+use crate::pyio::{Digest, Lines};
 use crate::pyjson::{self, Json, PyStr};
 use crate::pypath;
 use crate::pyvalue::{self, Key, dumps_with, repr, str_points, type_name};
@@ -62,11 +62,21 @@ pub(crate) fn load(path: &str) -> Result<Json, Exc> {
 }
 
 /// `for line in open(sections.jsonl)`, one decoded row per non-blank line.
-pub(crate) fn for_each_row(
+pub(crate) fn for_each_row(path: &str, f: impl FnMut(Json) -> Result<(), Exc>) -> Result<(), Exc> {
+    rows(&mut Lines::open(path)?, f)
+}
+
+/// `for_each_row`, returning the digest of the file it read.
+pub(crate) fn for_each_row_hashed(
     path: &str,
-    mut f: impl FnMut(Json) -> Result<(), Exc>,
-) -> Result<(), Exc> {
-    let mut lines = Lines::open(path)?;
+    f: impl FnMut(Json) -> Result<(), Exc>,
+) -> Result<Digest, Exc> {
+    let mut lines = Lines::open_hashed(path)?;
+    rows(&mut lines, f)?;
+    Ok(lines.digest().expect("opened hashed"))
+}
+
+fn rows(lines: &mut Lines, mut f: impl FnMut(Json) -> Result<(), Exc>) -> Result<(), Exc> {
     while let Some(line) = lines.next_line() {
         let line = line?;
         if py::strip(&line).is_empty() {

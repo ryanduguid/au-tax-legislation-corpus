@@ -31,8 +31,7 @@ class FaddenCliTests(unittest.TestCase):
         # The dispatcher imports fadden.<stage> for real; the mocked
         # forwarding test below cannot catch a stage whose bare imports only
         # resolve in the flat deployed layout. This one imports every stage
-        # the way `python -m fadden` does. Most Rust stages have no module;
-        # discover and versions keep theirs because finalize copies them.
+        # the way `python -m fadden` does. Rust stages have no module.
         for stage in STAGES:
             if importlib.util.find_spec(f"fadden.{stage}") is None:
                 continue
