@@ -6,7 +6,7 @@
 //! a non-multiline `$` also matches before a final newline, and `re.IGNORECASE`
 //! lets an ASCII letter match the non-ASCII letters Python pairs with it.
 use crate::py;
-use fancy_regex::{Captures, Regex, RegexBuilder};
+use fancy_regex::{Captures, Regex, RegexBuilder, RegexInput};
 use std::collections::HashMap;
 use std::fmt::Write as _;
 use std::hash::BuildHasherDefault;
@@ -30,10 +30,6 @@ pub struct Re {
     /// slower, so matching without groups goes to these directly.
     plain_exact: Option<regex::Regex>,
     plain_native: Option<regex::Regex>,
-    /// The patterns behind `\G`, for `match_at`: an unanchored search would scan
-    /// the rest of the text whenever there is no match at the position.
-    anchored_exact: Regex,
-    anchored_native: Option<Regex>,
 }
 
 fn build(pattern: &str, translated: &str) -> Regex {
@@ -78,10 +74,7 @@ pub fn re(pattern: &str, flags: u8) -> Arc<Re> {
     let translated = translate(pattern, flags);
     let native = translate_with(pattern, flags, true);
     let plain = |p: &str| regex::Regex::new(p).ok();
-    let anchored = |p: &str| build(pattern, &format!(r"\G(?:{p})"));
     let compiled = Arc::new(Re {
-        anchored_native: (native != translated).then(|| anchored(&native)),
-        anchored_exact: anchored(&translated),
         plain_native: (native != translated).then(|| plain(&native)).flatten(),
         plain_exact: plain(&translated),
         native: (native != translated).then(|| build(pattern, &native)),
@@ -146,14 +139,12 @@ impl Re {
             .map(Caps::Fancy)
     }
 
-    /// `pattern.match(text, pos)`: a match that starts at `pos`.
+    /// `pattern.match(text, pos)`: a match that starts at `pos`. An anchored search,
+    /// rather than an unanchored one checked afterwards, stops at `pos` instead of
+    /// scanning the rest of the text whenever nothing matches there.
     pub fn match_at<'t>(&self, text: &'t str, pos: usize) -> Option<Caps<'t>> {
-        let engine = match &self.anchored_native {
-            Some(native) if self.native_fits(text) => native,
-            _ => &self.anchored_exact,
-        };
-        engine
-            .captures_from_pos(text, pos)
+        self.engine(text)
+            .captures_input(RegexInput::new(text).from_pos(pos).anchored(true))
             .expect("unbounded backtracking")
             .map(Caps::Fancy)
     }
@@ -743,6 +734,78 @@ mod tests {
         // An alternation keeps Python's first-alternative choice at pos.
         assert_eq!(&re("a|ab", 0).match_at("xab", 1).expect("match")[0], "a");
         assert_eq!(&re("(x)?y", 0).match_at("zy", 1).expect("match")[0], "y");
+    }
+
+    /// `(whole match, span, groups)` for `match_at`, as CPython 3.15 reports it.
+    type Found<'a> = Option<(&'a str, (usize, usize), Vec<Option<&'a str>>)>;
+
+    fn found<'t>(pattern: &str, text: &'t str, pos: usize) -> Found<'t> {
+        re(pattern, 0).match_at(text, pos).map(|m| {
+            let whole = m.get(0).expect("group 0");
+            let groups = (1..m.len()).map(|i| m.get(i).map(|g| g.as_str())).collect();
+            (whole.as_str(), (whole.start(), whole.end()), groups)
+        })
+    }
+
+    #[test]
+    fn match_at_agrees_with_cpython_at_nonzero_positions() {
+        // Each expectation is CPython 3.15's re.compile(pattern).match(text, pos).
+        assert_eq!(found("(?i)a", "xA", 1), Some(("A", (1, 2), vec![])));
+        assert_eq!(found("(?i:a)b", "xAb", 1), Some(("Ab", (1, 3), vec![])));
+        assert_eq!(found("(?i:a)b", "xAB", 1), None);
+        assert_eq!(found("(?m)^a", "x\na", 2), Some(("a", (2, 3), vec![])));
+        assert_eq!(found("(?m)^a", "xa", 1), None);
+        assert_eq!(found("^a", "xa", 1), None);
+        assert_eq!(found(r"\Ab", "ab", 1), None);
+        assert_eq!(found("a$", "xa", 1), Some(("a", (1, 2), vec![])));
+        assert_eq!(found("a|ab", "xab", 1), Some(("a", (1, 2), vec![])));
+        assert_eq!(found("a*", "xb", 1), Some(("", (1, 1), vec![])));
+        assert_eq!(found("a*", "xaab", 1), Some(("aa", (1, 3), vec![])));
+        assert_eq!(found("", "abc", 3), Some(("", (3, 3), vec![])));
+        assert_eq!(found("(?<=a)b", "ab", 1), Some(("b", (1, 2), vec![])));
+        assert_eq!(found(r"\bb", "ab", 1), None);
+        assert_eq!(found(r"\bb", "a b", 2), Some(("b", (2, 3), vec![])));
+        // An optional group that took no part is None, not "" (fancy-regex 0.19.0's defect).
+        assert_eq!(found(r"(\w+)?", "", 0), Some(("", (0, 0), vec![None])));
+        assert_eq!(found(r"(\w+)?", "x-", 1), Some(("", (1, 1), vec![None])));
+        assert_eq!(found("(a)|b", "xb", 1), Some(("b", (1, 2), vec![None])));
+    }
+
+    #[test]
+    fn attribute_captures_match_cpython() {
+        // The HTML parser's pattern at the attribute after "<a ".
+        let groups = |text| {
+            found(crate::htmlparser::ATTRFIND_TOLERANT, text, 3)
+                .map(|(whole, _, groups)| (whole, groups))
+        };
+        assert_eq!(groups("<a b>"), Some(("b", vec![Some("b"), None, None])));
+        assert_eq!(
+            groups("<a b=>"),
+            Some(("b=", vec![Some("b"), Some("="), Some("")]))
+        );
+        assert_eq!(
+            groups(r#"<a b="">"#),
+            Some((r#"b="""#, vec![Some("b"), Some(r#"="""#), Some(r#""""#)]))
+        );
+        assert_eq!(
+            groups("<a b=''>"),
+            Some(("b=''", vec![Some("b"), Some("=''"), Some("''")]))
+        );
+        assert_eq!(
+            groups("<a b=c d>"),
+            Some(("b=c ", vec![Some("b"), Some("=c"), Some("c")]))
+        );
+        assert_eq!(
+            groups(r#"<a b = "x y">"#),
+            Some((
+                r#"b = "x y""#,
+                vec![Some("b"), Some(r#" = "x y""#), Some(r#""x y""#)]
+            ))
+        );
+        assert_eq!(
+            groups("<a b=/>"),
+            Some(("b=/", vec![Some("b"), Some("=/"), Some("/")]))
+        );
     }
 
     #[test]

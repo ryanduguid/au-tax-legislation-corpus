@@ -37,7 +37,7 @@ const CDATA_CONTENT_ELEMENTS: [&str; 6] =
 const RCDATA_CONTENT_ELEMENTS: [&str; 2] = ["textarea", "title"];
 
 const TAGFIND_TOLERANT: &str = r"([a-zA-Z][^\t\n\r\f />]*)(?:[\t\n\r\f ]|/(?!>))*";
-const ATTRFIND_TOLERANT: &str = concat!(
+pub(crate) const ATTRFIND_TOLERANT: &str = concat!(
     r#"((?<=['"\t\n\r\f /])[^\t\n\r\f />][^\t\n\r\f /=>]*)"#,
     r#"([\t\n\r\f ]*=[\t\n\r\f ]*('[^']*'|"[^"]*"|(?!['"])[^>\t\n\r\f ]*))?"#,
     r"(?:[\t\n\r\f ]|/(?!>))*",
