@@ -11,7 +11,7 @@ use super::corpus_paths::{
 };
 use super::pii_scan::{dict_key, for_each_row, load};
 use super::rates::{py_lt, thousands};
-use super::{ENCODE_DEPTH, Exc, Run, get, getitem, iterate, too_deep};
+use super::{Exc, Run, get, getitem, iterate, too_deep};
 use crate::argparse::Exit;
 use crate::py;
 use crate::pyjson::{Json, PyStr};
@@ -908,12 +908,21 @@ fn scalar(value: &Json) -> Result<Option<P>, Exc> {
     })
 }
 
+/// The deepest container level `json.dump` reaches writing sources.json under
+/// `python -m fadden finalize` (CPython 3.15, base revision): its pure-Python
+/// encoder takes a frame per container and meets the recursion limit of 1,000
+/// with a manifest `long_title` nested 989 deep, below sources.json's 3 levels
+/// (`finalize_depth_dispatch.py`). A manifest nested past `pyjson::MAX_DEPTH`
+/// is refused while it is read, where Python's decoder goes on to its C-stack
+/// limit: nothing is published either way, but the message differs.
+const SOURCES_DEPTH: usize = 992;
+
 /// The pieces `json.dump(value, f, indent=1, ensure_ascii=False)` hands to
 /// `f.write`, in order, until the exception that stops it, if any. As in
 /// CPython 3.15, an exception raised encoding an item carries a note per
 /// enclosing list or dict naming the item.
 fn encode(value: &Json, level: usize, chunks: &mut Vec<P>) -> Result<(), Exc> {
-    if matches!(value, Json::Array(_) | Json::Object(_)) && level >= ENCODE_DEPTH {
+    if matches!(value, Json::Array(_) | Json::Object(_)) && level >= SOURCES_DEPTH {
         return Err(too_deep());
     }
     match value {
@@ -1370,6 +1379,25 @@ mod tests {
                 .is_empty()
         );
         assert!(keywords_in_name(&Json::Int(1.into())).is_err());
+    }
+
+    #[test]
+    fn sources_nesting_stops_where_the_python_dispatch_path_does() {
+        let nested = |depth: usize| {
+            (0..depth).fold(Json::Str(PyStr::Text("x".into())), |v, _| {
+                Json::Array(vec![v])
+            })
+        };
+        // On a stack as large as the binary's stage thread.
+        std::thread::Builder::new()
+            .stack_size(64 << 20)
+            .spawn(move || {
+                assert!(encode(&nested(SOURCES_DEPTH), 0, &mut Vec::new()).is_ok());
+                assert!(encode(&nested(SOURCES_DEPTH + 1), 0, &mut Vec::new()).is_err());
+            })
+            .unwrap()
+            .join()
+            .unwrap();
     }
 
     #[test]
