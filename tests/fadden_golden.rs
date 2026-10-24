@@ -8,7 +8,10 @@
 //! Outputs are normalised as the harness normalised them: the case directory
 //! reads `ROOT`, the module directory `MODULE`, generated stage, backup and
 //! temporary names `HEX`, whole-second sleeps in the discover and versions
-//! fake-http logs `sleep N`, and bytes that are not UTF-8 `\xNN`. `rulings`, `probe13`, `discover` and
+//! fake-http logs `sleep N`, finalize's date (today's) `TODAY`, and bytes
+//! that are not UTF-8 `\xNN`. finalize's `build/build-record.json` holds a
+//! timestamp and the binary's digest, so it is checked by its schema and
+//! input digests rather than by a recorded hash. `rulings`, `probe13`, `discover` and
 //! `versions` fetch over HTTP, so their cases need the scripted responses of
 //! the `fake-http` feature: `cargo test --features fake-http --test fadden_golden`.
 use std::collections::BTreeMap;
@@ -56,11 +59,17 @@ fn module_source() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR")).join("fadden")
 }
 
+/// The module's JSON data and the tools finalize ships at the corpus root.
 fn module_data() -> Vec<(String, Vec<u8>)> {
+    const SHIPPED: [&str; 3] = ["check_current.py", "corpus_paths.py", "http_fetch.py"];
     std::fs::read_dir(module_source())
         .unwrap()
         .map(|e| e.unwrap().path())
-        .filter(|p| p.extension().is_some_and(|x| x == "json"))
+        .filter(|p| {
+            p.extension().is_some_and(|x| x == "json")
+                || p.file_name()
+                    .is_some_and(|n| SHIPPED.iter().any(|s| n == *s))
+        })
         .map(|p| {
             let name = p.file_name().unwrap().to_string_lossy().into_owned();
             (name, std::fs::read(&p).unwrap())
@@ -98,7 +107,7 @@ fn decode(data: &[u8]) -> String {
     out
 }
 
-fn normalise(data: &[u8], work: &Path, module: &Path) -> String {
+fn normalise(data: &[u8], work: &Path, module: &Path, dates: &[String]) -> String {
     let mut data = data.to_vec();
     if data.starts_with(b"SQLite format 3\x00") && data.len() >= 100 {
         // The bundled SQLite records its own version at offset 96.
@@ -112,6 +121,9 @@ fn normalise(data: &[u8], work: &Path, module: &Path) -> String {
     out = TEMP_NAME.replace_all(&out, ".HEX.tmp").into_owned();
     for form in forms(module) {
         out = out.replace(&form, "MODULE");
+    }
+    for date in dates {
+        out = out.replace(date.as_str(), "TODAY");
     }
     out
 }
@@ -128,7 +140,12 @@ fn files_under(dir: &Path, found: &mut Vec<PathBuf>) {
 
 /// Every file and directory the case left, the copied module's unchanged data
 /// left out, as the SHA-256 of its normalised text (None for a directory).
-fn snapshot(family: &str, work: &Path, module: &Path) -> BTreeMap<String, Option<String>> {
+fn snapshot(
+    family: &str,
+    work: &Path,
+    module: &Path,
+    dates: &[String],
+) -> BTreeMap<String, Option<String>> {
     let base: BTreeMap<String, Vec<u8>> = module_data().into_iter().collect();
     let mut paths = Vec::new();
     files_under(work, &mut paths);
@@ -153,7 +170,7 @@ fn snapshot(family: &str, work: &Path, module: &Path) -> BTreeMap<String, Option
             }
         }
         let value = (!path.is_dir()).then(|| {
-            let text = normalise(&std::fs::read(&path).unwrap(), work, module);
+            let text = normalise(&std::fs::read(&path).unwrap(), work, module, dates);
             // Stage 5 fixtures were recorded after the harness began this rewrite.
             if rel == "http.log" && matches!(family, "discover" | "versions") {
                 sha256(&WHOLE_SLEEP.replace_all(&text, "sleep $1"))
@@ -217,6 +234,52 @@ fn unordered(family: &str, line: &str) -> String {
         .into_owned()
 }
 
+/// What is wrong with finalize's build record, if anything: its schema, scope
+/// and implementation, its shipped tools, and each input's size and SHA-256
+/// against the file on disk (the corpus root is the record's grandparent).
+fn build_record_problem(path: &Path, module: &Path) -> Option<String> {
+    let record: Value = match std::fs::read(path).map(|b| serde_json::from_slice(&b)) {
+        Ok(Ok(record)) => record,
+        other => return Some(format!("unreadable: {other:?}")),
+    };
+    if record["schema"] != "au-tax-corpus-build-record.v1"
+        || record["scope"] != "finalize"
+        || record["implementation"]["language"] != "rust"
+        || !record["source"]["revision"].is_null()
+    {
+        return Some("schema, scope, implementation or revision".into());
+    }
+    let tools: Vec<&str> = record["shipped_tools"]["files"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter_map(|f| f["name"].as_str())
+        .collect();
+    if tools != ["check_current.py", "corpus_paths.py", "http_fetch.py"] {
+        return Some(format!("shipped tools {tools:?}"));
+    }
+    let corpus = path.parent()?.parent()?;
+    for input in record["inputs"].as_array()? {
+        let base = match input["root"].as_str() {
+            Some("corpus") => corpus,
+            Some("module") => module,
+            other => return Some(format!("input root {other:?}")),
+        };
+        let file = base.join(input["path"].as_str()?);
+        let Ok(bytes) = std::fs::read(&file) else {
+            return Some(format!("input {} missing", file.display()));
+        };
+        let digest: String = Sha256::digest(&bytes)
+            .iter()
+            .map(|b| format!("{b:02x}"))
+            .collect();
+        if input["sha256"] != digest.as_str() || input["bytes"] != bytes.len() {
+            return Some(format!("input {} digest or size", file.display()));
+        }
+    }
+    None
+}
+
 /// Run one case and return what differs from Python, if anything.
 fn run_case(family: &str, case: &Value, shared_module: &Path) -> Option<String> {
     let dir = tempfile::tempdir().unwrap();
@@ -256,6 +319,11 @@ fn run_case(family: &str, case: &Value, shared_module: &Path) -> Option<String> 
     };
     let expected = &case["expected"][PLATFORM];
     let mut problems = Vec::new();
+    // finalize is given today's date; a run across midnight may meet either.
+    let mut dates = Vec::new();
+    if family == "finalize" {
+        dates.push(tax_radar_au::fadden::http::local_today());
+    }
     for (n, argv) in steps.iter().enumerate() {
         let mut command = Command::new(env!("CARGO_BIN_EXE_fadden"));
         command
@@ -272,9 +340,15 @@ fn run_case(family: &str, case: &Value, shared_module: &Path) -> Option<String> 
                 .env("FADDEN_FAKE_HTTP_LOG", work.join("http.log"));
         }
         let out = command.output().unwrap();
-        let stdout = normalise(&out.stdout, &work, &module);
+        if family == "finalize" {
+            let day = tax_radar_au::fadden::http::local_today();
+            if !dates.contains(&day) {
+                dates.push(day);
+            }
+        }
+        let stdout = normalise(&out.stdout, &work, &module, &dates);
         let stdout = sorted_exts(&CONTACT_DETAIL.replace_all(&stdout, "$1<findings>"));
-        let stderr = normalise(&out.stderr, &work, &module).replace("\r\n", "\n");
+        let stderr = normalise(&out.stderr, &work, &module, &dates).replace("\r\n", "\n");
         let want = &expected["steps"][n];
         let code = out.status.code().unwrap_or(-1);
         if i64::from(code) != want[0].as_i64().unwrap() {
@@ -292,9 +366,19 @@ fn run_case(family: &str, case: &Value, shared_module: &Path) -> Option<String> 
             problems.push(format!("step {n}: stderr\n{stderr}\nPython\n{want_err}"));
         }
     }
-    let left = snapshot(family, &work, &module);
+    let mut left = snapshot(family, &work, &module, &dates);
     let want: BTreeMap<String, Option<String>> =
         serde_json::from_value(expected["files"].clone()).unwrap();
+    for (key, value) in &want {
+        if value.as_deref() == Some("build-record") {
+            match build_record_problem(&work.join(key), &module) {
+                None => {
+                    left.insert(key.clone(), value.clone());
+                }
+                Some(problem) => problems.push(format!("{key}: {problem}")),
+            }
+        }
+    }
     if left != want {
         let differ: Vec<&String> = left
             .keys()
@@ -352,6 +436,16 @@ fn dist_verify_matches_python() {
 #[test]
 fn dist_matches_python() {
     family("dist");
+}
+
+#[test]
+fn extract_matches_python() {
+    family("extract");
+}
+
+#[test]
+fn finalize_matches_python() {
+    family("finalize");
 }
 
 #[cfg(feature = "fake-http")]
