@@ -764,6 +764,58 @@ mod tests {
         assert!(d.eof);
     }
 
+    /// A dynamic-Huffman block (Python's `zlib.compressobj(9, DEFLATED, -15)`
+    /// over the text built here): the inflater's main path, through the
+    /// table lookup and the walk.
+    #[test]
+    fn a_dynamic_block_inflates() {
+        let hex = concat!(
+            "9d98cb8edb300c00effd0a1fd39ba8b73e2748dd36c06e1cacb38bf6efbb2d0a647c30c9e496032d30238ae2",
+            "689d4fb7f37299c2b47c9f6e3fe7e978ba4dc7ebf5e53cafd36d99ce97d3f23a4f87f0f5cbfa3f5476426fc7",
+            "5fd341ee717127eeb8aef3babece97db74c8f7f0b413bebe5fe7b7e3e5f27efc177618f74ff2ce272ff3c7ef",
+            "cf54ea3db2ec44fe58966feb7488e51e5af7f298df3ecea7cfdf8784859bc12d23ddae81ab40311ce43a484b",
+            "70b24bf846547811e948d4e9e586d864e26b11e1d9e0c7d8a2f14be4511d002b976edee243a148570926c21e",
+            "3ac186e315834950907a148360411e316a0807ea3a26cfe94591c4ec45c81651548499a9571de1602ecd4458",
+            "48bc1b083b62877a88511e293808461c9d244e821df9a4a8122c6cb0c96882a8aa944d821d9d2d158360c5a6",
+            "a7aa9e63226c0e84c2a5bb17214a3d0d156145680e4627c4ce64b12f1210cfd140285c3ba95588c0ec203870",
+            "cc72f112c43ee5aa126cbcb29bd109b96cb7ef12a63e0c820c2e4123c82c8a3810f22f96f804c2925484dca2",
+            "9275841c7b8a7d97a0ac4a3508b2604bd308f22494eeb98e99f678e218d7a04f836813557482ec41359a08d9",
+            "dc6ab2ee12544acd1a42f6e35a1c08d9ec6b7de232a94d9f097159d56e1421110efb32c1446da908afeea6ca",
+            "086782e6d2111cb3969e18689aae241c989ae1249cc69a2d251cf39a65251c209baa259c4c9bc74b38f6f6f0",
+            "c458dd7531e1d8de0d31a113745b4cb8b2e5259498ae8a09eda87bc484ead5dbe366d7752fa13876c34b3652",
+            "6a7b096577585e428b1eaa97d0ce87c74b68fe233ffeae300c2d41a46125603d6c29c1591b96937065d54928",
+            "f2c1e324831f789d84c825e852c2fd94605849da2c9c1faa4109a6976ce8a862b27d70f198091f0082d74c36",
+            "0f2f415793cdc38b186eb279761179a41b8a5872b2797d11dd4e360bbbfc84f5225e41d9bcbf8861287cde14",
+            "435164f307fa4337b38825297faffd3f",
+        );
+        let stream: Vec<u8> = (0..hex.len())
+            .step_by(2)
+            .map(|i| u8::from_str_radix(&hex[i..i + 2], 16).unwrap())
+            .collect();
+        assert_eq!((stream[0] >> 1) & 3, 2, "a dynamic block");
+        let words = [
+            "income",
+            "tax",
+            "assessment",
+            "superannuation",
+            "levy",
+            "goods",
+            "services",
+        ];
+        let text: String = (0..120)
+            .map(|i| {
+                format!(
+                    "section {i} of the act applies to {} ({})\n",
+                    words[i % 7],
+                    i * i % 97
+                )
+            })
+            .collect();
+        let mut d = Decompress::default();
+        assert_eq!(d.decompress(&stream, 1 << 20).unwrap(), text.as_bytes());
+        assert!(d.eof && d.unused_data.is_empty());
+    }
+
     #[test]
     fn trailing_bytes_become_unused_data() {
         let mut d = Decompress::default();
