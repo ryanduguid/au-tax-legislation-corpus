@@ -176,16 +176,19 @@ fn letter_after(text: &str, prefix: &str) -> bool {
 
 /// `html.parser._unescape_attrvalue`.
 fn unescape_attrvalue(value: &str) -> String {
-    re(r"&(#[0-9]+|#[xX][0-9a-fA-F]+|[a-zA-Z][a-zA-Z0-9]*)[;=]?", 0).sub_with(value, |m| {
-        let reference = &m[0];
-        if reference.starts_with("&#")
-            || (!reference.ends_with('=') && html::is_html5_entity(&reference[1..]))
-        {
-            html::unescape(reference)
-        } else {
-            reference.to_owned()
-        }
-    })
+    crate::static_re!(r"&(#[0-9]+|#[xX][0-9a-fA-F]+|[a-zA-Z][a-zA-Z0-9]*)[;=]?", 0).sub_with(
+        value,
+        |m| {
+            let reference = &m[0];
+            if reference.starts_with("&#")
+                || (!reference.ends_with('=') && html::is_html5_entity(&reference[1..]))
+            {
+                html::unescape(reference)
+            } else {
+                reference.to_owned()
+            }
+        },
+    )
 }
 
 struct Parser<'h> {
@@ -380,7 +383,7 @@ impl Parser<'_> {
                 }
                 i = self.updatepos(i, k as usize);
             } else if rest.starts_with("&#") {
-                let found = re("&#(?:[0-9]+|[xX][0-9a-fA-F]+)[^0-9a-fA-F]", 0)
+                let found = crate::static_re!("&#(?:[0-9]+|[xX][0-9a-fA-F]+)[^0-9a-fA-F]", 0)
                     .match_at(&self.rawdata, i)
                     .map(|m| reference(&m, 2));
                 if let Some((name, k)) = found {
@@ -388,7 +391,7 @@ impl Parser<'_> {
                     i = self.updatepos(i, k);
                     continue;
                 }
-                if re("&#(?:[0-9]|[xX][0-9a-fA-F])", 0)
+                if crate::static_re!("&#(?:[0-9]|[xX][0-9a-fA-F])", 0)
                     .match_at(&self.rawdata, i)
                     .is_some()
                 {
@@ -404,7 +407,7 @@ impl Parser<'_> {
                     break;
                 }
             } else if rest.starts_with('&') {
-                let found = re("&([a-zA-Z][-.a-zA-Z0-9]*)[^a-zA-Z0-9]", 0)
+                let found = crate::static_re!("&([a-zA-Z][-.a-zA-Z0-9]*)[^a-zA-Z0-9]", 0)
                     .match_at(&self.rawdata, i)
                     .map(|m| reference(&m, 1));
                 if let Some((name, k)) = found {
@@ -412,7 +415,10 @@ impl Parser<'_> {
                     i = self.updatepos(i, k);
                     continue;
                 }
-                if re("&[a-zA-Z#]", 0).match_at(&self.rawdata, i).is_some() {
+                if crate::static_re!("&[a-zA-Z#]", 0)
+                    .match_at(&self.rawdata, i)
+                    .is_some()
+                {
                     if end {
                         self.emit(Event::EntityRef(self.rawdata[i + 1..].to_owned()));
                         i = self.updatepos(i, n);
@@ -465,9 +471,9 @@ impl Parser<'_> {
 
     fn parse_comment(&mut self, i: usize) -> isize {
         // An empty comment is abruptly closed by the first ">" or "->".
-        let m = re("-?>", 0)
+        let m = crate::static_re!("-?>", 0)
             .match_at(&self.rawdata, i + 4)
-            .or_else(|| re("--!?>", 0).search_at(&self.rawdata, i + 4));
+            .or_else(|| crate::static_re!("--!?>", 0).search_at(&self.rawdata, i + 4));
         let Some(m) = m else { return -1 };
         let whole = m.get(0).expect("group 0");
         let (start, end) = (whole.start(), whole.end());

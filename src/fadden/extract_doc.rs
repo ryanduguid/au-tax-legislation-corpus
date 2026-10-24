@@ -13,7 +13,6 @@ use super::epub;
 use crate::htmlparser::{self, Event};
 use crate::py;
 use crate::pypath;
-use crate::pyre::re;
 
 const MAX_COLSPAN: i128 = 1024;
 pub const MAX_TABLE_COLUMNS: usize = 4096;
@@ -528,7 +527,7 @@ pub fn epub_blocks(path: &str) -> Result<Vec<Block>, Exc> {
 pub fn epub_blocks_in(archive: &epub::Epub) -> Result<Vec<Block>, Exc> {
     let mut keyed = Vec::new();
     for name in archive.namelist().filter(|n| is_document(n)) {
-        let number = match re(r"document_(\d+)", 0).search(name) {
+        let number = match crate::static_re!(r"document_(\d+)", 0).search(name) {
             Some(m) => py::parse_int(&m[1], 10).map_err(Exc::value)?,
             None => BigInt::from(0),
         };

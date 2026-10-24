@@ -84,6 +84,17 @@ pub fn re(pattern: &str, flags: u8) -> Arc<Re> {
     compiled
 }
 
+/// `re(pattern, flags)` for a constant pattern, compiled once per call site,
+/// so a hot loop skips the cache's lock and lookups.
+#[macro_export]
+macro_rules! static_re {
+    ($pattern:expr, $flags:expr) => {{
+        static COMPILED: std::sync::LazyLock<std::sync::Arc<$crate::pyre::Re>> =
+            std::sync::LazyLock::new(|| $crate::pyre::re($pattern, $flags));
+        &**COMPILED
+    }};
+}
+
 /// `re.fullmatch(pattern, text, flags)`: the pattern anchored at both ends, so alternatives
 /// and quantifiers backtrack until the whole text matches.
 pub fn fullmatch(pattern: &str, flags: u8, text: &str) -> bool {

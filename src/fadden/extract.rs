@@ -20,7 +20,7 @@ use crate::pydatetime;
 use crate::pyjson::{self, Json, PyStr};
 use crate::pyos::{self, OsError, Style};
 use crate::pypath::{self, PyPath};
-use crate::pyre::{I, re};
+use crate::pyre::{I, Re};
 use crate::pyvalue::{self, py_eq, str_points};
 
 const LICENCE: &str = "CC BY 4.0";
@@ -52,9 +52,9 @@ const BARE_CONTAINER: &str =
 // a dot, so the greedy run matches the same text.
 const TOC_LEADER: &str = r"(?<!\.)\s*\.{2,}\s*\d*$";
 
-/// `re.match(pattern, text, flags)`.
-fn matches(pattern: &str, flags: u8, text: &str) -> bool {
-    re(pattern, flags).match_at(text, 0).is_some()
+/// `re.match(pattern, text)` for a compiled pattern.
+fn matches(pattern: &Re, text: &str) -> bool {
+    pattern.match_at(text, 0).is_some()
 }
 
 fn head_level(base: &str) -> Option<usize> {
@@ -66,7 +66,7 @@ fn head_level(base: &str) -> Option<usize> {
         _ => None,
     };
     mapped.or_else(|| {
-        re(IASB_HEAD, I)
+        crate::static_re!(IASB_HEAD, I)
             .match_at(base, 0)
             .map(|m| if &m[1] == "1" { 2 } else { 5 })
     })
@@ -275,8 +275,8 @@ fn to_markdown(blocks: &[Block], meta: &Json, force_bare: bool) -> Result<Markdo
     let vol_gate_at = |seg: &[Block], start: usize| {
         seg.iter().enumerate().find_map(|(off, b)| match b {
             Block::P { cls, .. }
-                if matches(CONTENTS_CLASS, I, cls)
-                    || matches(PREBODY_CLASS, I, first_token(cls)) =>
+                if matches(crate::static_re!(CONTENTS_CLASS, I), cls)
+                    || matches(crate::static_re!(PREBODY_CLASS, I), first_token(cls)) =>
             {
                 Some(start + off)
             }
@@ -292,7 +292,7 @@ fn to_markdown(blocks: &[Block], meta: &Json, force_bare: bool) -> Result<Markdo
         vol_heads.push(heads);
         vol_gate.push(gate);
         let droppable = seg.iter().any(|b| match b {
-            Block::P { cls, .. } => !matches(SKIP_CLASS, I, cls),
+            Block::P { cls, .. } => !matches(crate::static_re!(SKIP_CLASS, I), cls),
             _ => true,
         });
         if has_acthead && !force_bare && !seg.is_empty() && !heads && gate.is_none() && droppable {
@@ -321,11 +321,11 @@ fn to_markdown(blocks: &[Block], meta: &Json, force_bare: bool) -> Result<Markdo
             let Block::P { cls, text, .. } = b else {
                 continue;
             };
-            if !matches(r"^TOC\d", I, first_token(cls)) {
+            if !matches(crate::static_re!(r"^TOC\d", I), first_token(cls)) {
                 continue;
             }
             let joined = py::split_whitespace(text).join(" ");
-            let cut = re(TOC_LEADER, 0).sub("", &joined);
+            let cut = crate::static_re!(TOC_LEADER, 0).sub("", &joined);
             let t = py::strip(&cut);
             let n = py::char_len(t);
             if 2 < n && n < 120 {
@@ -358,7 +358,7 @@ fn to_markdown(blocks: &[Block], meta: &Json, force_bare: bool) -> Result<Markdo
                 continue;
             };
             let base_n = first_token(next);
-            if !base_n.is_empty() && !matches(SKIP_CLASS, I, base_n) {
+            if !base_n.is_empty() && !matches(crate::static_re!(SKIP_CLASS, I), base_n) {
                 classless_heads.insert(i);
             }
         }
@@ -419,12 +419,12 @@ fn to_markdown(blocks: &[Block], meta: &Json, force_bare: bool) -> Result<Markdo
                 })?
         };
 
-        if matches(SKIP_CLASS, I, cls) {
+        if matches(crate::static_re!(SKIP_CLASS, I), cls) {
             continue;
         }
         if !out.state.in_endnotes
-            && (matches(ENDNOTE_CLASS, I, base)
-                || (out.state.endnote_armed && matches(ENDNOTE_TEXT, I, text)))
+            && (matches(crate::static_re!(ENDNOTE_CLASS, I), base)
+                || (out.state.endnote_armed && matches(crate::static_re!(ENDNOTE_TEXT, I), text)))
         {
             out.state.in_endnotes = true;
             out.state.seen_body = true;
@@ -432,7 +432,7 @@ fn to_markdown(blocks: &[Block], meta: &Json, force_bare: bool) -> Result<Markdo
             out.state.cur = None;
         }
         let longt = base.to_ascii_lowercase().starts_with("longt");
-        if matches(FRONT_CLASS, I, base)
+        if matches(crate::static_re!(FRONT_CLASS, I), base)
             && (long_title.is_none() || longt)
             && (long_title.is_none() || !long_title_is_longt)
         {
@@ -450,9 +450,9 @@ fn to_markdown(blocks: &[Block], meta: &Json, force_bare: bool) -> Result<Markdo
             out.lines.push(String::new());
             out.lines.push(format!("{} {text}", "#".repeat(lvl)));
             if lvl == 5 {
-                let sid = match re(SECNO, 0).match_at(py::strip(text), 0) {
+                let sid = match crate::static_re!(SECNO, 0).match_at(py::strip(text), 0) {
                     Some(m) => Some(format!("{}-{}", &m[1], &m[2])),
-                    None => re(PLAIN_SECNO, 0)
+                    None => crate::static_re!(PLAIN_SECNO, 0)
                         .match_at(text, 0)
                         .map(|m| m[1].to_string()),
                 };
@@ -476,7 +476,7 @@ fn to_markdown(blocks: &[Block], meta: &Json, force_bare: bool) -> Result<Markdo
             continue;
         }
 
-        if bare_mode && !out.state.in_endnotes && !matches(SKIP_CLASS, I, cls) {
+        if bare_mode && !out.state.in_endnotes && !matches(crate::static_re!(SKIP_CLASS, I), cls) {
             let normal = py::split_whitespace(text).join(" ").to_lowercase();
             if toc_titles.contains(&normal) || classless_heads.contains(&bi) {
                 out.lines.push(String::new());
@@ -491,10 +491,10 @@ fn to_markdown(blocks: &[Block], meta: &Json, force_bare: bool) -> Result<Markdo
                 );
                 continue;
             }
-            let sechead = if matches(BARE_DATEISH, I, text) {
+            let sechead = if matches(crate::static_re!(BARE_DATEISH, I), text) {
                 None
             } else {
-                re(BARE_SECHEAD, 0).match_at(text, 0)
+                crate::static_re!(BARE_SECHEAD, 0).match_at(text, 0)
             };
             if let Some(m) = sechead {
                 out.lines.push(String::new());
@@ -509,7 +509,7 @@ fn to_markdown(blocks: &[Block], meta: &Json, force_bare: bool) -> Result<Markdo
                 );
                 continue;
             }
-            if matches(BARE_CONTAINER, 0, text) {
+            if matches(crate::static_re!(BARE_CONTAINER, 0), text) {
                 out.lines.push(String::new());
                 out.lines.push(format!("## {text}"));
                 out.state.container = Some(Json::str(text));
@@ -534,7 +534,7 @@ fn to_markdown(blocks: &[Block], meta: &Json, force_bare: bool) -> Result<Markdo
         }
 
         if !out.state.seen_body && !out.state.in_endnotes {
-            if !matches(PREBODY_CLASS, I, base) {
+            if !matches(crate::static_re!(PREBODY_CLASS, I), base) {
                 continue;
             }
             out.state.prebody_open = true;
@@ -548,7 +548,7 @@ fn to_markdown(blocks: &[Block], meta: &Json, force_bare: bool) -> Result<Markdo
                 );
             }
         }
-        let prefix = if matches(PARA_CLASS, I, base) {
+        let prefix = if matches(crate::static_re!(PARA_CLASS, I), base) {
             "- "
         } else if base == "notetext" {
             "> "
@@ -1408,6 +1408,7 @@ pub fn main(argv: &[String], run: &mut Run) -> Result<i32, Exit> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::pyre::re;
 
     #[test]
     fn read_ahead_gives_only_the_title_and_path_it_read() {
