@@ -985,7 +985,7 @@ fn encode(value: &Json, level: usize, chunks: &mut Vec<P>) -> Result<(), Exc> {
                     chunks.push(separator);
                 }
                 let mut text = Vec::new();
-                pyvalue::dump_str(&key.code_points(), false, &mut text);
+                pyvalue::dump_str(key.points(), false, &mut text);
                 chunks.push(text);
                 chunks.push(points(": "));
                 let note = |e: Exc| {

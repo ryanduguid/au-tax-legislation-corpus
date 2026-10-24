@@ -802,6 +802,18 @@ fn write_chunks(path: &str, chunks: &[Vec<u32>]) -> Result<(), Exc> {
     let mut bytes = Vec::new();
     let mut failure = None;
     for chunk in chunks {
+        // Without a lone surrogate, encode directly; otherwise build the text
+        // the error's position counts in.
+        if chunk.iter().all(|&cp| char::from_u32(cp).is_some()) {
+            let mut utf8 = [0u8; 4];
+            for c in chunk.iter().filter_map(|&cp| char::from_u32(cp)) {
+                if c == '\n' && cfg!(windows) {
+                    bytes.push(b'\r');
+                }
+                bytes.extend_from_slice(c.encode_utf8(&mut utf8).as_bytes());
+            }
+            continue;
+        }
         let mut text = Vec::with_capacity(chunk.len());
         for &cp in chunk {
             if cp == 0x0a && cfg!(windows) {
@@ -809,12 +821,9 @@ fn write_chunks(path: &str, chunks: &[Vec<u32>]) -> Result<(), Exc> {
             }
             text.push(cp);
         }
-        if let Some(message) = pyvalue::utf8_strict_error(&text) {
-            failure = Some(Exc::UnicodeEncode(message));
-            break;
-        }
-        let encoded: String = text.iter().filter_map(|&cp| char::from_u32(cp)).collect();
-        bytes.extend_from_slice(encoded.as_bytes());
+        let message = pyvalue::utf8_strict_error(&text).expect("a lone surrogate");
+        failure = Some(Exc::UnicodeEncode(message));
+        break;
     }
     file.write_all(&bytes)
         .map_err(|e| OsError::new(&e, None, Style::Errno))?;

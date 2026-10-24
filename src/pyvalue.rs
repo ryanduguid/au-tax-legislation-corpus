@@ -223,9 +223,13 @@ pub(crate) fn push(out: &mut Vec<u32>, text: &str) {
     out.extend(text.chars().map(u32::from));
 }
 
-pub(crate) fn dump_str(points: &[u32], ensure_ascii: bool, out: &mut Vec<u32>) {
+pub(crate) fn dump_str(
+    points: impl IntoIterator<Item = u32>,
+    ensure_ascii: bool,
+    out: &mut Vec<u32>,
+) {
     out.push(u32::from('"'));
-    for &cp in points {
+    for cp in points {
         match cp {
             0x22 => push(out, "\\\""),
             0x5c => push(out, "\\\\"),
@@ -265,7 +269,7 @@ fn dump(value: &Json, ensure_ascii: bool, out: &mut Vec<u32>) {
             push(out, if *f > 0.0 { "Infinity" } else { "-Infinity" })
         }
         Json::Float(f) => push(out, &py::float_repr(*f)),
-        Json::Str(s) => dump_str(&s.code_points(), ensure_ascii, out),
+        Json::Str(s) => dump_str(s.points(), ensure_ascii, out),
         Json::Array(items) => {
             out.push(u32::from('['));
             for (i, item) in items.iter().enumerate() {
@@ -282,7 +286,7 @@ fn dump(value: &Json, ensure_ascii: bool, out: &mut Vec<u32>) {
                 if i > 0 {
                     push(out, ", ");
                 }
-                dump_str(&k.code_points(), ensure_ascii, out);
+                dump_str(k.points(), ensure_ascii, out);
                 push(out, ": ");
                 dump(v, ensure_ascii, out);
             }
@@ -370,7 +374,7 @@ fn walk_until(
         let lone = |s: &PyStr, chunk: usize| {
             if stop_lone && matches!(s, PyStr::Lone(_)) {
                 let mut text = Vec::new();
-                dump_str(&s.code_points(), ensure_ascii, &mut text);
+                dump_str(s.points(), ensure_ascii, &mut text);
                 return Err(At::Lone(chunk, text));
             }
             Ok(())
@@ -413,7 +417,7 @@ fn walk_until(
                     newline(out, level + 1);
                     // A dict yields each key and each value as its own chunk.
                     lone(k, out.len())?;
-                    dump_str(&k.code_points(), ensure_ascii, out);
+                    dump_str(k.points(), ensure_ascii, out);
                     push(out, ": ");
                     let start = out.len();
                     walk(v, options, stop_lone, level + 1, start, out)?;

@@ -35,6 +35,15 @@ impl PyStr {
         }
     }
 
+    /// The string's code points, surrogates included, without collecting them.
+    pub fn points(&self) -> impl Iterator<Item = u32> + '_ {
+        let (text, lone) = match self {
+            PyStr::Text(s) => (Some(s.chars().map(u32::from)), None),
+            PyStr::Lone(points) => (None, Some(points.iter().copied())),
+        };
+        text.into_iter().flatten().chain(lone.into_iter().flatten())
+    }
+
     /// The string's code points, surrogates included.
     pub fn code_points(&self) -> Vec<u32> {
         match self {
