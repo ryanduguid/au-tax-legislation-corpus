@@ -336,19 +336,18 @@ fn number_text(s: &str) -> Option<String> {
     Some(out)
 }
 
+/// `int()`'s `ValueError` for a string whose `repr` is `repr`: CPython formats it
+/// with `%.200R`, which cuts the representation, not the string, to 200 characters.
+pub fn invalid_int_literal(base: u32, repr: &str) -> String {
+    format!(
+        "invalid literal for int() with base {base}: {}",
+        prefix_chars(repr, 200)
+    )
+}
+
 /// `int(s, base)`; the error is the `ValueError` message.
 pub fn parse_int(s: &str, base: u32) -> Result<BigInt, String> {
-    let invalid = || {
-        let shown: String = if char_len(s) > 200 {
-            prefix_chars(s, 200).to_string()
-        } else {
-            s.to_string()
-        };
-        format!(
-            "invalid literal for int() with base {base}: {}",
-            repr_str(&shown)
-        )
-    };
+    let invalid = || invalid_int_literal(base, &repr_str(s));
     let text = number_text(s).ok_or_else(invalid)?;
     let text =
         text.trim_matches(|c: char| c.is_ascii_whitespace() || ('\x1c'..='\x1f').contains(&c));

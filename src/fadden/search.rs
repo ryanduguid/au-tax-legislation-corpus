@@ -518,9 +518,9 @@ fn py_int(value: &Json) -> Result<Json, Exc> {
         Json::Str(PyStr::Text(s)) => crate::py::parse_int(s, 10)
             .map(Json::Int)
             .map_err(Exc::value),
-        Json::Str(PyStr::Lone(points)) => Err(Exc::value(format!(
-            "invalid literal for int() with base 10: {}",
-            pyvalue::repr_points(points)
+        Json::Str(PyStr::Lone(points)) => Err(Exc::value(crate::py::invalid_int_literal(
+            10,
+            &pyvalue::repr_points(points),
         ))),
         other => Err(Exc::Type(format!(
             "int() argument must be a string, a bytes-like object or a real number, not '{}'",

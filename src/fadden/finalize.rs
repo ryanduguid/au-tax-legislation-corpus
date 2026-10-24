@@ -343,16 +343,17 @@ fn add(a: &Num, b: &Json, op: &str) -> Result<Num, Exc> {
     })
 }
 
-/// `sum(items)` as CPython 3.15 adds: ints in a C `long` (32 bits on
-/// Windows) until one does not fit; from the first float, floats and ints
-/// with Neumaier compensation; after an int that left the `long`, plain `+`.
+/// `sum(items)` as CPython 3.15 adds: each int operand must fit a C `long`
+/// (32 bits on Windows) and the running total a `Py_ssize_t` (64 bits on the
+/// 64-bit targets built here); from the first float, floats and ints with
+/// Neumaier compensation; after an int that left that path, plain `+`.
 fn py_sum(items: impl IntoIterator<Item = Json>) -> Result<Num, Exc> {
     enum State {
         Long(i64),
         Float(f64, f64),
         Any(Num),
     }
-    let range = if cfg!(windows) {
+    let long = if cfg!(windows) {
         i64::from(i32::MIN)..=i64::from(i32::MAX)
     } else {
         i64::MIN..=i64::MAX
@@ -367,9 +368,8 @@ fn py_sum(items: impl IntoIterator<Item = Json>) -> Result<Num, Exc> {
                     _ => None,
                 };
                 match small
-                    .filter(|b| range.contains(b))
+                    .filter(|b| long.contains(b))
                     .and_then(|b| total.checked_add(b))
-                    .filter(|t| range.contains(t))
                 {
                     Some(total) => State::Long(total),
                     None => match add(&Num::Int(total.into()), &item, "+")? {
@@ -477,9 +477,9 @@ fn py_int(value: &Json) -> Result<BigInt, Exc> {
         )),
         Json::Float(f) => Ok(pyvalue::float_to_int(f.trunc())),
         Json::Str(PyStr::Text(s)) => py::parse_int(s, 10).map_err(Exc::value),
-        Json::Str(PyStr::Lone(cps)) => Err(Exc::value(format!(
-            "invalid literal for int() with base 10: {}",
-            pyvalue::repr_points(&cps[..cps.len().min(200)])
+        Json::Str(PyStr::Lone(cps)) => Err(Exc::value(py::invalid_int_literal(
+            10,
+            &pyvalue::repr_points(cps),
         ))),
         Json::Array(_) | Json::Object(_) | Json::Null => Err(Exc::Type(format!(
             "int() argument must be a string, a bytes-like object or a real number, not '{}'",
@@ -1353,6 +1353,86 @@ mod tests {
         assert_eq!(
             py_sum(huge).unwrap_err().to_string(),
             "int too large to convert to float"
+        );
+    }
+
+    #[test]
+    fn sum_leaves_the_int_path_where_cpython_does() {
+        // CPython 3.15.0's sum() of each list, on 64-bit Windows and Linux.
+        let float = |items: Vec<Json>| match py_sum(items).unwrap() {
+            Num::Float(f) => f,
+            Num::Int(i) => panic!("int {i}"),
+        };
+        let ints = |values: &[&str]| values.iter().map(|v| int_json(v)).collect::<Vec<_>>();
+        let then_floats = |mut items: Vec<Json>| {
+            items.extend([1e100, 1.0, -1e100].map(Json::Float));
+            items
+        };
+        let p30 = (1i64 << 30).to_string();
+        let p31 = (1i64 << 31).to_string();
+        let p62 = (1i64 << 62).to_string();
+        let p63 = (1u64 << 63).to_string();
+        // A total past 2**31 from operands that fit a 32-bit long stays on the fast
+        // path, so the first float starts compensation: 1.0, not 0.0.
+        assert_eq!(float(then_floats(ints(&[&p30, &p30]))), 1.0);
+        assert_eq!(
+            float([ints(&[&p30, &p30, &p30]), vec![Json::Float(0.5)]].concat()),
+            3221225472.5
+        );
+        assert_eq!(float(then_floats(ints(&["-2147483648", "-1"]))), 1.0);
+        let bools = vec![Json::Bool(true), int_json("2147483647"), Json::Bool(true)];
+        assert_eq!(float(then_floats(bools)), 1.0);
+        // An operand past a 32-bit long leaves the path on Windows only.
+        assert_eq!(
+            float(then_floats(ints(&[&p31]))),
+            if cfg!(windows) { 0.0 } else { 1.0 }
+        );
+        // Past 2**63 the total, or the operand, leaves it everywhere.
+        assert_eq!(float(then_floats(ints(&[&p62, &p62]))), 0.0);
+        assert_eq!(float(then_floats(ints(&[&p63]))), 0.0);
+        assert!(
+            matches!(py_sum(ints(&[&p31, &p31])).unwrap(), Num::Int(i) if i == BigInt::from(1u64 << 32))
+        );
+    }
+
+    #[test]
+    fn int_errors_cut_the_repr_to_200_characters() {
+        // CPython 3.15.0: "invalid literal for int() with base 10: " then %.200R.
+        let message = |value: Json| py_int(&value).unwrap_err().to_string();
+        let lone = |points: Vec<u32>| Json::Str(PyStr::Lone(points));
+        assert_eq!(
+            message(lone(vec![0xd800])),
+            r"invalid literal for int() with base 10: '\ud800'"
+        );
+        for count in [33, 34, 40] {
+            let text = message(lone(vec![0xd800; count]));
+            assert_eq!(text.chars().count(), 240, "{count} surrogates");
+            assert!(text.ends_with(if count == 33 { r"\ud800'" } else { r"\ud800\" }));
+        }
+        let mut after = vec![u32::from('a'); 200];
+        after.push(0xd800);
+        assert_eq!(
+            message(lone(after)),
+            format!(
+                "invalid literal for int() with base 10: '{}",
+                "a".repeat(199)
+            )
+        );
+        let long = message(Json::str(&"a".repeat(300)));
+        assert_eq!(
+            long,
+            format!(
+                "invalid literal for int() with base 10: '{}",
+                "a".repeat(199)
+            )
+        );
+        let quotes = message(Json::str(&"'".repeat(250)));
+        assert_eq!(
+            quotes,
+            format!(
+                "invalid literal for int() with base 10: \"{}",
+                "'".repeat(199)
+            )
         );
     }
 
