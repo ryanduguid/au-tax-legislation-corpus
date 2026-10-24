@@ -20,6 +20,10 @@ const API: &str = "https://api.prod.legislation.gov.au/v1";
 const VERSION_BATCH_SIZE: usize = 8;
 const RESOLUTION_DELAY: f64 = 1.5;
 const INVALID_BATCH: &str = "invalid version batch; refusing to write acts_resolved.json";
+/// The container level at which `json.dump` stops writing acts_resolved.json under
+/// `python -m fadden` (CPython 3.15, base revision): a title member nested
+/// 989 deep is written, 990 is refused (`tools/stage_depth_probe.py`).
+const RESOLVED_DEPTH: usize = 991;
 
 /// `_versions_url(title_ids)`.
 fn versions_url(title_ids: &[String]) -> String {
@@ -187,7 +191,6 @@ pub fn run(http: &mut dyn Http, scratch: &str, run: &mut Run) -> Result<(), Exc>
         }
         _ => Json::Null,
     };
-    super::refuse_deep(&shown)?;
     let dumped: String = pyvalue::points_lossy(&pyvalue::dumps_line(&shown, true))
         .chars()
         .take(200)
@@ -327,7 +330,7 @@ pub fn run(http: &mut dyn Http, scratch: &str, run: &mut Run) -> Result<(), Exc>
         &pypath::join(scratch, "acts_resolved.json"),
         &Json::Array(resolved),
         Some(1),
-        super::ENCODE_DEPTH,
+        RESOLVED_DEPTH,
     )
 }
 

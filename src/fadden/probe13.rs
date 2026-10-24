@@ -15,6 +15,10 @@ use crate::pyvalue::py_str;
 
 const API: &str = "https://api.prod.legislation.gov.au/v1";
 const DELAY: f64 = 1.5;
+/// The container level at which `json.dump` stops writing probe13.json under
+/// `python -m fadden` (CPython 3.15, base revision): a version member nested
+/// 988 deep is written, 989 is refused (`tools/stage_depth_probe.py`).
+const OUTPUT_DEPTH: usize = 991;
 
 fn truthy(value: Option<&Json>) -> bool {
     value.is_some_and(Json::truthy)
@@ -112,7 +116,7 @@ pub fn run(http: &mut dyn Http, scratch: &str, run: &mut Run) -> Result<(), Exc>
         &pypath::join(scratch, "probe13.json"),
         &Json::Array(output),
         Some(1),
-        super::ENCODE_DEPTH,
+        OUTPUT_DEPTH,
     )
 }
 

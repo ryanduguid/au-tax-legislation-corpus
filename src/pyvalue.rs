@@ -303,9 +303,31 @@ pub fn dumps_with(
     ensure_ascii: bool,
     sort_keys: bool,
 ) -> Vec<u32> {
-    let options = (indent, ensure_ascii, sort_keys);
-    fn walk(value: &Json, options: (Option<usize>, bool, bool), level: usize, out: &mut Vec<u32>) {
-        let (indent, ensure_ascii, sort_keys) = options;
+    dumps_until(value, indent, ensure_ascii, sort_keys, usize::MAX)
+}
+
+/// `dumps_with`'s text up to the first container nested `limit` deep (the
+/// top-level value is depth 0): what `json.dump`'s pure-Python encoder has
+/// written when its recursion check stops it entering that container.
+pub fn dumps_until(
+    value: &Json,
+    indent: Option<usize>,
+    ensure_ascii: bool,
+    sort_keys: bool,
+    limit: usize,
+) -> Vec<u32> {
+    let options = (indent, ensure_ascii, sort_keys, limit);
+    /// False once the walk has stopped at `limit`.
+    fn walk(
+        value: &Json,
+        options: (Option<usize>, bool, bool, usize),
+        level: usize,
+        out: &mut Vec<u32>,
+    ) -> bool {
+        let (indent, ensure_ascii, sort_keys, limit) = options;
+        if matches!(value, Json::Array(_) | Json::Object(_)) && level >= limit {
+            return false;
+        }
         let newline = |out: &mut Vec<u32>, level: usize| {
             if let Some(width) = indent {
                 out.push(u32::from('\n'));
@@ -321,7 +343,9 @@ pub fn dumps_with(
                         push(out, separator);
                     }
                     newline(out, level + 1);
-                    walk(item, options, level + 1, out);
+                    if !walk(item, options, level + 1, out) {
+                        return false;
+                    }
                 }
                 newline(out, level);
                 out.push(u32::from(']'));
@@ -339,13 +363,16 @@ pub fn dumps_with(
                     newline(out, level + 1);
                     dump_str(&k.code_points(), ensure_ascii, out);
                     push(out, ": ");
-                    walk(v, options, level + 1, out);
+                    if !walk(v, options, level + 1, out) {
+                        return false;
+                    }
                 }
                 newline(out, level);
                 out.push(u32::from('}'));
             }
             other => dump(other, ensure_ascii, out),
         }
+        true
     }
     let mut out = Vec::new();
     walk(value, options, 0, &mut out);
@@ -464,6 +491,29 @@ mod tests {
             )
             .unwrap(),
             "{\"a\": [1, \"\u{e9}\"]}"
+        );
+    }
+
+    #[test]
+    fn dumps_until_stops_before_the_first_container_at_the_limit() {
+        let value = j(r#"{"k": [1, [2, [3]]], "z": 0}"#);
+        let text = |limit| {
+            String::from_iter(
+                dumps_until(&value, Some(1), true, false, limit)
+                    .into_iter()
+                    .filter_map(char::from_u32),
+            )
+        };
+        // json.dumps(value, indent=1) cut where the encoder would enter [3].
+        assert_eq!(text(3), "{\n \"k\": [\n  1,\n  [\n   2,\n   ");
+        assert_eq!(text(0), "");
+        assert_eq!(
+            text(usize::MAX),
+            String::from_iter(
+                dumps_with(&value, Some(1), true, false)
+                    .into_iter()
+                    .filter_map(char::from_u32)
+            )
         );
     }
 }

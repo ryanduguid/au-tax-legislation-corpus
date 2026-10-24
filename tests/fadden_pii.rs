@@ -233,6 +233,49 @@ fn scan(d: &Deployed, stage: &str) -> (i32, String) {
 }
 
 #[test]
+fn a_collection_too_deep_to_encode_leaves_what_python_wrote() {
+    // Under `python -m fadden pii_scan`, a collection nested 990 deep is
+    // written and 991 is refused, after the encoder has written the outer text.
+    let d = deployed();
+    let nested = |depth| format!("{}{}", "[".repeat(depth), "]".repeat(depth));
+    let manifest = |depth| {
+        format!(
+            r#"[{{"id": "{FLAGGED}", "name": "Tax", "collection": {}}}]"#,
+            nested(depth)
+        )
+    };
+    write_rows(
+        &d,
+        FLAGGED,
+        &[json!({"row_id": "r1", "text": ALL_CAPS_ROW})],
+    );
+    std::fs::write(d.build.join("manifest_md.json"), manifest(990)).unwrap();
+    assert_eq!(scan(&d, "pii_scan").0, 0);
+    std::fs::write(d.build.join("manifest_md.json"), manifest(991)).unwrap();
+    let out = Command::new(env!("CARGO_BIN_EXE_fadden"))
+        .arg("pii_scan")
+        .env("FADDEN_MODULE_DIR", &d.build)
+        .output()
+        .unwrap();
+    assert_eq!(out.status.code(), Some(1));
+    let err = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        err.trim_end().ends_with("when serializing list item 0"),
+        "{err}"
+    );
+    // Text mode writes CRLF on Windows, as Python does.
+    let written = std::fs::read_to_string(d.build.join("pii_flagged.json"))
+        .unwrap()
+        .replace("\r\n", "\n");
+    let start = format!("[\n {{\n  \"register_id\": \"{FLAGGED}\",\n");
+    assert!(written.starts_with(&start), "{written:.80}");
+    // The list and 990 of the collection's containers are open; the next one
+    // (level 992, indented 992 spaces) is where the encoder stopped.
+    assert_eq!(written.matches('[').count(), 991);
+    assert!(written.ends_with(&format!("[\n{}", " ".repeat(992))));
+}
+
+#[test]
 fn the_first_scan_flags_only_a_register_shaped_title() {
     let d = deployed();
     std::fs::write(

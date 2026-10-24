@@ -8,6 +8,11 @@ use super::http::{self, Http};
 use super::{Exc, Run, get, getitem, head};
 use crate::argparse::Exit;
 use crate::pyjson::Json;
+
+/// The container level at which `json.dump` stops writing the title lists under
+/// `python -m fadden` (CPython 3.15, base revision): a row member nested
+/// 988 deep is written, 989 is refused (`tools/stage_depth_probe.py`).
+const TITLES_DEPTH: usize = 990;
 use crate::pypath;
 use crate::pyvalue;
 
@@ -153,13 +158,13 @@ pub fn run(http: &mut dyn Http, scratch: &str, run: &mut Run) -> Result<(), Stop
         &pypath::join(scratch, "titles_all.json"),
         &Json::Array(all_rows),
         Some(1),
-        super::ENCODE_DEPTH,
+        TITLES_DEPTH,
     )?;
     write_json_atomic(
         &pypath::join(scratch, "titles_principal.json"),
         &principal_json,
         Some(1),
-        super::ENCODE_DEPTH,
+        TITLES_DEPTH,
     )?;
 
     run.print("\nsample principal titles:");

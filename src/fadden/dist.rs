@@ -832,11 +832,25 @@ fn int(n: usize) -> Json {
     Json::Int(n.into())
 }
 
+/// The container level at which `json.dump` stops writing sources.json under
+/// `python -m fadden dist` (CPython 3.15, base revision): a sources.json member
+/// nested 990 deep is written, 991 is refused (`tools/stage_depth_probe.py`).
+const SOURCES_DEPTH: usize = 991;
+
 /// `json.dump(value, f, indent=1, ensure_ascii=False)` through a text-mode
 /// file, which it opens first: the encoder writes each string as its own
 /// chunk, so a lone surrogate fails with a position inside that quoted string,
-/// and nesting past `ENCODE_DEPTH` stops it, whichever it reaches first.
+/// and nesting past `SOURCES_DEPTH` stops it, whichever it reaches first. The
+/// depth stop carries a note per enclosing item and leaves the text written
+/// before it; the encoding error, raised by the file's write, carries none.
 fn dump_json(path: &str, value: &Json) -> Result<(), Exc> {
+    fn noted(error: Exc, note: impl FnOnce() -> String) -> Exc {
+        if error.class() == "RecursionError" {
+            error.noted(note())
+        } else {
+            error
+        }
+    }
     fn first_stop(value: &Json, level: usize) -> Option<Exc> {
         let check = |s: &PyStr| match s {
             PyStr::Lone(_) => Some(Exc::UnicodeEncode(
@@ -847,18 +861,31 @@ fn dump_json(path: &str, value: &Json) -> Result<(), Exc> {
         };
         match value {
             Json::Str(s) => check(s),
-            Json::Array(_) | Json::Object(_) if level >= super::ENCODE_DEPTH => {
-                Some(super::too_deep())
-            }
-            Json::Array(items) => items.iter().find_map(|v| first_stop(v, level + 1)),
-            Json::Object(pairs) => pairs
-                .iter()
-                .find_map(|(k, v)| check(k).or_else(|| first_stop(v, level + 1))),
+            Json::Array(_) | Json::Object(_) if level >= SOURCES_DEPTH => Some(super::too_deep()),
+            Json::Array(items) => items.iter().enumerate().find_map(|(i, v)| {
+                first_stop(v, level + 1)
+                    .map(|e| noted(e, || format!("when serializing list item {i}")))
+            }),
+            Json::Object(pairs) => pairs.iter().find_map(|(k, v)| {
+                check(k).or_else(|| {
+                    first_stop(v, level + 1).map(|e| {
+                        noted(e, || {
+                            let key = pyvalue::repr_points(&k.code_points());
+                            format!("when serializing dict item {key}")
+                        })
+                    })
+                })
+            }),
             _ => None,
         }
     }
     if let Some(error) = first_stop(value, 0) {
-        std::fs::File::create(path).map_err(|e| OsError::new(&e, Some(path), Style::Errno))?;
+        let written = if error.class() == "RecursionError" {
+            pyvalue::dumps_until(value, Some(1), false, false, SOURCES_DEPTH)
+        } else {
+            Vec::new()
+        };
+        write_text(path, &written)?;
         return Err(error);
     }
     write_text(path, &dumps_with(value, Some(1), false, false))

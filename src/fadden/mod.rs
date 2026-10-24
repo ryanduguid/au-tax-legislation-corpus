@@ -161,31 +161,11 @@ impl From<crate::pyio::ReadError> for Exc {
     }
 }
 
-/// The deepest container nesting `json.dump` writes. Its encoder is pure
-/// Python, one frame per nested container, and stops at the recursion limit
-/// of 1,000: about 995 containers in a bare script, fewer under a deeper call
-/// stack. Refusing past 900 refuses only more than Python does.
-pub const ENCODE_DEPTH: usize = 900;
-
-/// The `RecursionError` `json.dump` raises for nesting past `ENCODE_DEPTH`.
+/// The `RecursionError` `json.dump` raises at a stage's depth limit. Its
+/// encoder is pure Python, one frame per nested container, so each stage's
+/// limit follows its call stack under `python -m fadden`.
 pub fn too_deep() -> Exc {
     Exc::Recursion("maximum recursion depth exceeded".into())
-}
-
-/// `json.dump(value, ...)`'s recursion check: containers nested deeper than
-/// `ENCODE_DEPTH` stop the encoder.
-pub fn refuse_deep(value: &Json) -> Result<(), Exc> {
-    fn depth(value: &Json) -> usize {
-        match value {
-            Json::Array(items) => 1 + items.iter().map(depth).max().unwrap_or(0),
-            Json::Object(pairs) => 1 + pairs.iter().map(|(_, v)| depth(v)).max().unwrap_or(0),
-            _ => 0,
-        }
-    }
-    if depth(value) > ENCODE_DEPTH {
-        return Err(too_deep());
-    }
-    Ok(())
 }
 
 /// `json.dump`'s recursion stop as CPython 3.15 raises it: the pure-Python

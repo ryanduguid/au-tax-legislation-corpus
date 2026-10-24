@@ -1812,15 +1812,20 @@ fn pad_sources(f: &Fixture, depth: usize) {
 
 #[test]
 fn metadata_nested_past_the_encoder_depth_is_refused_as_python_refuses_it() {
-    // The object and its padding: ENCODE_DEPTH containers are written, one more is not.
-    let limit = tax_radar_au::fadden::ENCODE_DEPTH;
+    // Under `python -m fadden dist`, padding nested 990 deep is written and
+    // 991 is refused, with a note naming the member.
     let f = fixture();
-    pad_sources(&f, limit - 1);
+    pad_sources(&f, 990);
     publish(&f);
     let f = fixture();
     let marker = with_existing_dist(&f);
-    pad_sources(&f, limit);
-    refused(&f, "RecursionError: maximum recursion depth exceeded");
+    pad_sources(&f, 991);
+    let err = refused(&f, "RecursionError: maximum recursion depth exceeded");
+    assert!(
+        err.trim_end()
+            .ends_with("when serializing dict item 'padding'"),
+        "{err}"
+    );
     assert_eq!(std::fs::read_to_string(&marker).unwrap(), "keep me");
     assert!(managed_paths(&f).is_empty());
 }

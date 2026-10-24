@@ -21,6 +21,12 @@ use crate::pyjson::{self, Json, PyStr};
 use crate::pypath;
 use crate::pyvalue::{self, Key, dumps_with, repr, str_points, type_name};
 
+/// The container level at which `json.dump` stops writing pii_flagged.json
+/// under `python -m fadden` (CPython 3.15, base revision): a title's
+/// `collection` nested 990 deep is written, 991 is refused
+/// (`tools/stage_depth_probe.py`).
+const FLAGGED_DEPTH: usize = 992;
+
 type P = Vec<u32>;
 /// A contact match shown without its identifier: title, row id, digest prefix.
 type Example = (String, Json, String);
@@ -199,10 +205,12 @@ fn first_scan(run: &mut Run) -> Result<(), Exc> {
             .collect(),
     );
     let path = pypath::join(&scratch, "pii_flagged.json");
-    if let Err(error) = super::refuse_deep(&document) {
-        // Python opened the file before its encoder stopped.
-        std::fs::File::create(&path)
-            .map_err(|e| crate::pyos::OsError::new(&e, Some(&path), crate::pyos::Style::Errno))?;
+    if let Err(error) = super::refuse_deeper_than(&document, FLAGGED_DEPTH) {
+        // Python opened the file, and its encoder wrote up to the container it stopped at.
+        write_text(
+            &path,
+            &pyvalue::dumps_until(&document, Some(1), true, false, FLAGGED_DEPTH),
+        )?;
         return Err(error);
     }
     write_text(&path, &dumps_with(&document, Some(1), true, false))
