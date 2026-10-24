@@ -1389,4 +1389,502 @@ mod tests {
         );
         assert_eq!(rows[1].heading, Json::str("Act \u{2014} CAP"));
     }
+
+    // Ported from tests/corpus/test_extract_paths.py (TableSplitTests,
+    // ToMarkdownTests), test_regressions.py (VolumeGateTests, TableSplitTests,
+    // PreSectionTextTests), test_audit_regressions.py and
+    // test_security_remediation.py (yaml_scalar).
+
+    fn meta(text: &str) -> Json {
+        pyjson::loads_standard(text).unwrap()
+    }
+
+    fn p(text: &str, cls: &str, sectno: bool) -> Block {
+        Block::P {
+            cls: cls.into(),
+            text: text.into(),
+            sectno,
+        }
+    }
+
+    fn md_text(md: &Markdown) -> String {
+        pyvalue::points_lossy(&md.md)
+    }
+
+    /// `rows(sections)`: kind, heading and the non-blank text of each row.
+    fn rows(sections: &[Row]) -> Vec<(&str, Json, Vec<&str>)> {
+        sections
+            .iter()
+            .map(|s| {
+                let text = s
+                    .text
+                    .iter()
+                    .map(String::as_str)
+                    .filter(|t| !py::strip(t).is_empty())
+                    .collect();
+                (s.kind, s.heading.clone(), text)
+            })
+            .collect()
+    }
+
+    /// `"\n".join("\n".join(s["text"]) for s in sections)`.
+    fn retrievable(sections: &[Row]) -> String {
+        sections
+            .iter()
+            .map(|s| s.text.join("\n"))
+            .collect::<Vec<_>>()
+            .join("\n")
+    }
+
+    /// A stored ZIP archive, as `zipfile.ZipFile(..., "w").writestr` writes one.
+    fn stored_zip(members: &[(String, &str)]) -> Vec<u8> {
+        let (mut out, mut central) = (Vec::new(), Vec::new());
+        for (name, data) in members {
+            let (name, data) = (name.as_bytes(), data.as_bytes());
+            let crc = crate::pyzlib::crc32(data, 0);
+            let offset = out.len() as u32;
+            let sizes = [crc, data.len() as u32, data.len() as u32];
+            out.extend(b"PK\x03\x04");
+            [20u16, 0, 0, 0, 33]
+                .iter()
+                .for_each(|v| out.extend(v.to_le_bytes()));
+            sizes.iter().for_each(|v| out.extend(v.to_le_bytes()));
+            [name.len() as u16, 0]
+                .iter()
+                .for_each(|v| out.extend(v.to_le_bytes()));
+            out.extend(name);
+            out.extend(data);
+            central.extend(b"PK\x01\x02");
+            [20u16, 20, 0, 0, 0, 33]
+                .iter()
+                .for_each(|v| central.extend(v.to_le_bytes()));
+            sizes.iter().for_each(|v| central.extend(v.to_le_bytes()));
+            [name.len() as u16, 0, 0, 0, 0]
+                .iter()
+                .for_each(|v| central.extend(v.to_le_bytes()));
+            [0u32, offset]
+                .iter()
+                .for_each(|v| central.extend(v.to_le_bytes()));
+            central.extend(name);
+        }
+        let (start, count) = (out.len() as u32, members.len() as u16);
+        let size = central.len() as u32;
+        out.extend(central);
+        out.extend(b"PK\x05\x06");
+        [0u16, 0, count, count]
+            .iter()
+            .for_each(|v| out.extend(v.to_le_bytes()));
+        [size, start]
+            .iter()
+            .for_each(|v| out.extend(v.to_le_bytes()));
+        out.extend(0u16.to_le_bytes());
+        out
+    }
+
+    const VOLUME_1: &str = "<html><body>\
+        <p class=\"ActHead4\"><span class=\"CharSectno\">1</span> Short title</p>\
+        <p class=\"subsection\">This instrument is the Demo Approval 2025.</p>\
+        </body></html>";
+    const VOLUME_2: &str = "<html><body>\
+        <p class=\"MadeunderText\">Demo Approval 2025</p>\
+        <p>Compilation No. 1</p>\
+        <p>This compilation is in 2 volumes</p>\
+        <p>Volume 2: Schedule 1</p>\
+        <p>Endnotes</p>\
+        <p class=\"ContentsHead\">Contents</p>\
+        <p class=\"TOC6\">Schedule 1 Valuation factors</p>\
+        <p class=\"Scheduletitle\">Schedule 1 Valuation factors</p>\
+        <p class=\"ScheduleHeading\">Table 3B Lump sum valuation factors</p>\
+        <table><tr><td>Age</td><td>Factor</td></tr>\
+        <tr><td>55</td><td>12.5</td></tr></table>\
+        </body></html>";
+    const VOLUME_2_BARE: &str = "<html><body>\
+        <p class=\"MadeunderText\">Demo Approval 2025</p>\
+        <p>Compilation No. 1</p>\
+        <p>Volume 2: Schedule 1</p>\
+        <p>Endnotes</p>\
+        <p class=\"Scheduletitle\">Schedule 1 Valuation factors</p>\
+        <p class=\"ScheduleHeading\">Table 3B Lump sum valuation factors</p>\
+        <table><tr><td>Age</td><td>Factor</td></tr>\
+        <tr><td>55</td><td>12.5</td></tr></table>\
+        </body></html>";
+    const VOLUME_2_HEADED: &str = "<html><body>\
+        <p class=\"Header\">Demo Approval 2025</p>\
+        <p class=\"MadeunderText\">Demo Approval 2025</p>\
+        <p>Compilation No. 1</p>\
+        <p>Volume 2: Schedule 1</p>\
+        <p class=\"ContentsHead\">Contents</p>\
+        <p class=\"TOC6\">Schedule 1 Valuation factors</p>\
+        <p class=\"Scheduletitle\">Schedule 1 Valuation factors</p>\
+        <table><tr><td>Age</td><td>Factor</td></tr>\
+        <tr><td>55</td><td>12.5</td></tr></table>\
+        </body></html>";
+    const VOLUME_2_SUBSECTION: &str = "<html><body>\
+        <p class=\"MadeunderText\">Demo Approval 2025</p>\
+        <p>Compilation No. 1</p>\
+        <p>Volume 2: Schedule 1</p>\
+        <p class=\"subsection\">Factors in this Schedule apply \
+        to a lump sum interest.</p>\
+        <table><tr><td>Age</td><td>Factor</td></tr>\
+        <tr><td>55</td><td>12.5</td></tr></table>\
+        </body></html>";
+    const VOLUME_META: &str = r#"{"id": "F2025L00281", "name": "Demo Approval 2025",
+        "retrieved": "2026-08-03", "versionStart": "2025-01-01"}"#;
+
+    /// `VolumeGateTests._parse`: the volumes as `document_N.xhtml` members,
+    /// through `epub_blocks` and `to_markdown`.
+    fn parse_volumes(volumes: &[&str]) -> Result<Markdown, Exc> {
+        let members: Vec<(String, &str)> = volumes
+            .iter()
+            .enumerate()
+            .map(|(i, v)| (format!("document_{}.xhtml", i + 1), *v))
+            .collect();
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("volumes.epub");
+        std::fs::write(&path, stored_zip(&members)).unwrap();
+        let blocks = epub_blocks(&path.to_string_lossy())?;
+        to_markdown(&blocks, &meta(VOLUME_META), false)
+    }
+
+    fn table_lines() -> Vec<&'static str> {
+        vec!["| Name | Number |", "|---|---|", "| A | 1 |"]
+    }
+
+    #[test]
+    fn table_split_needs_enough_short_tables() {
+        let t = table_lines();
+        let two_tables = [t.clone(), vec!["between"], t.clone()].concat().join("\n");
+        assert!(
+            table_split(&two_tables, &Json::str("Title"))
+                .unwrap()
+                .is_empty()
+        );
+        let words = "word ".repeat(60);
+        let wordy = [
+            vec![words.as_str()],
+            t.clone(),
+            vec!["x"],
+            t.clone(),
+            vec!["y"],
+            t.clone(),
+        ]
+        .concat()
+        .join("\n");
+        assert!(table_split(&wordy, &Json::str("Title")).unwrap().is_empty());
+    }
+
+    #[test]
+    fn table_split_names_its_chunks() {
+        let opening = vec!["provision"; 121].join(" ");
+        let mut lines = vec![opening.as_str(), "Caption"];
+        lines.extend(table_lines());
+        lines.extend(["", "| lone row |", "", "Second", "| N | M |", "|---|---|"]);
+        lines.extend(vec!["| B | 2 |"; 40]);
+        lines.extend(["", "| N | M |", "|---|---|"]);
+        lines.extend(vec!["| C | 3 |"; 40]);
+        let chunks = table_split(&lines.join("\n"), &Json::str("Title")).unwrap();
+        let headings: Vec<Json> = chunks.iter().map(|c| c.heading.clone()).collect();
+        assert_eq!(
+            headings,
+            [
+                "Title \u{2014} opening provisions",
+                "Title \u{2014} Caption",
+                "Title \u{2014} Second",
+                "Title \u{2014} table 3 of 3"
+            ]
+            .map(Json::str)
+        );
+        assert_eq!(chunks[0].kind, "text_block");
+        assert!(chunks[2].text[0].starts_with("| lone row |\nSecond\n"));
+    }
+
+    /// `basin_table(field)` in test_regressions.py.
+    fn basin_table(field: &str) -> Vec<String> {
+        let mut rows = vec![
+            "| Field | Licence | Commenced | Ceased |".to_string(),
+            "|---|---|---|---|".to_string(),
+        ];
+        rows.extend(
+            (1..6).map(|n| format!("| {field} {n} | L{n:03} | 1 January 2026 | 30 June 2026 |")),
+        );
+        rows
+    }
+
+    #[test]
+    fn table_split_keeps_every_line() {
+        let mut lines: Vec<String> = [
+            "# Excise By-law No. 127",
+            "",
+            "This by-law is made under section 77H of the Excise Act 1901.",
+            "",
+        ]
+        .map(String::from)
+        .to_vec();
+        for (caption, field) in [
+            ("A. PERTH BASIN", "Perth"),
+            ("B. COOPER BASIN", "Cooper"),
+            ("C. BROWSE BASIN", "Browse"),
+        ] {
+            lines.push(caption.into());
+            lines.extend(basin_table(field));
+            lines.push(String::new());
+        }
+        lines.push("Signed by the Chief Executive Officer.".into());
+        let body = lines.join("\n");
+        let chunks = table_split(&body, &Json::str("TPB Terminations")).unwrap();
+        assert!(!chunks.is_empty());
+        let kept: Vec<&str> = chunks.iter().map(|c| c.text[0].as_str()).collect();
+        let kept = kept.join("\n");
+        for line in body.split('\n') {
+            if !py::strip(line).is_empty() && !line.starts_with('#') {
+                assert!(kept.contains(py::strip(line)), "{line}");
+            }
+        }
+    }
+
+    #[test]
+    fn check_chunks_complete_names_the_first_dropped_line() {
+        let chunk = Row {
+            section: None,
+            heading: Json::Null,
+            kind: "table_block",
+            container: None,
+            text: vec!["A table row".into()],
+            emit_fallback: false,
+        };
+        let lines = ["A table row", "C. PERTH BASIN"].map(String::from);
+        let error = check_chunks_complete(&lines, &[chunk]).unwrap_err();
+        assert_eq!(error.class(), "RuntimeError");
+        assert!(error.to_string().contains("C. PERTH BASIN"), "{error}");
+    }
+
+    #[test]
+    fn bare_mode_rows_match_python() {
+        let blocks = [
+            Block::File,
+            p("Authority ........ 2", "TOC1", false),
+            p("No", "TOC1", false),
+            p("Authority", "", false),
+            p("This standard is made under the Act.", "BodyText1", false),
+            p("Application", "", false),
+            p("It applies to every entity.", "BodyText1", false),
+            p("This line ends with a stop.", "", false),
+            p("Part 2 General rules", "Normal", false),
+            p("The rules follow.", "Normal", false),
+        ];
+        let meta =
+            meta(r#"{"id": "C2099A00001", "name": "Synthetic Act", "retrieved": "2099-01-01"}"#);
+        let md = to_markdown(&blocks, &meta, true).unwrap();
+        assert_eq!(
+            rows(&md.sections),
+            [
+                (
+                    "container",
+                    Json::str("Authority"),
+                    vec!["This standard is made under the Act."]
+                ),
+                (
+                    "container",
+                    Json::str("Application"),
+                    vec!["It applies to every entity.", "This line ends with a stop."]
+                ),
+                (
+                    "container",
+                    Json::str("Part 2 General rules"),
+                    vec!["The rules follow."]
+                ),
+            ]
+        );
+    }
+
+    #[test]
+    fn long_title_iasb_and_endnotes_match_python() {
+        let blocks = [
+            Block::File,
+            Block::Table {
+                rows: vec![vec!["cover table".into()]],
+            },
+            p("A preamble that is replaced", "Preamble", false),
+            p("An Act about synthetic things", "LongTitle", false),
+            p("A second long title that is ignored", "LongTitle", false),
+            p("Objective", "IASBSectionTitle1", false),
+            p("The objective is stated here.", "subsection", false),
+            p("first point", "paragraph", false),
+            p("Endnotes", "ENotesHeading1", false),
+            p("Amendment history follows.", "ENotesText", false),
+            Block::Img {
+                alt: "History chart".into(),
+            },
+        ];
+        let meta =
+            meta(r#"{"id": "C2099A00001", "name": "Synthetic Act", "retrieved": "2099-01-01"}"#);
+        let md = to_markdown(&blocks, &meta, false).unwrap();
+        assert_eq!(
+            md.long_title.as_deref(),
+            Some("An Act about synthetic things")
+        );
+        let text = md_text(&md);
+        assert!(text.contains("\n> An Act about synthetic things\n"));
+        assert!(!text.contains("cover table"));
+        assert!(rows(&md.sections).contains(&(
+            "container",
+            Json::str("Objective"),
+            vec!["The objective is stated here.", "- first point"]
+        )));
+        assert_eq!(
+            md.endnotes,
+            "Endnotes\n\nAmendment history follows.\n> Figure: History chart"
+        );
+    }
+
+    #[test]
+    fn volume_gate_matches_python() {
+        // test_a_heading_less_volume_is_not_routed_into_its_endnotes.
+        let md = parse_volumes(&[VOLUME_1, VOLUME_2]).unwrap();
+        assert_eq!(md.endnotes, "");
+        assert!(md_text(&md).contains("Table 3B"));
+
+        // test_a_volume_with_no_boundary_blocks_extraction, and
+        // test_audit_regressions.py::test_unplaced_volume_fails_instead_of_disappearing.
+        match parse_volumes(&[VOLUME_1, VOLUME_2_BARE]) {
+            Err(Exc::Value {
+                class: "ValueError",
+                message,
+            }) => assert!(message.contains("body boundary"), "{message}"),
+            Err(other) => panic!("expected a ValueError, got {other:?}"),
+            Ok(_) => panic!("expected a ValueError"),
+        }
+
+        // test_a_running_header_is_not_a_volume_body_boundary.
+        let text = md_text(&parse_volumes(&[VOLUME_1, VOLUME_2_HEADED]).unwrap());
+        assert!(!text.contains("Compilation No. 1"));
+        assert!(!text.contains("Volume 2: Schedule 1"));
+        assert!(text.contains("| 55 | 12.5 |"));
+
+        // test_a_body_class_opens_the_gate_at_that_paragraph_not_at_the_cover_page.
+        let text = md_text(&parse_volumes(&[VOLUME_1, VOLUME_2_SUBSECTION]).unwrap());
+        assert!(!text.contains("Compilation No. 1"));
+        assert!(!text.contains("Volume 2: Schedule 1"));
+        assert!(text.contains("Factors in this Schedule apply to a lump sum interest."));
+        assert!(text.contains("| 55 | 12.5 |"));
+
+        // test_an_endnotes_line_inside_a_heading_less_volume_cannot_capture_it.
+        let blocks = [
+            Block::File,
+            p("1 Short title", "ActHead4", true),
+            p("Body.", "subsection", false),
+            Block::File,
+            p("Contents", "ContentsHead", false),
+            p("Endnotes", "", false),
+            p("Schedule 1 Valuation factors", "Scheduletitle", false),
+            Block::Table {
+                rows: vec![
+                    vec!["Age".into(), "Factor".into()],
+                    vec!["55".into(), "12.5".into()],
+                ],
+            },
+        ];
+        let md = to_markdown(&blocks, &meta(VOLUME_META), false).unwrap();
+        assert!(md_text(&md).contains("| 55 | 12.5 |"));
+        assert_eq!(md.endnotes, "");
+    }
+
+    #[test]
+    fn pre_section_text_matches_python() {
+        let meta = meta(
+            r#"{"id": "C2004A00074", "name": "Demo Tax Act",
+                "retrieved": "2026-08-11", "versionStart": "2026-01-01"}"#,
+        );
+        // test_text_before_the_first_bare_section_reaches_the_jsonl.
+        let blocks = [
+            Block::File,
+            p("The Parliament of Australia enacts:", "", false),
+            p("1 Short title", "", true),
+            p("Body.", "", false),
+        ];
+        let md = to_markdown(&blocks, &meta, false).unwrap();
+        assert!(md_text(&md).contains("The Parliament of Australia enacts:"));
+        assert!(retrievable(&md.sections).contains("The Parliament of Australia enacts:"));
+
+        // test_a_volume_seam_does_not_file_text_under_the_previous_section.
+        let blocks = [
+            Block::File,
+            p("1 Short title", "ActHead5", true),
+            p("Volume one body.", "subsection", false),
+            Block::File,
+            p("Note for the second volume.", "notetext", false),
+            p("2 Interpretation", "ActHead5", true),
+            p("Volume two body.", "subsection", false),
+        ];
+        let md = to_markdown(&blocks, &meta, false).unwrap();
+        let first: Vec<&Row> = md
+            .sections
+            .iter()
+            .filter(|s| s.section.as_deref() == Some("1"))
+            .collect();
+        assert_eq!(first.len(), 1);
+        assert!(
+            !first[0]
+                .text
+                .join("\n")
+                .contains("Note for the second volume.")
+        );
+        assert!(retrievable(&md.sections).contains("Note for the second volume."));
+
+        // test_a_table_between_pre_body_paragraphs_is_not_dropped.
+        let blocks = [
+            Block::File,
+            p("USER'S GUIDE", "subsection", false),
+            Block::Table {
+                rows: vec![
+                    vec!["Column".into(), "Meaning".into()],
+                    vec!["A".into(), "First".into()],
+                ],
+            },
+            Block::Img {
+                alt: "Decision flowchart".into(),
+            },
+            p("Read the guide with the table above.", "subsection", false),
+            p("1 Short title", "ActHead5", true),
+            p("Body.", "subsection", false),
+        ];
+        let md = to_markdown(&blocks, &meta, false).unwrap();
+        let text = md_text(&md);
+        assert!(text.contains("First"));
+        assert!(text.contains("Decision flowchart"));
+        let kept = retrievable(&md.sections);
+        assert!(kept.contains("First"));
+        assert!(kept.contains("Decision flowchart"));
+    }
+
+    #[test]
+    fn yaml_scalar_round_trips_scalars_and_refuses_others() {
+        for value in [
+            Json::Null,
+            Json::Bool(false),
+            Json::Int(0.into()),
+            Json::str(""),
+            Json::str("null"),
+            Json::str("true"),
+            Json::str("---\nauthorised: true\u{2028}# Heading"),
+        ] {
+            let rendered = yaml_scalar(Some(&value)).unwrap();
+            // str.splitlines() boundaries.
+            let breaks = [
+                '\n', '\r', '\u{b}', '\u{c}', '\u{1c}', '\u{1d}', '\u{1e}', '\u{85}', '\u{2028}',
+                '\u{2029}',
+            ];
+            assert!(!rendered.contains(breaks), "{rendered}");
+            assert_eq!(pyjson::loads_standard(&rendered).unwrap(), value);
+        }
+        for value in [
+            Json::Array(Vec::new()),
+            Json::Object(Vec::new()),
+            Json::Float(f64::NAN),
+            Json::Float(f64::INFINITY),
+        ] {
+            let error = yaml_scalar(Some(&value)).unwrap_err();
+            assert_eq!(error.class(), "ValueError", "{value:?}");
+        }
+    }
 }

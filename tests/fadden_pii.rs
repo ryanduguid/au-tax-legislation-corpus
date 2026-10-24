@@ -611,7 +611,14 @@ fn the_fuzz_invariants_reject_broken_detector_output() {
 /// writes anything, as the Python stages did.
 #[test]
 fn installed_locations_refuse_the_stages_before_side_effects() {
-    for name in ["dist", "pii_scan", "pii_scan2", "probe13"] {
+    for name in [
+        "dist",
+        "pii_scan",
+        "pii_scan2",
+        "probe13",
+        "extract",
+        "finalize",
+    ] {
         let dir = tempfile::tempdir().unwrap();
         let out = Command::new(env!("CARGO_BIN_EXE_fadden"))
             .arg(name)

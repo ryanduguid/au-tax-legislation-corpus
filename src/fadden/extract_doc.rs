@@ -609,4 +609,420 @@ mod tests {
         assert!(is_document("OEBPS/Document_1.XHTML"));
         assert!(!is_document("a.htm"));
     }
+
+    // Ported from tests/corpus/test_extract_paths.py, test_rowspan_regressions.py,
+    // test_regressions.py (ParserRuleTests) and test_security_remediation.py
+    // (MetadataAndTableTests). Python patches MAX_TABLE_CELLS down to N; here
+    // every counter starts N short of the real budget instead, which leaves
+    // each `count > MAX_TABLE_CELLS - counter` check exactly as the patch did.
+
+    /// Counters that leave `n` cells of every table budget.
+    fn budget(n: i128) -> Counts {
+        let used = MAX_TABLE_CELLS - n;
+        Counts {
+            expanded: used,
+            rendered: used,
+            buffered: used,
+        }
+    }
+
+    /// The ValueError a document raises, as its message.
+    fn value_error(doc: &mut Doc, html: &str) -> String {
+        match doc.run(html) {
+            Err(Exc::Value {
+                class: "ValueError",
+                message,
+            }) => message,
+            other => panic!("{html:?}: expected a ValueError, got {other:?}"),
+        }
+    }
+
+    fn refusal(html: &str) -> String {
+        let sizes = HashMap::new();
+        value_error(&mut Doc::new(&sizes, Counts::default()), html)
+    }
+
+    /// `rows_for(html)`: the first table's rows after `close()` and `_flush()`.
+    fn rows_for(html: &str) -> Vec<Vec<String>> {
+        blocks(html)
+            .unwrap()
+            .into_iter()
+            .find_map(|b| match b {
+                Block::Table { rows } => Some(rows),
+                _ => None,
+            })
+            .unwrap_or_else(|| panic!("{html:?} has no table"))
+    }
+
+    fn table(rows: &[&[&str]]) -> Vec<Vec<String>> {
+        rows.iter()
+            .map(|r| r.iter().map(|c| c.to_string()).collect())
+            .collect()
+    }
+
+    /// `sum(map(len, parser._table)) + len(parser._row)`.
+    fn buffered(doc: &Doc) -> usize {
+        doc.f.table.iter().map(Vec::len).sum::<usize>() + doc.f.row.len()
+    }
+
+    #[test]
+    fn an_overlong_image_dimension_counts_as_zero() {
+        let html = format!(
+            "<img src=\"x.png\" width=\"{}\" height=\"9\"/>",
+            "1".repeat(5000)
+        );
+        assert_eq!(
+            blocks(&html).unwrap(),
+            vec![Block::Img {
+                alt: "[image not described in source: x.png]".into()
+            }]
+        );
+    }
+
+    #[test]
+    fn empty_tables_and_stray_closing_tags_emit_nothing() {
+        assert_eq!(
+            blocks("<table><tr><td> </td></tr></table></table><p>after</p>").unwrap(),
+            vec![Block::P {
+                cls: String::new(),
+                text: "after".into(),
+                sectno: false
+            }]
+        );
+    }
+
+    #[test]
+    fn unbalanced_structures_fail_with_pythons_messages() {
+        // test_extract_paths.py::test_unbalanced_table_boundaries_are_rejected.
+        for (html, message) in [
+            ("<table><tr><caption>", "table row group is unbalanced"),
+            ("<table><tbody><colgroup>", "table row group is unbalanced"),
+            ("<table><table>", "nested table outside a cell"),
+            ("</td>", "table cell is unbalanced"),
+            ("</th>", "table cell is unbalanced"),
+            ("</tr>", "table row is unbalanced"),
+            ("<table><tr><td>unfinished</tr>", "table row is unbalanced"),
+            ("<table><thead></tbody>", "table row group is unbalanced"),
+            (
+                "<table><tbody><tr></tbody>",
+                "table row group is unbalanced",
+            ),
+        ] {
+            assert_eq!(refusal(html), message, "{html}");
+        }
+        // test_rowspan_regressions.py::test_unbalanced_table_structures_refuse_instead_of_shifting_cells.
+        for html in [
+            "<table><td>A</td></table>",
+            "<table><tr><td>A<td>B</td></tr></table>",
+            "<table><tr><td>A</td><tr><td>B</td></tr></table>",
+            "<table><tbody><thead></thead></tbody></table>",
+            "<table><tbody><tr><td>A</td></tr></table>",
+            "<table><tr><td>A</td></tr>",
+        ] {
+            assert!(refusal(html).contains("table"), "{html}");
+        }
+    }
+
+    #[test]
+    fn spans_and_groups_match_python() {
+        let mut cases: Vec<(String, Vec<Vec<String>>)> = Vec::new();
+        // test_zero_span_stops_at_each_explicit_group.
+        for group in ["thead", "tbody", "tfoot"] {
+            cases.push((
+                format!(
+                    "<table><{group}><tr><td rowspan=\"0\">A</td><td>5%</td></tr>\
+                     <tr><td>10%</td></tr></{group}>\
+                     <tbody><tr><td>B</td><td>15%</td></tr></tbody></table>"
+                ),
+                table(&[&["A", "5%"], &["", "10%"], &["B", "15%"]]),
+            ));
+        }
+        // test_zero_span_covers_the_direct_row_group.
+        cases.push((
+            "<table><tr><td rowspan=\"0\">A</td><td>5%</td></tr>\
+             <tr><td>10%</td></tr><tr><td>15%</td></tr>\
+             <tbody><tr><td>B</td><td>20%</td></tr></tbody></table>"
+                .into(),
+            table(&[&["A", "5%"], &["", "10%"], &["", "15%"], &["B", "20%"]]),
+        ));
+        // test_missing_and_malformed_attributes_keep_the_single_row_policy.
+        for value in [
+            None,
+            Some(""),
+            Some("unknown"),
+            Some("-2"),
+            Some("1"),
+            Some("+1"),
+        ] {
+            let attribute = value.map_or(String::new(), |v| format!(" rowspan=\"{v}\""));
+            cases.push((
+                format!(
+                    "<table><tr><td{attribute}>A</td><td>5%</td></tr>\
+                     <tr><td>B</td><td>10%</td></tr></table>"
+                ),
+                table(&[&["A", "5%"], &["B", "10%"]]),
+            ));
+        }
+        // test_a_positive_span_ends_at_its_group_without_fabricating_rows.
+        cases.push((
+            "<table><tbody><tr><td rowspan=\"4\">A</td><td>5%</td></tr></tbody>\
+             <tbody><tr><td>B</td><td>10%</td></tr></tbody></table>"
+                .into(),
+            table(&[&["A", "5%"], &["B", "10%"]]),
+        ));
+        // test_empty_rows_do_not_manufacture_output_cells.
+        cases.push((
+            "<table><tr/><tr><td>A</td></tr><tr/></table>".into(),
+            table(&[&["A"]]),
+        ));
+        // test_an_inherited_trailing_slot_remains_blank.
+        cases.push((
+            "<table><tr><td>A</td><td rowspan=\"2\">5%</td></tr>\
+             <tr><td>B</td></tr></table>"
+                .into(),
+            table(&[&["A", "5%"], &["B", ""]]),
+        ));
+        // test_self_closing_cells_preserve_their_logical_slot.
+        cases.push((
+            "<table><tr><td rowspan=\"2\"/><td>5%</td></tr>\
+             <tr><td>10%</td></tr></table>"
+                .into(),
+            table(&[&["", "5%"], &["", "10%"]]),
+        ));
+        // test_a_caption_ends_the_implicit_zero_span_group.
+        cases.push((
+            "<table><tr><td rowspan=\"0\">A</td><td>5%</td></tr>\
+             <caption>Later rows</caption><tr><td>B</td><td>10%</td></tr></table>"
+                .into(),
+            table(&[&["A", "5%"], &["B", "10%"]]),
+        ));
+        for (html, expected) in cases {
+            assert_eq!(rows_for(&html), expected, "{html}");
+        }
+    }
+
+    #[test]
+    fn spans_in_a_nested_table_preserve_the_outer_pending_rectangle() {
+        let rows = rows_for(
+            "<table><tr><th>Category</th><th>From</th><th>Rate</th></tr>\
+             <tbody><tr><td rowspan=\"2\" colspan=\"2\">All\
+             <table><tbody><tr><td rowspan=\"2\">Nested</td><td>1%</td></tr>\
+             <tr><td>2%</td></tr></tbody></table></td><td>5%</td></tr>\
+             <tr><td>10%</td></tr></tbody></table>",
+        );
+        assert_eq!(rows[2], ["", "", "10%"]);
+        assert_eq!(rows[1][1..], ["", "5%"]);
+        assert!(rows[1][0].contains("Nested"));
+        assert!(rows[1][0].contains("|  | 2% |"));
+    }
+
+    #[test]
+    fn ordinary_and_malformed_spans_preserve_columns() {
+        let rows = rows_for(
+            "<table><tr><td colspan=\"2\">A</td><td>B</td></tr>\
+             <tr><td colspan=\"unknown\">C</td><td>D</td></tr></table>",
+        );
+        assert_eq!(rows, table(&[&["A", "", "B"], &["C", "D"]]));
+        assert!(
+            md_table(&rows)
+                .unwrap()
+                .contains(&"| C | D |  |".to_string())
+        );
+    }
+
+    #[test]
+    fn zero_spans_are_charged_for_explicit_and_implied_rows() {
+        for html in [
+            "<table><tbody><tr><td rowspan=\"0\">A</td><td>B</td></tr>\
+             <tr><td>C</td></tr><tr><td>D</td></tr></tbody></table>",
+            "<table><tbody><tr><td rowspan=\"0\">A</td><td rowspan=\"3\">B</td></tr>\
+             </tbody></table>",
+        ] {
+            let sizes = HashMap::new();
+            let message = value_error(&mut Doc::new(&sizes, budget(5)), html);
+            assert!(message.contains("cell budget"), "{html}: {message}");
+        }
+    }
+
+    #[test]
+    fn inherited_columns_count_towards_the_row_limit() {
+        // Python lowers MAX_TABLE_COLUMNS to 3 and spans all 3; the column
+        // budget is a constant here, so 4 spans of 1,024 reach the real 4,096.
+        let wide = "<td rowspan=\"2\" colspan=\"1024\">A</td>".repeat(4);
+        let message = refusal(&format!(
+            "<table><tr>{wide}</tr><tr><td>B</td></tr></table>"
+        ));
+        assert!(message.contains("column budget"), "{message}");
+    }
+
+    #[test]
+    fn inherited_blanks_are_bounded_before_the_table_closes() {
+        let sizes = HashMap::new();
+        for (first, repeated) in [
+            (
+                "<table><tr><td colspan=\"4\">A</td><td rowspan=\"0\">B</td></tr>",
+                "<tr><td>C</td></tr>",
+            ),
+            // test_inherited_leading_blanks_are_bounded_before_cell_allocation.
+            (
+                "<table><tr><td>A</td><td>B</td><td>C</td><td>D</td>\
+                 <td rowspan=\"0\">E</td></tr>",
+                "<tr><td rowspan=\"0\">F</td></tr>",
+            ),
+        ] {
+            let mut doc = Doc::new(&sizes, budget(20));
+            let html = format!("{first}{}", repeated.repeat(6));
+            let message = value_error(&mut doc, &html);
+            assert!(message.contains("cell budget"), "{message}");
+            assert!(buffered(&doc) <= 20, "{first}");
+        }
+    }
+
+    #[test]
+    fn empty_source_rows_are_bounded_before_allocation() {
+        let sizes = HashMap::new();
+        for row in ["<tr/>", "<tr></tr>"] {
+            let start = budget(5);
+            let mut doc = Doc::new(&sizes, start);
+            let message = value_error(&mut doc, &format!("<table>{}", row.repeat(6)));
+            assert!(message.contains("cell budget"), "{row}: {message}");
+            assert_eq!(doc.f.table.len(), 5, "{row}");
+            assert_eq!(doc.counts.buffered - start.buffered, 5, "{row}");
+            assert_eq!(doc.counts.expanded - start.expanded, 0, "{row}");
+        }
+    }
+
+    #[test]
+    fn empty_row_budget_is_shared_across_nested_tables() {
+        // The EPUB-member half of the Python test is in tests/fadden_extract.rs.
+        let sizes = HashMap::new();
+        let html = format!(
+            "<table><tr><td><table>{}</table></td></tr></table>",
+            "<tr/>".repeat(6)
+        );
+        let message = value_error(&mut Doc::new(&sizes, budget(5)), &html);
+        assert!(message.contains("cell budget"), "{message}");
+    }
+
+    #[test]
+    fn depth_refusal_precedes_parent_buffer_and_stack_mutation() {
+        // Python lowers MAX_TABLE_DEPTH to 3; this is the real 64.
+        let sizes = HashMap::new();
+        let mut doc = Doc::new(&sizes, Counts::default());
+        let html = format!(
+            "{}pending<table>",
+            "<table><tr><td>".repeat(MAX_TABLE_DEPTH)
+        );
+        let message = value_error(&mut doc, &html);
+        assert!(message.contains("depth budget"), "{message}");
+        assert_eq!(doc.tables.len(), MAX_TABLE_DEPTH);
+        assert_eq!(doc.f.buf, ["pending"]);
+        assert!(doc.f.cell.is_empty());
+        let c = doc.counts;
+        assert_eq!((c.expanded, c.buffered, c.rendered), (0, 0, 0));
+    }
+
+    #[test]
+    fn span_coverage_is_charged_once_and_refusal_preserves_the_counter() {
+        let sizes = HashMap::new();
+        let mut doc = Doc::new(&sizes, Counts::default());
+        doc.run(
+            "<table><tbody><tr><td rowspan=\"0\">A</td>\
+             <td rowspan=\"3\">B</td></tr></tbody></table>",
+        )
+        .unwrap();
+        assert_eq!(doc.counts.expanded, 6);
+        let start = budget(5);
+        let mut doc = Doc::new(&sizes, start);
+        let message = value_error(
+            &mut doc,
+            "<table><tr><td rowspan=\"4\">A</td><td rowspan=\"2\">B</td></tr></table>",
+        );
+        assert!(message.contains("cell budget"), "{message}");
+        assert_eq!(doc.counts.expanded - start.expanded, 4);
+        assert_eq!(doc.f.row, ["A"]);
+    }
+
+    #[test]
+    fn aggregate_and_padding_limits_fail_before_expansion() {
+        let sizes = HashMap::new();
+        let message = value_error(
+            &mut Doc::new(&sizes, budget(3)),
+            "<table><tr><td colspan=\"2\">A</td><td colspan=\"2\">B</td></tr></table>",
+        );
+        assert!(message.contains("cell"), "{message}");
+        // Python lowers the budget to 8 for a 4-wide, 3-row table; md_table
+        // reads the constant, so this is a 1,000-wide, 1,001-row table.
+        let mut rows = vec![vec!["A".to_string(); 1000]];
+        rows.extend((0..1000).map(|_| vec!["B".to_string()]));
+        match md_table(&rows) {
+            Err(Exc::Value {
+                class: "ValueError",
+                message,
+            }) => assert!(message.contains("rectangular"), "{message}"),
+            other => panic!("expected a ValueError, got {other:?}"),
+        }
+        let message = value_error(
+            &mut Doc::new(&sizes, budget(4)),
+            "<table><tr><td colspan=\"3\">A</td></tr><tr><td>B</td></tr></table>",
+        );
+        assert!(message.contains("padded"), "{message}");
+    }
+
+    #[test]
+    fn coat_of_arms_needs_all_three_signals() {
+        let sizes: HashMap<String, u64> = [
+            ("arms.png", 6000),
+            ("formula.png", 6000),
+            ("light.png", 900),
+        ]
+        .into_iter()
+        .map(|(k, v)| (k.to_string(), v))
+        .collect();
+        let mut doc = Doc::new(&sizes, Counts::default());
+        doc.run(
+            "<html><body>\
+             <img src=\"arms.png\" width=\"120\" height=\"90\"/>\
+             <img src=\"formula.png\" width=\"480\" height=\"90\"/>\
+             <img src=\"light.png\" width=\"120\" height=\"90\"/>\
+             </body></html>",
+        )
+        .unwrap();
+        let images: Vec<&str> = doc
+            .blocks
+            .iter()
+            .filter_map(|b| match b {
+                Block::Img { alt } => Some(alt.as_str()),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(
+            images,
+            [
+                "[Commonwealth Coat of Arms omitted, not licensed under CC BY]",
+                "[image not described in source: formula.png]",
+                "[image not described in source: light.png]"
+            ]
+        );
+    }
+
+    #[test]
+    fn a_valueless_class_is_not_a_section_number() {
+        let paragraphs: Vec<(String, bool)> = blocks(
+            "<html><body><p class>Preamble <span class>1</span> text</p>\
+             <p class=\"ActHead5\"><span class=\"CharSectno\">2</span> Title</p>\
+             </body></html>",
+        )
+        .unwrap()
+        .into_iter()
+        .filter_map(|b| match b {
+            Block::P { cls, sectno, .. } => Some((cls, sectno)),
+            _ => None,
+        })
+        .collect();
+        assert_eq!(
+            paragraphs,
+            [(String::new(), false), ("ActHead5".to_string(), true)]
+        );
+    }
 }
