@@ -33,6 +33,7 @@ pub enum Block {
         text: String,
         sectno: bool,
     },
+    /// Python's block also keeps the image's base name as `src`, which nothing reads.
     Img {
         alt: String,
     },
@@ -482,7 +483,10 @@ impl<'a> Doc<'a> {
 
 /// `md_table(rows)`.
 pub fn md_table(rows: &[Vec<String>]) -> Result<Vec<String>, Exc> {
-    let w = rows.iter().map(Vec::len).max().unwrap_or(0);
+    // The parser emits only tables with rows; an empty one fails as `max()` does.
+    let Some(w) = rows.iter().map(Vec::len).max() else {
+        return Err(value_error("max() iterable argument is empty"));
+    };
     if w > MAX_TABLE_COLUMNS || (w * rows.len()) as i128 > MAX_TABLE_CELLS {
         return Err(value_error(
             "table exceeds the supported rectangular cell budget",
@@ -552,6 +556,14 @@ mod tests {
         let mut doc = Doc::new(&sizes, Counts::default());
         doc.run(html).map_err(|e| e.to_string())?;
         Ok(doc.blocks)
+    }
+
+    #[test]
+    fn an_empty_table_fails_as_pythons_max_does() {
+        assert!(matches!(
+            md_table(&[]),
+            Err(Exc::Value { class: "ValueError", message }) if message == "max() iterable argument is empty"
+        ));
     }
 
     #[test]
