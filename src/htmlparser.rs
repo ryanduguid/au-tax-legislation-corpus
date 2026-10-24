@@ -644,10 +644,13 @@ mod tests {
 
     #[test]
     fn scanners_match_cpythons_patterns() {
-        // Seeded random strings over every character the patterns distinguish, tried at
-        // every character boundary against the patterns themselves.
-        const ALPHABET: [&str; 15] = [
-            "a", "Z", "1", "=", "'", "\"", " ", "\t", "\n", "\x0c", "\r", "/", ">", "<", "é",
+        // Seeded random strings over every character the patterns distinguish, plus
+        // whitespace and controls they do not and 2-, 3- and 4-byte characters, tried
+        // at every character boundary against the patterns themselves; every tenth
+        // string is up to 64 characters, for long quoted values.
+        const ALPHABET: [&str; 23] = [
+            "a", "Z", "1", "=", "'", "\"", " ", "\t", "\n", "\x0c", "\r", "/", ">", "<", "é", "漢",
+            "😀", "\u{a0}", "\u{2003}", "\u{2028}", "\u{85}", "\x0b", "\0",
         ];
         let mut state: u64 = 0x9e37_79b9_7f4a_7c15;
         let mut next = |bound: usize| {
@@ -657,8 +660,9 @@ mod tests {
             (state % bound as u64) as usize
         };
         let span = |m: &pyre::Caps<'_>, i| m.get(i).map(|g| g.start()..g.end());
-        for _ in 0..20_000 {
-            let text: String = (0..1 + next(16)).map(|_| ALPHABET[next(15)]).collect();
+        for round in 0..20_000 {
+            let len = 1 + next(if round % 10 == 0 { 64 } else { 16 });
+            let text: String = (0..len).map(|_| ALPHABET[next(ALPHABET.len())]).collect();
             let s = text.as_bytes();
             for at in (0..=text.len()).filter(|&at| text.is_char_boundary(at)) {
                 let Some(m) = re(ATTRFIND_TOLERANT, 0).match_at(&text, at) else {
