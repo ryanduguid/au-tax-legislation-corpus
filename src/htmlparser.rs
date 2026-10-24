@@ -36,12 +36,16 @@ const CDATA_CONTENT_ELEMENTS: [&str; 6] =
     ["script", "style", "xmp", "iframe", "noembed", "noframes"];
 const RCDATA_CONTENT_ELEMENTS: [&str; 2] = ["textarea", "title"];
 
+// CPython's patterns, kept as the specification the scanners below are tested against.
+#[cfg(test)]
 const TAGFIND_TOLERANT: &str = r"([a-zA-Z][^\t\n\r\f />]*)(?:[\t\n\r\f ]|/(?!>))*";
+#[cfg(test)]
 pub(crate) const ATTRFIND_TOLERANT: &str = concat!(
     r#"((?<=['"\t\n\r\f /])[^\t\n\r\f />][^\t\n\r\f /=>]*)"#,
     r#"([\t\n\r\f ]*=[\t\n\r\f ]*('[^']*'|"[^"]*"|(?!['"])[^>\t\n\r\f ]*))?"#,
     r"(?:[\t\n\r\f ]|/(?!>))*",
 );
+#[cfg(test)]
 const LOCATETAGEND: &str = concat!(
     r"[a-zA-Z][^\t\n\r\f />]*",
     r"[\t\n\r\f /]*",
@@ -49,6 +53,125 @@ const LOCATETAGEND: &str = concat!(
     r#"(?:[\t\n\r\f ]*=[\t\n\r\f ]*(?:'[^']*'|"[^"]*"|(?!['"])[^>\t\n\r\f ]*))?"#,
     r"[\t\n\r\f /]*)*>?",
 );
+
+// Scanners giving exactly what the patterns above match, as `re` would, without a
+// regex engine, which took four fifths of all parsing time through fancy_regex. Every
+// delimiter is ASCII, so the scans run over bytes and stop only on character
+// boundaries. Every part after a name can match empty, so the first path the
+// backtracking engine tries succeeds; the only backtracking that changes a match is
+// the value's `[\t\n\r\f ]*`, which gives back a space before an unclosed quote.
+
+/// `[\t\n\r\f ]`.
+fn is_space(b: u8) -> bool {
+    matches!(b, b'\t' | b'\n' | b'\r' | b'\x0c' | b' ')
+}
+
+/// Where the run of bytes satisfying `keep` from `at` ends.
+fn skip(s: &[u8], at: usize, keep: impl Fn(u8) -> bool) -> usize {
+    at + s[at..].iter().take_while(|&&b| keep(b)).count()
+}
+
+/// `[^\t\n\r\f />]` and, for a name's later characters, `[^\t\n\r\f /=>]`.
+fn name_first(b: u8) -> bool {
+    !is_space(b) && b != b'/' && b != b'>'
+}
+
+fn name_rest(b: u8) -> bool {
+    name_first(b) && b != b'='
+}
+
+/// `(?:[\t\n\r\f ]|/(?!>))*` from `at`: its end.
+fn tolerant_tail(s: &[u8], mut at: usize) -> usize {
+    while let Some(&b) = s.get(at) {
+        if !(is_space(b) || (b == b'/' && s.get(at + 1) != Some(&b'>'))) {
+            break;
+        }
+        at += 1;
+    }
+    at
+}
+
+/// `TAGFIND_TOLERANT` matched at `at`: the end of group 1 (the name) and of the match.
+fn tagfind(s: &[u8], at: usize) -> Option<(usize, usize)> {
+    if !s.get(at)?.is_ascii_alphabetic() {
+        return None;
+    }
+    let name = skip(s, at + 1, name_first);
+    Some((name, tolerant_tail(s, name)))
+}
+
+/// The optional `[\t\n\r\f ]*=[\t\n\r\f ]*(value)` group at `at`, if it matches: where
+/// the value starts and where the group ends.
+fn attr_value(s: &[u8], at: usize) -> Option<(usize, usize)> {
+    let eq = skip(s, at, is_space);
+    if s.get(eq) != Some(&b'=') {
+        return None;
+    }
+    let after = eq + 1;
+    let value = skip(s, after, is_space);
+    match s.get(value) {
+        Some(&quote @ (b'\'' | b'"')) => match s[value + 1..].iter().position(|&b| b == quote) {
+            Some(close) => Some((value, value + close + 2)),
+            // No closing quote: backtracking gives back the last space, where
+            // `(?!['"])[^>\t\n\r\f ]*` matches empty; with none to give back, no value.
+            None if value > after => Some((value - 1, value - 1)),
+            None => None,
+        },
+        _ => Some((value, skip(s, value, |b| b != b'>' && !is_space(b)))),
+    }
+}
+
+/// An attribute name matched at `at` by `(?<=['"\t\n\r\f /])[^\t\n\r\f />][^\t\n\r\f /=>]*`:
+/// its end.
+fn attr_name(s: &[u8], at: usize) -> Option<usize> {
+    let behind = s.get(at.checked_sub(1)?)?;
+    if !(is_space(*behind) || matches!(behind, b'\'' | b'"' | b'/')) || !name_first(*s.get(at)?) {
+        return None;
+    }
+    Some(skip(s, at + 1, name_rest))
+}
+
+/// `ATTRFIND_TOLERANT` matched at `at`.
+struct Attr {
+    name: std::ops::Range<usize>,
+    /// Groups 2 and 3: the `=` and value part, and the value.
+    value: Option<(std::ops::Range<usize>, std::ops::Range<usize>)>,
+    end: usize,
+}
+
+fn attrfind(s: &[u8], at: usize) -> Option<Attr> {
+    let name = attr_name(s, at)?;
+    let value = attr_value(s, name).map(|(start, end)| (name..end, start..end));
+    let end = tolerant_tail(s, value.as_ref().map_or(name, |(group, _)| group.end));
+    Some(Attr {
+        name: at..name,
+        value,
+        end,
+    })
+}
+
+/// `LOCATETAGEND` matched at `at`, a letter: the match's end.
+fn locatetagend(s: &[u8], at: usize) -> usize {
+    let tag_or_slash = |b: u8| is_space(b) || b == b'/';
+    let mut k = skip(s, skip(s, at + 1, name_first), tag_or_slash);
+    while let Some(name) = attr_name(s, k) {
+        k = attr_value(s, name).map_or(name, |(_, end)| end);
+        k = skip(s, k, tag_or_slash);
+    }
+    if s.get(k) == Some(&b'>') {
+        k += 1;
+    }
+    k
+}
+
+/// Whether `text` starts with `prefix` and then an ASCII letter (`prefix[a-zA-Z]`).
+fn letter_after(text: &str, prefix: &str) -> bool {
+    text.starts_with(prefix)
+        && text
+            .as_bytes()
+            .get(prefix.len())
+            .is_some_and(u8::is_ascii_alphabetic)
+}
 
 /// `html.parser._unescape_attrvalue`.
 fn unescape_attrvalue(value: &str) -> String {
@@ -108,7 +231,9 @@ impl Parser {
         j
     }
 
-    fn data(&mut self, text: &str) {
+    /// `handle_data(self.rawdata[i:j])`, unescaped where `convert_charrefs` applies.
+    fn data(&mut self, i: usize, j: usize) {
+        let text = &self.rawdata[i..j];
         let text = if self.convert_charrefs && self.escapable {
             html::unescape(text)
         } else {
@@ -188,8 +313,7 @@ impl Parser {
                 }
             }
             if i < j {
-                let text = self.rawdata[i..j].to_owned();
-                self.data(&text);
+                self.data(i, j);
             }
             i = self.updatepos(i, j);
             if i == n {
@@ -197,7 +321,7 @@ impl Parser {
             }
             let rest = &self.rawdata[i..];
             if rest.starts_with('<') {
-                let starttag = re("<[a-zA-Z]", 0).match_at(&self.rawdata, i).is_some();
+                let starttag = letter_after(rest, "<");
                 let mut k: isize = if starttag {
                     self.parse_starttag(i)
                 } else if rest.starts_with("</") {
@@ -223,7 +347,7 @@ impl Parser {
                     } else if rest.starts_with("</") {
                         if i + 2 == n {
                             self.emit(Event::Data("</".into()));
-                        } else if re("</[a-zA-Z]", 0).match_at(&rest, 0).is_some() {
+                        } else if letter_after(&rest, "</") {
                         } else {
                             self.emit(Event::Comment(rest[2..].to_owned()));
                         }
@@ -300,8 +424,7 @@ impl Parser {
             }
         }
         if end && i < n {
-            let text = self.rawdata[i..n].to_owned();
-            self.data(&text);
+            self.data(i, n);
             i = self.updatepos(i, n);
         }
         self.rawdata.drain(..i);
@@ -384,21 +507,19 @@ impl Parser {
     }
 
     fn parse_starttag_at(&mut self, rawdata: &str, i: usize, endpos: usize) -> isize {
-        let m = re(TAGFIND_TOLERANT, 0)
-            .match_at(rawdata, i + 1)
-            .expect("unexpected call to parse_starttag()");
-        let mut k = m.get(0).expect("group 0").end();
-        let tag = m[1].to_lowercase();
+        let (name, mut k) =
+            tagfind(rawdata.as_bytes(), i + 1).expect("unexpected call to parse_starttag()");
+        let tag = rawdata[i + 1..name].to_lowercase();
         let mut attrs = Vec::new();
         while k < endpos {
-            let Some(m) = re(ATTRFIND_TOLERANT, 0).match_at(rawdata, k) else {
+            let Some(m) = attrfind(rawdata.as_bytes(), k) else {
                 break;
             };
-            let name = m[1].to_lowercase();
-            let value = match (m.get(2), m.get(3)) {
-                (None, _) => None,
-                (Some(_), value) => {
-                    let mut value = value.map_or("", |v| v.as_str());
+            let name = rawdata[m.name].to_lowercase();
+            let value = match m.value {
+                None => None,
+                Some((_, value)) => {
+                    let mut value = &rawdata[value];
                     let quoted = value.len() >= 2
                         && ((value.starts_with('\'') && value.ends_with('\''))
                             || (value.starts_with('"') && value.ends_with('"')));
@@ -418,7 +539,7 @@ impl Parser {
                 }
             };
             attrs.push((name, value));
-            k = m.get(0).expect("group 0").end();
+            k = m.end;
         }
         let end = crate::py::strip(&rawdata[k..endpos]);
         if end != ">" && end != "/>" {
@@ -439,10 +560,7 @@ impl Parser {
     }
 
     fn check_for_whole_start_tag(&self, i: usize) -> isize {
-        let m = re(LOCATETAGEND, 0)
-            .match_at(&self.rawdata, i + 1)
-            .expect("a tag");
-        let j = m.get(0).expect("group 0").end();
+        let j = locatetagend(self.rawdata.as_bytes(), i + 1);
         if self.rawdata.as_bytes()[j - 1] != b'>' {
             return -1;
         }
@@ -453,23 +571,18 @@ impl Parser {
         if !self.rawdata[i + 2..].contains('>') {
             return -1;
         }
-        if re("</[a-zA-Z]", 0).match_at(&self.rawdata, i).is_none() {
+        if !letter_after(&self.rawdata[i..], "</") {
             if self.rawdata[i + 2..].starts_with('>') {
                 return (i + 3) as isize;
             }
             return self.parse_bogus_comment(i);
         }
-        let m = re(LOCATETAGEND, 0)
-            .match_at(&self.rawdata, i + 2)
-            .expect("a tag");
-        let j = m.get(0).expect("group 0").end();
+        let j = locatetagend(self.rawdata.as_bytes(), i + 2);
         if self.rawdata.as_bytes()[j - 1] != b'>' {
             return -1;
         }
-        let m = re(TAGFIND_TOLERANT, 0)
-            .match_at(&self.rawdata, i + 2)
-            .expect("a tag");
-        let tag = m[1].to_lowercase();
+        let (name, _) = tagfind(self.rawdata.as_bytes(), i + 2).expect("a tag");
+        let tag = self.rawdata[i + 2..name].to_lowercase();
         self.emit(Event::EndTag(tag));
         self.clear_cdata_mode();
         j as isize
@@ -527,6 +640,58 @@ mod tests {
 
     fn events(text: &str) -> Vec<Event> {
         parse(text, true).into_iter().map(|p| p.event).collect()
+    }
+
+    #[test]
+    fn scanners_match_cpythons_patterns() {
+        // Seeded random strings over every character the patterns distinguish, tried at
+        // every character boundary against the patterns themselves.
+        const ALPHABET: [&str; 15] = [
+            "a", "Z", "1", "=", "'", "\"", " ", "\t", "\n", "\x0c", "\r", "/", ">", "<", "é",
+        ];
+        let mut state: u64 = 0x9e37_79b9_7f4a_7c15;
+        let mut next = |bound: usize| {
+            state ^= state << 13;
+            state ^= state >> 7;
+            state ^= state << 17;
+            (state % bound as u64) as usize
+        };
+        let span = |m: &pyre::Caps<'_>, i| m.get(i).map(|g| g.start()..g.end());
+        for _ in 0..20_000 {
+            let text: String = (0..1 + next(16)).map(|_| ALPHABET[next(15)]).collect();
+            let s = text.as_bytes();
+            for at in (0..=text.len()).filter(|&at| text.is_char_boundary(at)) {
+                let Some(m) = re(ATTRFIND_TOLERANT, 0).match_at(&text, at) else {
+                    assert!(attrfind(s, at).is_none(), "attrfind {text:?} at {at}");
+                    continue;
+                };
+                let ours = attrfind(s, at).unwrap_or_else(|| panic!("attrfind {text:?} at {at}"));
+                let value = ours.value.map(|(group, value)| (Some(group), Some(value)));
+                assert_eq!(
+                    (
+                        m.get(0).unwrap().end(),
+                        span(&m, 1),
+                        (span(&m, 2), span(&m, 3))
+                    ),
+                    (ours.end, Some(ours.name), value.unwrap_or_default()),
+                    "attrfind {text:?} at {at}"
+                );
+            }
+            for at in (0..text.len()).filter(|&at| s[at].is_ascii_alphabetic()) {
+                let m = re(TAGFIND_TOLERANT, 0).match_at(&text, at).unwrap();
+                let (name, end) = tagfind(s, at).unwrap();
+                assert_eq!(
+                    (m.get(1).unwrap().end(), m.get(0).unwrap().end()),
+                    (name, end)
+                );
+                let m = re(LOCATETAGEND, 0).match_at(&text, at).unwrap();
+                assert_eq!(
+                    m.get(0).unwrap().end(),
+                    locatetagend(s, at),
+                    "{text:?} at {at}"
+                );
+            }
+        }
     }
 
     #[test]
