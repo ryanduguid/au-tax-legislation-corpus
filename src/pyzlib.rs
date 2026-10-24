@@ -53,8 +53,15 @@ struct Huffman {
     empty: bool,
     /// One 1-bit code: the other 1-bit pattern is an invalid code.
     half: bool,
+    /// Indexed by the next `FAST_BITS` bits: `len << 16 | symbol` for a code
+    /// of at most that many bits, else 0 (decoded bit by bit).
+    fast: Vec<u32>,
 }
 
+/// Bits a [`Huffman::fast`] lookup reads; longer codes are rarer.
+const FAST_BITS: u32 = 9;
+
+#[derive(Debug, PartialEq)]
 enum Decoded {
     Symbol(u16, u32),
     /// An invalid-code table entry, reached after this many bits.
@@ -75,6 +82,7 @@ impl Huffman {
                 symbol: Vec::new(),
                 empty: true,
                 half: false,
+                fast: Vec::new(),
             });
         }
         let mut left: i32 = 1;
@@ -99,16 +107,47 @@ impl Huffman {
                 offsets[len as usize] += 1;
             }
         }
+        // Canonical codes, as `decode_bits` walks them, stored bit-reversed
+        // because the stream holds a code's first bit lowest.
+        let mut fast = vec![0u32; 1 << FAST_BITS];
+        let (mut first, mut index) = (0u32, 0usize);
+        for len in 1..=FAST_BITS {
+            let n = usize::from(count[len as usize]);
+            for k in 0..n {
+                let code = first + k as u32;
+                let reversed = code.reverse_bits() >> (32 - len);
+                let entry = len << 16 | u32::from(symbol[index + k]);
+                for slot in (reversed as usize..fast.len()).step_by(1 << len) {
+                    fast[slot] = entry;
+                }
+            }
+            index += n;
+            first = (first + n as u32) << 1;
+        }
         Some(Huffman {
             count,
             symbol,
             empty: false,
             half: left > 0,
+            fast,
         })
     }
 
     /// Decode from the low `bits` bits of `hold`, as zlib's table lookups do.
     fn decode(&self, hold: u64, bits: u32) -> Decoded {
+        // Bits of `hold` past `bits` are 0, so an entry no longer than `bits` is
+        // the code the walk below would find.
+        if let Some(&entry) = self.fast.get((hold & ((1 << FAST_BITS) - 1)) as usize)
+            && entry != 0
+            && entry >> 16 <= bits
+        {
+            return Decoded::Symbol(entry as u16, entry >> 16);
+        }
+        self.decode_bits(hold, bits)
+    }
+
+    /// `decode` one bit at a time: the canonical code walk.
+    fn decode_bits(&self, hold: u64, bits: u32) -> Decoded {
         if self.empty {
             return if bits >= 1 {
                 Decoded::Invalid(1)
@@ -595,12 +634,12 @@ impl Decompress {
     }
 }
 
-/// `zlib.crc32(data, value)`.
+/// `zlib.crc32(data, value)`, 8 bytes a step (slicing-by-8).
 pub fn crc32(data: &[u8], value: u32) -> u32 {
-    static TABLE: std::sync::OnceLock<[u32; 256]> = std::sync::OnceLock::new();
-    let table = TABLE.get_or_init(|| {
-        let mut table = [0u32; 256];
-        for (n, entry) in table.iter_mut().enumerate() {
+    static TABLES: std::sync::OnceLock<[[u32; 256]; 8]> = std::sync::OnceLock::new();
+    let t = TABLES.get_or_init(|| {
+        let mut t = [[0u32; 256]; 8];
+        for (n, entry) in t[0].iter_mut().enumerate() {
             let mut c = n as u32;
             for _ in 0..8 {
                 c = if c & 1 != 0 {
@@ -611,11 +650,31 @@ pub fn crc32(data: &[u8], value: u32) -> u32 {
             }
             *entry = c;
         }
-        table
+        // Table k advances a byte's CRC through k more zero bytes.
+        for k in 1..8 {
+            let (done, rest) = t.split_at_mut(k);
+            for (entry, &prev) in rest[0].iter_mut().zip(&done[k - 1]) {
+                *entry = (prev >> 8) ^ done[0][(prev & 0xff) as usize];
+            }
+        }
+        t
     });
     let mut crc = !value;
-    for &byte in data {
-        crc = table[((crc ^ u32::from(byte)) & 0xff) as usize] ^ (crc >> 8);
+    let (chunks, rest) = data.as_chunks::<8>();
+    for chunk in chunks {
+        let lo = crc ^ u32::from_le_bytes([chunk[0], chunk[1], chunk[2], chunk[3]]);
+        let hi = u32::from_le_bytes([chunk[4], chunk[5], chunk[6], chunk[7]]);
+        crc = t[7][(lo & 0xff) as usize]
+            ^ t[6][((lo >> 8) & 0xff) as usize]
+            ^ t[5][((lo >> 16) & 0xff) as usize]
+            ^ t[4][(lo >> 24) as usize]
+            ^ t[3][(hi & 0xff) as usize]
+            ^ t[2][((hi >> 8) & 0xff) as usize]
+            ^ t[1][((hi >> 16) & 0xff) as usize]
+            ^ t[0][(hi >> 24) as usize];
+    }
+    for &byte in rest {
+        crc = t[0][((crc ^ u32::from(byte)) & 0xff) as usize] ^ (crc >> 8);
     }
     !crc
 }
@@ -624,11 +683,71 @@ pub fn crc32(data: &[u8], value: u32) -> u32 {
 mod tests {
     use super::*;
 
+    /// Random complete codes (a leaf split until the tree is full), the
+    /// fixed tables and a lone 1-bit code: the table lookup decodes every
+    /// bit pattern as the bit-by-bit walk does, however few bits are held.
+    #[test]
+    fn the_fast_table_decodes_as_the_walk_does() {
+        let mut state = 0x9e37_79b9_7f4a_7c15u64;
+        let mut next = move || {
+            state ^= state << 13;
+            state ^= state >> 7;
+            state ^= state << 17;
+            state
+        };
+        let mut tables = vec![Huffman::build(&[1, 0], Kind::Dists).unwrap()];
+        let mut fixed = Inflate::default();
+        fixed.fixed_tables();
+        tables.extend([fixed.lencode.unwrap(), fixed.distcode.unwrap()]);
+        for _ in 0..200 {
+            let symbols = 2 + (next() % 287) as usize;
+            let mut depths = vec![0u16];
+            while depths.len() < symbols {
+                let i = (next() % depths.len() as u64) as usize;
+                if depths[i] < 15 {
+                    depths[i] += 1;
+                    depths.push(depths[i]);
+                }
+            }
+            for i in (1..depths.len()).rev() {
+                depths.swap(i, (next() % (i as u64 + 1)) as usize);
+            }
+            tables.push(Huffman::build(&depths, Kind::Lens).expect("a complete code"));
+        }
+        for table in &tables {
+            for _ in 0..2000 {
+                let bits = (next() % 16) as u32;
+                let hold = next() & ((1u64 << bits) - 1);
+                assert_eq!(table.decode(hold, bits), table.decode_bits(hold, bits));
+            }
+        }
+    }
+
     #[test]
     fn crc32_matches_zlib() {
         assert_eq!(crc32(b"", 0), 0);
         assert_eq!(crc32(b"123456789", 0), 0xcbf4_3926);
         assert_eq!(crc32(b"6789", crc32(b"12345", 0)), 0xcbf4_3926);
+        // Every split of a longer input, against the bit-at-a-time definition.
+        let data: Vec<u8> = (0..100u32).map(|i| (i * 37 + 11) as u8).collect();
+        let bitwise = |data: &[u8], value: u32| {
+            let mut crc = !value;
+            for &byte in data {
+                crc ^= u32::from(byte);
+                for _ in 0..8 {
+                    crc = if crc & 1 != 0 {
+                        0xedb8_8320 ^ (crc >> 1)
+                    } else {
+                        crc >> 1
+                    };
+                }
+            }
+            !crc
+        };
+        let whole = bitwise(&data, 0);
+        for cut in 0..=data.len() {
+            assert_eq!(crc32(&data[cut..], crc32(&data[..cut], 0)), whole, "{cut}");
+        }
     }
 
     #[test]
