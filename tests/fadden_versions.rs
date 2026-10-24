@@ -198,6 +198,7 @@ fn a_malformed_batch_stops_the_stage_without_a_manifest() {
         json!({"value": [1]}),
     ] {
         let co = checkout(&titles(8));
+        std::fs::write(co.module.join("acts_resolved.json"), "sentinel").unwrap();
         let mut s = Script {
             answer: |url: &str| {
                 if asked(url).len() == 8 {
@@ -216,7 +217,11 @@ fn a_malformed_batch_stops_the_stage_without_a_manifest() {
             error.to_string(),
             "invalid version batch; refusing to write acts_resolved.json"
         );
-        assert!(!co.module.join("acts_resolved.json").exists());
+        // The earlier manifest survives the refusal untouched.
+        assert_eq!(
+            std::fs::read_to_string(co.module.join("acts_resolved.json")).unwrap(),
+            "sentinel"
+        );
         // A malformed batch is never recovered title by title.
         assert_eq!(calls(&s).0, 2, "{bad}");
     }
@@ -224,7 +229,11 @@ fn a_malformed_batch_stops_the_stage_without_a_manifest() {
 
 #[test]
 fn every_input_id_is_validated_before_any_fetch() {
-    let co = checkout(&json!([{"id": "not an id", "name": "Act", "isPrincipal": true}]));
+    // A valid title first: an incremental check would fetch it before the bad one.
+    let co = checkout(&json!([
+        {"id": rid(1), "name": "Act", "isPrincipal": true},
+        {"id": "not an id", "name": "Act", "isPrincipal": true},
+    ]));
     let mut s = Script {
         answer: complete,
         events: Vec::new(),

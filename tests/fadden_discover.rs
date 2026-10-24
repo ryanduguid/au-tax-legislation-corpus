@@ -178,7 +178,39 @@ fn ids_that_python_equates_are_one_id_while_paging() {
         }
     });
     let (result, _) = run(&mut s, &co.module);
-    assert!(matches!(result, Err(Stop::Exit(_))));
+    let Err(Stop::Exit(message)) = result else {
+        panic!("expected SystemExit")
+    };
+    assert_eq!(
+        message,
+        "duplicate ids while paging 'Tax': unordered paging"
+    );
+    assert!(!co.module.join("titles_all.json").exists());
+}
+
+#[test]
+fn an_id_python_equates_with_one_on_an_earlier_page_repeats_it() {
+    // A full first page of int ids, then the float equal to one of them.
+    let co = checkout();
+    let rows: Vec<Value> = (1..=100).map(|n| json!({"id": n, "name": "A"})).collect();
+    let mut s = script(|search| {
+        if search == 0 {
+            vec![rows.clone(), vec![json!({"id": 7.0, "name": "B"})]]
+        } else {
+            vec![vec![]]
+        }
+    });
+    let (result, _) = run(&mut s, &co.module);
+    let Err(Stop::Exit(message)) = result else {
+        panic!("expected SystemExit")
+    };
+    assert_eq!(
+        message,
+        "duplicate ids while paging 'Tax': unordered paging"
+    );
+    assert!(s.events[2].contains("$skip=100"), "{}", s.events[2]);
+    assert!(!co.module.join("titles_all.json").exists());
+    assert!(!co.module.join("titles_principal.json").exists());
 }
 
 #[test]

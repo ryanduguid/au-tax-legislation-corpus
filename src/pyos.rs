@@ -403,6 +403,14 @@ pub fn chmod(path: &str, mode: u32) -> io::Result<()> {
     use windows_sys::Win32::Storage::FileSystem::{
         FILE_ATTRIBUTE_READONLY, GetFileAttributesW, INVALID_FILE_ATTRIBUTES, SetFileAttributesW,
     };
+    // CPython's path converter refuses it ("embedded null character in path"); the
+    // Win32 calls would stop at it and change the file the prefix names.
+    if path.contains('\0') {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "embedded null character in path",
+        ));
+    }
     let wide: Vec<u16> = std::ffi::OsStr::new(path)
         .encode_wide()
         .chain(std::iter::once(0))
