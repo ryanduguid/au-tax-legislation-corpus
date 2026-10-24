@@ -9,6 +9,7 @@ use crate::py;
 use fancy_regex::{Captures, Regex, RegexBuilder};
 use std::collections::HashMap;
 use std::fmt::Write as _;
+use std::hash::BuildHasherDefault;
 use std::sync::{Arc, LazyLock, Mutex};
 
 pub const I: u8 = 1;
@@ -42,29 +43,52 @@ fn build(pattern: &str, translated: &str) -> Regex {
         .unwrap_or_else(|e| panic!("pattern {pattern:?} as {translated:?}: {e}"))
 }
 
-type Cache = Mutex<HashMap<(String, u8), Arc<Re>>>;
+/// FxHash: the lookup runs on every call (the HTML parser asks per token), and
+/// the keys are the program's own patterns, so SipHash's flood resistance buys
+/// nothing here.
+#[derive(Default)]
+struct FxHasher(u64);
+
+impl std::hash::Hasher for FxHasher {
+    fn write(&mut self, bytes: &[u8]) {
+        for chunk in bytes.chunks(8) {
+            let mut word = [0; 8];
+            word[..chunk.len()].copy_from_slice(chunk);
+            self.0 = (self.0.rotate_left(5) ^ u64::from_le_bytes(word))
+                .wrapping_mul(0x517c_c1b7_2722_0a95);
+        }
+    }
+
+    fn finish(&self) -> u64 {
+        self.0
+    }
+}
+
+/// Per flags, by pattern: a hit borrows the pattern instead of copying it.
+type Cache = Mutex<HashMap<u8, HashMap<String, Arc<Re>, BuildHasherDefault<FxHasher>>>>;
 
 /// `re.compile(pattern, flags)`, cached.
 pub fn re(pattern: &str, flags: u8) -> Arc<Re> {
     static CACHE: LazyLock<Cache> = LazyLock::new(Default::default);
     let mut cache = CACHE.lock().unwrap_or_else(|e| e.into_inner());
-    cache
-        .entry((pattern.to_owned(), flags))
-        .or_insert_with(|| {
-            let translated = translate(pattern, flags);
-            let native = translate_with(pattern, flags, true);
-            let plain = |p: &str| regex::Regex::new(p).ok();
-            let anchored = |p: &str| build(pattern, &format!(r"\G(?:{p})"));
-            Arc::new(Re {
-                anchored_native: (native != translated).then(|| anchored(&native)),
-                anchored_exact: anchored(&translated),
-                plain_native: (native != translated).then(|| plain(&native)).flatten(),
-                plain_exact: plain(&translated),
-                native: (native != translated).then(|| build(pattern, &native)),
-                exact: build(pattern, &translated),
-            })
-        })
-        .clone()
+    let by_pattern = cache.entry(flags).or_default();
+    if let Some(compiled) = by_pattern.get(pattern) {
+        return compiled.clone();
+    }
+    let translated = translate(pattern, flags);
+    let native = translate_with(pattern, flags, true);
+    let plain = |p: &str| regex::Regex::new(p).ok();
+    let anchored = |p: &str| build(pattern, &format!(r"\G(?:{p})"));
+    let compiled = Arc::new(Re {
+        anchored_native: (native != translated).then(|| anchored(&native)),
+        anchored_exact: anchored(&translated),
+        plain_native: (native != translated).then(|| plain(&native)).flatten(),
+        plain_exact: plain(&translated),
+        native: (native != translated).then(|| build(pattern, &native)),
+        exact: build(pattern, &translated),
+    });
+    by_pattern.insert(pattern.to_owned(), compiled.clone());
+    compiled
 }
 
 /// `re.fullmatch(pattern, text, flags)`: the pattern anchored at both ends, so alternatives
