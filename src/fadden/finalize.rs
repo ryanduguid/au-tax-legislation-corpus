@@ -1,4 +1,4 @@
-//! `fadden/finalize.py`: the last corpus stage. It writes sources.json,
+//! The port of `fadden/finalize.py` (removed after the port): the last corpus stage. It writes sources.json,
 //! INDEX.md, LICENCE-NOTICE.md and README.md under the corpus root, copies
 //! the staleness checker there, writes `build/build-record.json` and prints
 //! the totals. Unlike the Python stage it ships no builder sources in build/.
@@ -1194,8 +1194,9 @@ fn write_document(path: &str, text: Result<P, Exc>) -> Result<(), Exc> {
     }
 }
 
-/// `shutil.copy(src, dst)`: the contents, then the permission bits.
-fn copy(src: &str, dst: &str) -> Result<(), Exc> {
+/// `shutil.copy(src, dst)`: the contents, then the permission bits. Returns
+/// the file written, which is inside `dst` when `dst` is a directory.
+fn copy(src: &str, dst: &str) -> Result<String, Exc> {
     let dst = if pyos::isdir(dst) {
         pypath::join(dst, &pypath::split(src).1)
     } else {
@@ -1213,15 +1214,16 @@ fn copy(src: &str, dst: &str) -> Result<(), Exc> {
         0o666
     };
     pyos::chmod(&dst, mode).map_err(|e| OsError::new(&e, Some(&dst), Style::Native))?;
-    Ok(())
+    Ok(dst)
 }
 
-/// `copy_if_different(src, dst)`: a re-run from build/ would copy a file onto itself.
-fn copy_if_different(src: &str, dst: &str) -> Result<(), Exc> {
+/// `copy_if_different(src, dst)`: a re-run from build/ would copy a file onto
+/// itself. Returns the file that holds the copy.
+fn copy_if_different(src: &str, dst: &str) -> Result<String, Exc> {
     if pypath::abspath(src) != pypath::abspath(dst) {
-        copy(src, dst)?;
+        return copy(src, dst);
     }
-    Ok(())
+    Ok(dst.to_string())
 }
 
 /// `finish_corpus_publication(inventory, retrieved, pii_counts)`.
@@ -1242,24 +1244,30 @@ fn finish(
     let mut tools = Vec::new();
     for name in ROOT_TOOLS {
         let source = pypath::join(scratch, name);
-        copy_if_different(&source, &child(root, &[name])?)?;
-        // The copied bytes are the source's; the copy may sit inside a
-        // directory of that name, as `shutil.copy` puts it.
-        let bytes =
-            std::fs::read(&source).map_err(|e| OsError::new(&e, Some(&source), Style::Native))?;
-        tools.push((name, Digest::of(&bytes)));
+        let installed = copy_if_different(&source, &child(root, &[name])?)?;
+        // The installed bytes, at the path the operator finds them: inside a
+        // directory of that name when one is there, as `shutil.copy` puts it.
+        let bytes = std::fs::read(&installed)
+            .map_err(|e| OsError::new(&e, Some(&installed), Style::Native))?;
+        let path = if installed == child(root, &[name])? {
+            name.to_string()
+        } else {
+            format!("{name}/{name}")
+        };
+        tools.push((path, Digest::of(&bytes)));
     }
+    // The totals can fail (a float overflow); they fail before the record.
+    let epub_mb = match &inv.epub_bytes {
+        Num::Int(i) => int_to_float(i)?,
+        Num::Float(f) => *f,
+    } / 1e6;
+    let words = percent_d(&inv.total_words)?;
     // Installed last: a run that stops before here leaves no record.
     let record = build_record(inputs, &tools);
     let mut text = pyvalue::dumps_with(&record, Some(1), false, false);
     text.push(u32::from('\n'));
     write_text_atomic(&child(&build, &[RECORD])?, &[text])?;
 
-    let epub_mb = match &inv.epub_bytes {
-        Num::Int(i) => int_to_float(i)?,
-        Num::Float(f) => *f,
-    } / 1e6;
-    let words = percent_d(&inv.total_words)?;
     run.print(&format!(
         "titles={} (acts={} instruments={}) rows={} words={words} epub={} MB missing={} whole_act={}",
         inv.titles.len(),
@@ -1370,11 +1378,17 @@ impl Input {
 /// Refuses a build/ holding the Python builder an earlier finalize copied
 /// there: the record does not describe those files, and a second way to
 /// rewrite the corpus beside it would misdescribe how the corpus was made.
+/// Only a missing path counts as absent; any other error stops the stage.
 fn refuse_legacy_build(build: &str) -> Result<(), Exc> {
-    let stale: Vec<&str> = LEGACY_BUILDER
-        .into_iter()
-        .filter(|name| std::fs::symlink_metadata(pypath::join(build, name)).is_ok())
-        .collect();
+    let mut stale = Vec::new();
+    for name in LEGACY_BUILDER {
+        let path = pypath::join(build, name);
+        match std::fs::symlink_metadata(&path) {
+            Ok(_) => stale.push(name),
+            Err(e) if absent(&e) => {}
+            Err(e) => return Err(OsError::new(&e, Some(&path), Style::Native).into()),
+        }
+    }
     if stale.is_empty() {
         return Ok(());
     }
@@ -1387,13 +1401,27 @@ fn refuse_legacy_build(build: &str) -> Result<(), Exc> {
 }
 
 /// Removes an earlier run's record before the first output changes, so a run
-/// that stops part way leaves no record that looks current.
+/// that stops part way leaves no record that looks current. A record that
+/// cannot be inspected or removed (a directory there included) stops the stage.
 fn discard_record(path: &str) -> Result<(), Exc> {
-    match std::fs::symlink_metadata(path) {
-        Ok(meta) if !meta.is_dir() => std::fs::remove_file(path)
-            .map_err(|e| OsError::new(&e, Some(path), Style::Native).into()),
-        _ => Ok(()),
-    }
+    let error = match std::fs::symlink_metadata(path) {
+        Ok(_) => match std::fs::remove_file(path) {
+            Ok(()) => return Ok(()),
+            Err(e) => e,
+        },
+        Err(e) if absent(&e) => return Ok(()),
+        Err(e) => e,
+    };
+    Err(OsError::new(&error, Some(path), Style::Native).into())
+}
+
+/// The path is not there: missing, or under a file rather than a directory
+/// (a build/ that is a file fails later, where Python's makedirs fails).
+fn absent(error: &std::io::Error) -> bool {
+    matches!(
+        error.kind(),
+        std::io::ErrorKind::NotFound | std::io::ErrorKind::NotADirectory
+    )
 }
 
 fn digest_json(digest: &Digest) -> [(&'static str, Json); 2] {
@@ -1407,7 +1435,7 @@ fn digest_json(digest: &Digest) -> [(&'static str, Json); 2] {
 /// bytes it read and the checker it shipped. What the binary cannot know (the
 /// source revision it was built from, its lockfile) is null with a reason.
 // "Write the vision, and make it plain upon tables" (Habakkuk 2:2, KJV).
-fn build_record(mut inputs: Vec<Input>, tools: &[(&str, Digest)]) -> Json {
+fn build_record(mut inputs: Vec<Input>, tools: &[(String, Digest)]) -> Json {
     let seconds = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map_or(0, |d| d.as_secs());

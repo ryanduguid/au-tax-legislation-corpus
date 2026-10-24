@@ -542,7 +542,7 @@ record holds:
 | `implementation` | `rust`, the program's file name, the crate version and the SHA-256 of the running executable (`FADDEN_BIN` can name any build); `cargo_lock_sha256` is `null` with a reason |
 | `inputs` | `root` (`module` for the stage's directory, `corpus` for the corpus root), `path`, `bytes` and `sha256` of each file read: `manifest_md.json`, `manifest_raw.json`, `pii_flagged.json` and each published title's `sections.jsonl`, hashed as they were read |
 | `lineage` | `known` is empty and `unknown` says why: the inputs carry no record of the stage or revision that produced them |
-| `shipped_tools` | The Python requirement and the `name`, `bytes` and `sha256` of `check_current.py`, `corpus_paths.py` and `http_fetch.py` as copied to the corpus root |
+| `shipped_tools` | The Python requirement and the `name`, `bytes` and `sha256` of `check_current.py`, `corpus_paths.py` and `http_fetch.py` as installed, hashed from the installed file: at the corpus root, or `<name>/<name>` where a directory of that name already stood there and the copy went inside it, as `shutil.copy` does |
 | `environment` | The operating system and architecture |
 
 A corpus finalised by the Python stage carries the builder's scripts

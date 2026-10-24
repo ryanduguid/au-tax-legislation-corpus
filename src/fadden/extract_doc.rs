@@ -1,4 +1,4 @@
-//! `fadden/extract.py`'s `Doc` parser, `md_table` and `epub_blocks`: an
+//! The former `fadden/extract.py`'s `Doc` parser, `md_table` and `epub_blocks`: an
 //! EPUB's XHTML documents as paragraph, image and table blocks.
 //!
 //! `Doc` subclasses CPython's `HTMLParser`; here [`htmlparser::parse`] gives

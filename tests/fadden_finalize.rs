@@ -1,4 +1,4 @@
-//! `fadden finalize`: ported from tests/corpus/test_finalize_phases.py and the
+//! `fadden finalize`: ported from tests/corpus/test_finalize_phases.py (since removed) and the
 //! finalize tests in tests/corpus/test_regressions.py (FinalizePiiSummaryTests,
 //! FinalizeMissingTitleTests). Every title is fabricated. Python points
 //! `SCRATCH` and `ROOT` at separate directories; here the stage runs from a
@@ -22,7 +22,7 @@ const BUILDER: [&str; 5] = [
     "extract.py",
     "finalize.py",
 ];
-/// `OUTPUT_HASHES` in test_finalize_phases.py; README.md now has its
+/// `OUTPUT_HASHES` in the removed test_finalize_phases.py; README.md now has its
 /// "Build record" section.
 const OUTPUT_HASHES: [(&str, &str); 4] = [
     (
@@ -353,6 +353,74 @@ fn a_failed_rerun_leaves_no_record() {
     std::fs::create_dir(tree.root.join("README.md")).unwrap();
     assert!(tree.run(DATE).0.is_err());
     assert!(!record.exists());
+}
+
+/// A record path that cannot be removed (here a directory) stops the stage
+/// before it changes anything, rather than leaving that record beside new
+/// outputs.
+#[test]
+fn a_record_that_cannot_be_discarded_stops_the_stage_first() {
+    let tree = phase_fixture();
+    tree.previous_outputs();
+    std::fs::create_dir_all(tree.root.join("build/build-record.json")).unwrap();
+    assert!(tree.run(DATE).0.is_err());
+    tree.assert_previous_outputs();
+    assert!(tree.root.join("build/build-record.json").is_dir());
+}
+
+/// A build/ the stage cannot list stops it before any output, rather than
+/// counting its builder copies as absent. Skipped where the permission bits
+/// do not bind (as root).
+#[cfg(unix)]
+#[test]
+fn an_unreadable_build_stops_the_stage_first() {
+    use std::os::unix::fs::PermissionsExt;
+    let tree = phase_fixture();
+    tree.previous_outputs();
+    let build = tree.root.join("build");
+    std::fs::create_dir(&build).unwrap();
+    std::fs::write(build.join("finalize.py"), "old\n").unwrap();
+    std::fs::set_permissions(&build, std::fs::Permissions::from_mode(0o000)).unwrap();
+    let binds = std::fs::symlink_metadata(build.join("finalize.py")).is_err();
+    let outcome = tree.run(DATE).0;
+    std::fs::set_permissions(&build, std::fs::Permissions::from_mode(0o755)).unwrap();
+    if !binds {
+        return;
+    }
+    assert!(outcome.is_err());
+    tree.assert_previous_outputs();
+    assert_eq!(read(&build.join("finalize.py")), "old\n");
+}
+
+/// With a directory where a checker goes, `shutil.copy` puts the checker
+/// inside it; the record names that file and the bytes installed there.
+#[test]
+fn the_record_names_a_checker_copied_into_a_directory() {
+    let tree = phase_fixture();
+    std::fs::create_dir(tree.root.join("check_current.py")).unwrap();
+    tree.run(DATE).0.unwrap();
+    let record: Value =
+        serde_json::from_str(&read(&tree.root.join("build/build-record.json"))).unwrap();
+    let first = &record["shipped_tools"]["files"][0];
+    assert_eq!(first["name"], "check_current.py/check_current.py");
+    let installed = tree.root.join("check_current.py/check_current.py");
+    assert_eq!(first["sha256"], digest_of(&installed)["sha256"]);
+}
+
+/// Totals that cannot be printed (an EPUB byte count past a float) fail the
+/// stage before the record is installed; the other outputs are written, as
+/// Python writes them before its report.
+#[test]
+fn a_report_that_fails_leaves_no_record() {
+    let tree = phase_fixture();
+    let md = std::fs::read_to_string(tree.scratch.join("manifest_md.json")).unwrap();
+    let huge = format!("1{}", "0".repeat(400));
+    let md = md.replacen("\"bytes\":1000", &format!("\"bytes\":{huge}"), 1);
+    std::fs::write(tree.scratch.join("manifest_md.json"), &md).unwrap();
+    let error = tree.run(DATE).0.expect_err("expected an overflow");
+    assert_eq!(error.class(), "OverflowError", "{error}");
+    assert!(tree.root.join("README.md").exists());
+    assert!(!tree.root.join("build/build-record.json").exists());
 }
 
 /// test_retrieval_inventory_and_assembly_are_direct_exact_phases, read from

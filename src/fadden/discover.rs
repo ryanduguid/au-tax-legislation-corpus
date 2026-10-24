@@ -1,4 +1,4 @@
-//! `fadden/discover.py`: page every in-force title whose name holds a tax
+//! The port of `fadden/discover.py` (removed after the port): page every in-force title whose name holds a tax
 //! keyword, across the Act, legislative instrument and notifiable instrument
 //! collections, and write `titles_all.json` and `titles_principal.json` beside
 //! the module. A failed or unordered page stops the stage rather than leave a

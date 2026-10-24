@@ -1,4 +1,4 @@
-//! `fadden/versions.py`: deduplicate the discovered titles by Register id and
+//! The port of `fadden/versions.py` (removed after the port): deduplicate the discovered titles by Register id and
 //! resolve each principal title's current version, 8 titles to a request,
 //! writing `acts_resolved.json` beside the module. A batch the API cannot
 //! answer switches the rest of the run to single-title lookups; an ambiguous
