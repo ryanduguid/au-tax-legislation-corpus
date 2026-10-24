@@ -8,12 +8,14 @@
 //! Outputs are normalised as the harness normalised them: the case directory
 //! reads `ROOT`, the module directory `MODULE`, generated stage, backup and
 //! temporary names `HEX`, whole-second sleeps in the discover and versions
-//! fake-http logs `sleep N`, finalize's date (today's) `TODAY`, and bytes
-//! that are not UTF-8 `\xNN`. finalize's `build/build-record.json` holds a
-//! timestamp and the binary's digest, so it is checked by its schema and
-//! input digests rather than by a recorded hash. `rulings`, `probe13`, `discover` and
-//! `versions` fetch over HTTP, so their cases need the scripted responses of
-//! the `fake-http` feature: `cargo test --features fake-http --test fadden_golden`.
+//! fake-http logs `sleep N`, finalize's date `TODAY` (today's, taken from the
+//! operating system before and after the cases, so a run across midnight
+//! accepts either day), and bytes that are not UTF-8 `\xNN`. finalize's
+//! `build/build-record.json` holds a timestamp and the binary's digest, so it
+//! is checked whole by `check_build_record` rather than by a recorded hash.
+//! `rulings`, `probe13`, `discover` and `versions` fetch over HTTP, so their
+//! cases need the scripted responses of the `fake-http` feature:
+//! `cargo test --features fake-http --test fadden_golden`.
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -22,6 +24,7 @@ use std::sync::LazyLock;
 use regex::Regex;
 use serde_json::Value;
 use sha2::{Digest, Sha256};
+use tax_radar_au::pyjson;
 
 const PLATFORM: &str = if cfg!(windows) { "windows" } else { "linux" };
 
@@ -234,54 +237,228 @@ fn unordered(family: &str, line: &str) -> String {
         .into_owned()
 }
 
-/// What is wrong with finalize's build record, if anything: its schema, scope
-/// and implementation, its shipped tools, and each input's size and SHA-256
-/// against the file on disk (the corpus root is the record's grandparent).
-fn build_record_problem(path: &Path, module: &Path) -> Option<String> {
-    let record: Value = match std::fs::read(path).map(|b| serde_json::from_slice(&b)) {
-        Ok(Ok(record)) => record,
-        other => return Some(format!("unreadable: {other:?}")),
-    };
-    if record["schema"] != "au-tax-corpus-build-record.v1"
-        || record["scope"] != "finalize"
-        || record["implementation"]["language"] != "rust"
-        || !record["source"]["revision"].is_null()
-    {
-        return Some("schema, scope, implementation or revision".into());
+fn sha256_hex(bytes: &[u8]) -> String {
+    Sha256::digest(bytes)
+        .iter()
+        .map(|b| format!("{b:02x}"))
+        .collect()
+}
+
+/// `item`'s `bytes` and `sha256` against the file at `file`.
+fn digest_matches(item: &Value, file: &Path) -> Result<(), String> {
+    let bytes = std::fs::read(file).map_err(|e| format!("{}: {e}", file.display()))?;
+    if item["bytes"] != bytes.len() || item["sha256"] != sha256_hex(&bytes).as_str() {
+        return Err(format!("{}: size or digest", file.display()));
     }
-    let tools: Vec<&str> = record["shipped_tools"]["files"]
-        .as_array()
-        .into_iter()
-        .flatten()
-        .filter_map(|f| f["name"].as_str())
+    Ok(())
+}
+
+fn keys(value: &Value) -> Vec<&str> {
+    let mut keys: Vec<&str> = value
+        .as_object()
+        .map(|o| o.keys().map(String::as_str).collect())
+        .unwrap_or_default();
+    keys.sort_unstable();
+    keys
+}
+
+fn text(value: &Value) -> bool {
+    value.as_str().is_some_and(|s| !s.is_empty())
+}
+
+/// Checks finalize's build record whole, failing closed: every field, the
+/// binary's name, version and digest, each input's and shipped tool's size and
+/// digest against the bytes on disk, and the inputs being the 3 module files
+/// and each title sources.json publishes (the corpus root is the record's
+/// grandparent).
+fn check_build_record(path: &Path, module: &Path, binary: &Path) -> Result<(), String> {
+    let bytes = std::fs::read(path).map_err(|e| format!("unreadable: {e}"))?;
+    let record: Value = serde_json::from_slice(&bytes).map_err(|e| format!("not JSON: {e}"))?;
+    let expect = |ok: bool, what: &str| if ok { Ok(()) } else { Err(what.to_string()) };
+    expect(
+        keys(&record)
+            == [
+                "environment",
+                "finalized_at",
+                "implementation",
+                "inputs",
+                "lineage",
+                "schema",
+                "scope",
+                "shipped_tools",
+                "source",
+            ],
+        "top-level fields",
+    )?;
+    expect(
+        record["schema"] == "au-tax-corpus-build-record.v1" && record["scope"] == "finalize",
+        "schema or scope",
+    )?;
+    let at = record["finalized_at"].as_str().unwrap_or("");
+    expect(
+        at.len() == 20
+            && at.char_indices().all(|(i, c)| match i {
+                4 | 7 => c == '-',
+                10 => c == 'T',
+                13 | 16 => c == ':',
+                19 => c == 'Z',
+                _ => c.is_ascii_digit(),
+            }),
+        "finalized_at",
+    )?;
+    let source = &record["source"];
+    expect(
+        keys(source) == ["dirty", "reason", "repository", "revision"]
+            && source["repository"] == env!("CARGO_PKG_REPOSITORY")
+            && source["revision"].is_null()
+            && source["dirty"].is_null()
+            && text(&source["reason"]),
+        "source",
+    )?;
+    let program = std::fs::read(binary).map_err(|e| format!("binary: {e}"))?;
+    let implementation = &record["implementation"];
+    expect(
+        keys(implementation)
+            == [
+                "cargo_lock_reason",
+                "cargo_lock_sha256",
+                "language",
+                "program",
+                "sha256",
+                "version",
+            ]
+            && implementation["language"] == "rust"
+            && implementation["program"] == binary.file_name().unwrap().to_string_lossy().as_ref()
+            && implementation["version"] == env!("CARGO_PKG_VERSION")
+            && implementation["sha256"] == sha256_hex(&program).as_str()
+            && implementation["cargo_lock_sha256"].is_null()
+            && text(&implementation["cargo_lock_reason"]),
+        "implementation",
+    )?;
+    let corpus = path
+        .parent()
+        .and_then(Path::parent)
+        .ok_or("no corpus root")?;
+    let inputs = record["inputs"].as_array().ok_or("inputs")?;
+    let mut places = Vec::new();
+    for input in inputs {
+        let relative = input["path"].as_str().filter(|p| {
+            !p.is_empty()
+                && !p.starts_with('/')
+                && !p.contains(['\\', ':'])
+                && !p.split('/').any(|part| part == "..")
+        });
+        let (Some(root), Some(relative)) = (input["root"].as_str(), relative) else {
+            return Err(format!("input fields {input}"));
+        };
+        expect(
+            keys(input) == ["bytes", "path", "root", "sha256"],
+            "input fields",
+        )?;
+        let base = match root {
+            "corpus" => corpus,
+            "module" => module,
+            other => return Err(format!("input root {other}")),
+        };
+        digest_matches(input, &base.join(relative))?;
+        places.push((root, relative));
+    }
+    let mut sorted = places.clone();
+    sorted.sort_unstable();
+    sorted.dedup();
+    expect(places == sorted, "inputs not sorted and unique")?;
+    let module_inputs: Vec<&str> = places
+        .iter()
+        .filter(|(r, _)| *r == "module")
+        .map(|(_, p)| *p)
         .collect();
-    if tools != ["check_current.py", "corpus_paths.py", "http_fetch.py"] {
-        return Some(format!("shipped tools {tools:?}"));
+    expect(
+        module_inputs == ["manifest_md.json", "manifest_raw.json", "pii_flagged.json"],
+        "module inputs",
+    )?;
+    // Python's json.loads, which reads the NaN and deep nesting json.dump wrote.
+    let sources = std::fs::read(corpus.join("sources.json"))
+        .ok()
+        .and_then(|b| pyjson::loads_standard(&String::from_utf8_lossy(&b)).ok())
+        .ok_or("no sources.json beside the record")?;
+    let Some(pyjson::Json::Array(published)) = sources.get("titles") else {
+        return Err("sources.json titles".into());
+    };
+    let mut titles: Vec<String> = published
+        .iter()
+        .map(|t| {
+            let id = t.get("register_id").and_then(|r| r.as_str()).unwrap_or("");
+            format!("markdown/{id}/sections.jsonl")
+        })
+        .collect();
+    titles.sort_unstable();
+    let corpus_inputs: Vec<&str> = places
+        .iter()
+        .filter(|(r, _)| *r == "corpus")
+        .map(|(_, p)| *p)
+        .collect();
+    expect(
+        corpus_inputs == titles,
+        "corpus inputs are not the published titles",
+    )?;
+    let lineage = &record["lineage"];
+    expect(
+        keys(lineage) == ["known", "unknown"]
+            && lineage["known"] == serde_json::json!([])
+            && text(&lineage["unknown"]),
+        "lineage",
+    )?;
+    let shipped = &record["shipped_tools"];
+    let files = shipped["files"].as_array().ok_or("shipped tools")?;
+    expect(
+        keys(shipped) == ["files", "requires"] && text(&shipped["requires"]) && files.len() == 3,
+        "shipped tools",
+    )?;
+    for (tool, name) in files
+        .iter()
+        .zip(["check_current.py", "corpus_paths.py", "http_fetch.py"])
+    {
+        let nested = format!("{name}/{name}");
+        let at = tool["name"]
+            .as_str()
+            .filter(|n| *n == name || *n == nested)
+            .ok_or_else(|| format!("shipped tool {tool}"))?;
+        expect(
+            keys(tool) == ["bytes", "name", "sha256"],
+            "shipped tool fields",
+        )?;
+        digest_matches(tool, &corpus.join(at))?;
     }
-    let corpus = path.parent()?.parent()?;
-    for input in record["inputs"].as_array()? {
-        let base = match input["root"].as_str() {
-            Some("corpus") => corpus,
-            Some("module") => module,
-            other => return Some(format!("input root {other:?}")),
-        };
-        let file = base.join(input["path"].as_str()?);
-        let Ok(bytes) = std::fs::read(&file) else {
-            return Some(format!("input {} missing", file.display()));
-        };
-        let digest: String = Sha256::digest(&bytes)
-            .iter()
-            .map(|b| format!("{b:02x}"))
-            .collect();
-        if input["sha256"] != digest.as_str() || input["bytes"] != bytes.len() {
-            return Some(format!("input {} digest or size", file.display()));
-        }
-    }
-    None
+    expect(
+        record["environment"]
+            == serde_json::json!({
+                "platform": format!("{}-{}", std::env::consts::OS, std::env::consts::ARCH)
+            }),
+        "environment",
+    )
+}
+
+/// Today's date as the operating system gives it, independently of the
+/// binary's own `local_today`, so that a wrong date in its output still fails.
+fn os_today() -> String {
+    let out = if cfg!(windows) {
+        Command::new("powershell")
+            .args(["-NoProfile", "-Command", "Get-Date -Format yyyy-MM-dd"])
+            .output()
+    } else {
+        Command::new("date").arg("+%F").output()
+    };
+    let today = String::from_utf8(out.unwrap().stdout).unwrap();
+    let today = today.trim().to_string();
+    assert!(
+        today.len() == 10 && today.as_bytes()[4] == b'-',
+        "date: {today}"
+    );
+    today
 }
 
 /// Run one case and return what differs from Python, if anything.
-fn run_case(family: &str, case: &Value, shared_module: &Path) -> Option<String> {
+fn run_case(family: &str, case: &Value, shared_module: &Path, dates: &[String]) -> Option<String> {
     let dir = tempfile::tempdir().unwrap();
     let work = dir.path().join("work");
     std::fs::create_dir(&work).unwrap();
@@ -319,11 +496,6 @@ fn run_case(family: &str, case: &Value, shared_module: &Path) -> Option<String> 
     };
     let expected = &case["expected"][PLATFORM];
     let mut problems = Vec::new();
-    // finalize is given today's date; a run across midnight may meet either.
-    let mut dates = Vec::new();
-    if family == "finalize" {
-        dates.push(tax_radar_au::fadden::http::local_today());
-    }
     for (n, argv) in steps.iter().enumerate() {
         let mut command = Command::new(env!("CARGO_BIN_EXE_fadden"));
         command
@@ -340,15 +512,9 @@ fn run_case(family: &str, case: &Value, shared_module: &Path) -> Option<String> 
                 .env("FADDEN_FAKE_HTTP_LOG", work.join("http.log"));
         }
         let out = command.output().unwrap();
-        if family == "finalize" {
-            let day = tax_radar_au::fadden::http::local_today();
-            if !dates.contains(&day) {
-                dates.push(day);
-            }
-        }
-        let stdout = normalise(&out.stdout, &work, &module, &dates);
+        let stdout = normalise(&out.stdout, &work, &module, dates);
         let stdout = sorted_exts(&CONTACT_DETAIL.replace_all(&stdout, "$1<findings>"));
-        let stderr = normalise(&out.stderr, &work, &module, &dates).replace("\r\n", "\n");
+        let stderr = normalise(&out.stderr, &work, &module, dates).replace("\r\n", "\n");
         let want = &expected["steps"][n];
         let code = out.status.code().unwrap_or(-1);
         if i64::from(code) != want[0].as_i64().unwrap() {
@@ -366,16 +532,17 @@ fn run_case(family: &str, case: &Value, shared_module: &Path) -> Option<String> 
             problems.push(format!("step {n}: stderr\n{stderr}\nPython\n{want_err}"));
         }
     }
-    let mut left = snapshot(family, &work, &module, &dates);
+    let mut left = snapshot(family, &work, &module, dates);
     let want: BTreeMap<String, Option<String>> =
         serde_json::from_value(expected["files"].clone()).unwrap();
     for (key, value) in &want {
         if value.as_deref() == Some("build-record") {
-            match build_record_problem(&work.join(key), &module) {
-                None => {
+            let binary = Path::new(env!("CARGO_BIN_EXE_fadden"));
+            match check_build_record(&work.join(key), &module, binary) {
+                Ok(()) => {
                     left.insert(key.clone(), value.clone());
                 }
-                Some(problem) => problems.push(format!("{key}: {problem}")),
+                Err(problem) => problems.push(format!("{key}: {problem}")),
             }
         }
     }
@@ -401,11 +568,134 @@ fn family(name: &str) {
     let shared = tempfile::tempdir().unwrap();
     let module = shared.path().join("fadden");
     copy_module(&module);
-    let failures: Vec<String> = cases
-        .iter()
-        .filter_map(|case| run_case(name, case, &module))
-        .collect();
+    let run = |dates: &[String]| -> Vec<String> {
+        cases
+            .iter()
+            .filter_map(|case| run_case(name, case, &module, dates))
+            .collect()
+    };
+    // finalize is given today's date; a run across midnight is run again
+    // accepting either day.
+    let mut dates = Vec::new();
+    if name == "finalize" {
+        dates.push(os_today());
+    }
+    let mut failures = run(&dates);
+    if name == "finalize" {
+        let after = os_today();
+        if !dates.contains(&after) {
+            dates.push(after);
+            failures = run(&dates);
+        }
+    }
     assert!(failures.is_empty(), "{}", failures.join("\n\n"));
+}
+
+/// `check_build_record` accepts a whole, true record and refuses each
+/// mutation of it, including fields it could otherwise skip.
+#[test]
+fn the_build_record_check_fails_closed() {
+    use serde_json::json;
+    let dir = tempfile::tempdir().unwrap();
+    let corpus = dir.path().join("corpus");
+    let module = dir.path().join("fadden");
+    let binary = Path::new(env!("CARGO_BIN_EXE_fadden"));
+    for (base, name, body) in [
+        (
+            &corpus,
+            "sources.json",
+            r#"{"titles": [{"register_id": "C1"}]}"#,
+        ),
+        (&corpus, "markdown/C1/sections.jsonl", "{}\n"),
+        (&corpus, "check_current.py", "a\n"),
+        (&corpus, "corpus_paths.py", "b\n"),
+        (&corpus, "http_fetch.py", "c\n"),
+        (&module, "manifest_md.json", "[]"),
+        (&module, "manifest_raw.json", "[1]"),
+        (&module, "pii_flagged.json", "[2]"),
+    ] {
+        let path = base.join(name);
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(path, body).unwrap();
+    }
+    let digest = |path: PathBuf| {
+        let bytes = std::fs::read(path).unwrap();
+        (bytes.len(), sha256_hex(&bytes))
+    };
+    let input = |root: &str, path: &str| {
+        let base = if root == "corpus" { &corpus } else { &module };
+        let (bytes, sha256) = digest(base.join(path));
+        json!({"root": root, "path": path, "bytes": bytes, "sha256": sha256})
+    };
+    let tool = |name: &str| {
+        let (bytes, sha256) = digest(corpus.join(name));
+        json!({"name": name, "bytes": bytes, "sha256": sha256})
+    };
+    let good = json!({
+        "schema": "au-tax-corpus-build-record.v1",
+        "scope": "finalize",
+        "finalized_at": "2026-10-25T01:02:03Z",
+        "source": {"repository": env!("CARGO_PKG_REPOSITORY"), "revision": null,
+                   "dirty": null, "reason": "r"},
+        "implementation": {"language": "rust",
+                           "program": binary.file_name().unwrap().to_string_lossy(),
+                           "version": env!("CARGO_PKG_VERSION"),
+                           "sha256": digest(binary.to_path_buf()).1,
+                           "cargo_lock_sha256": null, "cargo_lock_reason": "r"},
+        "inputs": [input("corpus", "markdown/C1/sections.jsonl"),
+                   input("module", "manifest_md.json"), input("module", "manifest_raw.json"),
+                   input("module", "pii_flagged.json")],
+        "lineage": {"known": [], "unknown": "u"},
+        "shipped_tools": {"requires": "q", "files": [tool("check_current.py"),
+                          tool("corpus_paths.py"), tool("http_fetch.py")]},
+        "environment": {"platform": format!("{}-{}", std::env::consts::OS, std::env::consts::ARCH)},
+    });
+    let path = corpus.join("build").join("build-record.json");
+    std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+    let check = |record: &Value| {
+        std::fs::write(&path, record.to_string()).unwrap();
+        check_build_record(&path, &module, binary)
+    };
+    assert_eq!(check(&good), Ok(()));
+    type Mutation = (&'static str, fn(&mut Value));
+    let mutations: [Mutation; 14] = [
+        ("inputs null", |r| r["inputs"] = Value::Null),
+        ("inputs empty", |r| r["inputs"] = json!([])),
+        ("input dropped", |r| {
+            r["inputs"].as_array_mut().unwrap().remove(0);
+        }),
+        ("path missing", |r| {
+            r["inputs"][0].as_object_mut().unwrap().remove("path");
+        }),
+        ("traversal", |r| {
+            r["inputs"][1]["path"] = json!("../fadden/manifest_md.json")
+        }),
+        ("input bytes", |r| r["inputs"][0]["bytes"] = json!(0)),
+        ("root", |r| r["inputs"][1]["root"] = json!("elsewhere")),
+        ("binary digest", |r| {
+            r["implementation"]["sha256"] = json!("0".repeat(64))
+        }),
+        ("lockfile", |r| {
+            r["implementation"]["cargo_lock_sha256"] = json!("0".repeat(64))
+        }),
+        ("dirty", |r| r["source"]["dirty"] = json!(false)),
+        ("tool malformed", |r| {
+            r["shipped_tools"]["files"][0]
+                .as_object_mut()
+                .unwrap()
+                .remove("sha256");
+        }),
+        ("tool bytes", |r| {
+            r["shipped_tools"]["files"][2]["bytes"] = json!(0)
+        }),
+        ("timestamp", |r| r["finalized_at"] = json!("yesterday")),
+        ("extra field", |r| r["extra"] = json!(1)),
+    ];
+    for (what, mutate) in mutations {
+        let mut record = good.clone();
+        mutate(&mut record);
+        assert!(check(&record).is_err(), "{what} was accepted");
+    }
 }
 
 #[test]
