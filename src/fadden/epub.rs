@@ -104,6 +104,11 @@ fn slice(data: &[u8], start: u64, len: u64) -> &[u8] {
 
 /// `open_epub(path)`: read and admit the archive.
 pub fn open(path: &str) -> Result<Epub, Exc> {
+    from_bytes(read_file(path)?)
+}
+
+/// `open_epub`'s read of the file, within the compressed input budget.
+pub fn read_file(path: &str) -> Result<Vec<u8>, Exc> {
     let mut file = pyos::open_read(path)?;
     let size = file
         .metadata()
@@ -115,7 +120,7 @@ pub fn open(path: &str) -> Result<Epub, Exc> {
     let mut data = Vec::with_capacity(size as usize);
     file.read_to_end(&mut data)
         .map_err(|e| pyos::OsError::new(&e, None, pyos::Style::Errno))?;
-    from_bytes(data)
+    Ok(data)
 }
 
 /// `open_epub` over bytes already read.
@@ -345,7 +350,8 @@ impl Epub {
         let mut inflater = (method == DEFLATED).then(Decompress::default);
         let mut remaining = info.compress_size;
         let (mut total, mut crc) = (0u64, 0u32);
-        let mut content = Vec::new();
+        // `position` has held the declared size to the member budget.
+        let mut content = Vec::with_capacity(info.file_size as usize);
         let invalid = || download("EPUB member has invalid deflate data");
         while remaining > 0 {
             let mut block = slice(&self.data, position, remaining.min(65_536)).to_vec();

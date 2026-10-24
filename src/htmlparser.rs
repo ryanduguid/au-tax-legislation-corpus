@@ -1,8 +1,9 @@
-//! CPython 3.15's `html.parser.HTMLParser` (identical in 3.14.8), as a list of events.
+//! CPython 3.15's `html.parser.HTMLParser` (identical in 3.14.8), as a stream of events.
 //!
-//! [`parse`] runs one `feed(text)` and then `close()`, which is how every site
-//! script drives its parser, and returns what the handler methods would have
-//! received, in order, each with the `getpos()` value the handler would see.
+//! [`parse_each`] runs one `feed(text)` and then `close()`, which is how every site
+//! script drives its parser, and passes on what the handler methods would have
+//! received, in order, each with the `getpos()` value the handler would see;
+//! [`parse`] collects them.
 //! Data chunking follows the original: `feed` parses up to a possibly cut
 //! character reference and `close` handles the rest as a separate chunk.
 // The parser keeps CPython's index arithmetic line for line, so prefix tests stay explicit.
@@ -187,14 +188,16 @@ fn unescape_attrvalue(value: &str) -> String {
     })
 }
 
-struct Parser {
+struct Parser<'h> {
     rawdata: String,
     convert_charrefs: bool,
     cdata_elem: Option<String>,
     escapable: bool,
     line: usize,
     offset: usize,
-    events: Vec<Positioned>,
+    /// Takes each event; `false` stops the parse.
+    handle: &'h mut dyn FnMut(Positioned) -> bool,
+    stopped: bool,
 }
 
 /// Byte offset of the character `count` characters before the end of `text[from..]`, or `from`.
@@ -206,13 +209,15 @@ fn chars_from_end(text: &str, from: usize, count: usize) -> usize {
         .map_or(from, |(i, _)| from + i)
 }
 
-impl Parser {
+impl Parser<'_> {
     fn emit(&mut self, event: Event) {
-        self.events.push(Positioned {
-            event,
-            line: self.line,
-            offset: self.offset,
-        });
+        if !self.stopped {
+            self.stopped = !(self.handle)(Positioned {
+                event,
+                line: self.line,
+                offset: self.offset,
+            });
+        }
     }
 
     fn updatepos(&mut self, i: usize, j: usize) -> usize {
@@ -285,7 +290,7 @@ impl Parser {
     fn goahead(&mut self, end: bool) {
         let mut i = 0;
         let n = self.rawdata.len();
-        while i < n {
+        while i < n && !self.stopped {
             let j;
             if self.convert_charrefs && self.cdata_elem.is_none() {
                 match self.rawdata[i..].find('<') {
@@ -615,8 +620,22 @@ fn prefix_lower_is(text: &str, prefix: &str) -> bool {
     text[..byte_after_chars(text, prefix.chars().count())].to_lowercase() == prefix
 }
 
-/// `parser.feed(text); parser.close()`, returning the handler calls in order.
-pub fn parse(text: &str, convert_charrefs: bool) -> Vec<Positioned> {
+/// `parser.feed(text); parser.close()`, giving each handler call to `handle`
+/// in order. The first error stops parsing and is returned, as an exception
+/// raised in a handler stops `feed`; parsing has no other effects.
+pub fn parse_each<E>(
+    text: &str,
+    convert_charrefs: bool,
+    mut handle: impl FnMut(Positioned) -> Result<(), E>,
+) -> Result<(), E> {
+    let mut failed = None;
+    let mut sink = |positioned| match handle(positioned) {
+        Ok(()) => true,
+        Err(error) => {
+            failed = Some(error);
+            false
+        }
+    };
     let mut parser = Parser {
         rawdata: String::new(),
         convert_charrefs,
@@ -624,14 +643,26 @@ pub fn parse(text: &str, convert_charrefs: bool) -> Vec<Positioned> {
         escapable: true,
         line: 1,
         offset: 0,
-        events: Vec::new(),
+        handle: &mut sink,
+        stopped: false,
     };
     if !text.is_empty() {
         parser.rawdata.push_str(text);
         parser.goahead(false);
     }
     parser.goahead(true);
-    parser.events
+    failed.map_or(Ok(()), Err)
+}
+
+/// `parser.feed(text); parser.close()`, returning the handler calls in order.
+pub fn parse(text: &str, convert_charrefs: bool) -> Vec<Positioned> {
+    let mut events = Vec::new();
+    parse_each(text, convert_charrefs, |positioned| {
+        events.push(positioned);
+        Ok::<(), std::convert::Infallible>(())
+    })
+    .unwrap_or_else(|never| match never {});
+    events
 }
 
 #[cfg(test)]
@@ -714,6 +745,27 @@ mod tests {
                 Event::Data("Hi & bye".into()),
                 Event::StartEndTag("br".into(), vec![]),
                 Event::EndTag("p".into()),
+            ]
+        );
+    }
+
+    #[test]
+    fn parse_each_stops_at_the_first_handler_error() {
+        let mut seen = Vec::new();
+        let result = parse_each("<a>x</a><b>y</b>", true, |p| {
+            seen.push(p.event.clone());
+            match p.event {
+                Event::EndTag(_) => Err("stop"),
+                _ => Ok(()),
+            }
+        });
+        assert_eq!(result, Err("stop"));
+        assert_eq!(
+            seen,
+            vec![
+                Event::StartTag("a".into(), vec![]),
+                Event::Data("x".into()),
+                Event::EndTag("a".into()),
             ]
         );
     }

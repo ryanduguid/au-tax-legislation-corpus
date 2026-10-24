@@ -11,7 +11,8 @@ use super::corpus_paths::{
     child, corpus_root, markdown_text, module_dir, register_id, require_builder_layout,
     script_dir_in, write_json_atomic,
 };
-use super::extract_doc::{Block, epub_blocks, md_table};
+use super::epub;
+use super::extract_doc::{Block, epub_blocks_in, md_table};
 use super::{Exc, Run, get, getitem, head, iterate, json_error};
 use crate::argparse::Exit;
 use crate::py;
@@ -677,7 +678,7 @@ fn table_split(body: &str, name: &Json) -> Result<Vec<Row>, Exc> {
     if !pros.is_empty() {
         segs.push(Seg::Prose(pros));
     }
-    let words = |s: &str| py::split_whitespace(s).len();
+    let words = py::word_count;
     let tables: Vec<&Vec<String>> = segs
         .iter()
         .filter_map(|s| match s {
@@ -893,6 +894,78 @@ pub(crate) fn local_date(stamp: i64) -> Result<py::Date, Exc> {
     .map_err(Exc::value)
 }
 
+/// EPUB bytes read on another thread ahead of the stage's own opens. An
+/// archive's first open after another process wrote it can wait several
+/// milliseconds for the Windows real-time scanner; reading ahead lets that wait
+/// overlap parsing. Only a hint: [`ReadAhead::take`] gives bytes when the
+/// thread resolved the same path for the same title and read it without error,
+/// and otherwise the stage reads the file itself, so errors arise as before.
+/// Each is read at most `READERS * (READ_AHEAD + 1)` titles early.
+struct ReadAhead {
+    lanes: Vec<Lane>,
+}
+
+/// One reader thread's titles, in order, and the next it has read.
+struct Lane {
+    next: Option<(usize, String, Vec<u8>)>,
+    rx: std::sync::mpsc::Receiver<(usize, String, Vec<u8>)>,
+}
+
+/// Reader threads; title `i` goes to lane `i % READERS`.
+const READERS: usize = 4;
+/// Read EPUBs each lane may hold before the stage takes them.
+const READ_AHEAD: usize = 1;
+
+impl ReadAhead {
+    /// Reads `epub/<name>` under `root` for each `(title, name)`.
+    fn spawn(root: &str, titles: Vec<(usize, String)>) -> ReadAhead {
+        let mut work: Vec<Vec<(usize, String)>> = vec![Vec::new(); READERS];
+        for (title, name) in titles {
+            work[title % READERS].push((title, name));
+        }
+        let lanes = work
+            .into_iter()
+            .map(|titles| {
+                let (tx, rx) = std::sync::mpsc::sync_channel(READ_AHEAD);
+                let root = root.to_string();
+                std::thread::spawn(move || {
+                    for (title, name) in titles {
+                        let Ok(path) = child(&root, &["epub", &name]) else {
+                            continue;
+                        };
+                        let Ok(data) = epub::read_file(&path) else {
+                            continue;
+                        };
+                        if tx.send((title, path, data)).is_err() {
+                            break;
+                        }
+                    }
+                });
+                Lane { next: None, rx }
+            })
+            .collect();
+        ReadAhead { lanes }
+    }
+
+    /// The bytes read ahead for `title` at `path`, if any.
+    fn take(&mut self, title: usize, path: &str) -> Option<Vec<u8>> {
+        let lane = &mut self.lanes[title % READERS];
+        loop {
+            if lane.next.is_none() {
+                lane.next = lane.rx.recv().ok();
+            }
+            match &lane.next {
+                // A title the stage skipped.
+                Some((t, _, _)) if *t < title => lane.next = None,
+                Some((t, p, _)) if *t == title && p == path => {
+                    return lane.next.take().map(|(_, _, data)| data);
+                }
+                _ => return None,
+            }
+        }
+    }
+}
+
 /// The parse of one title: everything inside `main`'s first `except Exception`.
 struct Parsed {
     entry: Json,
@@ -904,6 +977,7 @@ fn parse_title(
     entry: &mut Json,
     rid: &str,
     src: &str,
+    read_ahead: Option<Vec<u8>>,
     retrieved: Option<&str>,
     run: &mut Run,
 ) -> Result<Parsed, Exc> {
@@ -959,7 +1033,11 @@ fn parse_title(
     };
     let mut meta = entry.clone();
     set_field(&mut meta, "retrieved", Json::str(&fetched));
-    let blocks = epub_blocks(src)?;
+    let archive = match read_ahead {
+        Some(data) => epub::from_bytes(data)?,
+        None => epub::open(src)?,
+    };
+    let blocks = epub_blocks_in(&archive)?;
     let mut md = to_markdown(&blocks, &meta, false)?;
     // A fallback row is not evidence that the document chunked.
     if !md.sections.iter().any(|s| !s.emit_fallback && s.has_text()) {
@@ -1154,20 +1232,31 @@ pub fn run(scratch: &str, retrieved: Option<&str>, run: &mut Run) -> Result<(), 
             titles.push(m);
         }
     }
+    let planned = |a: &Json| -> Result<(String, String), Exc> {
+        let rid = register_id(getitem(a, "id")?)?;
+        let expected = format!("{rid}.epub");
+        if !a
+            .get("epub")
+            .is_some_and(|e| e.as_str() == Some(expected.as_str()))
+        {
+            return Err(Exc::value("unexpected EPUB filename"));
+        }
+        Ok((rid, expected))
+    };
+    let mut read_ahead = ReadAhead::spawn(
+        &root,
+        titles
+            .iter()
+            .enumerate()
+            .filter_map(|(i, a)| Some((i + 1, planned(a).ok()?.1)))
+            .collect(),
+    );
     for (i, a) in titles.into_iter().enumerate() {
         let i = i + 1;
-        let checked = (|| -> Result<(String, String), Exc> {
-            let rid = register_id(getitem(&a, "id")?)?;
-            let expected = format!("{rid}.epub");
-            if !a
-                .get("epub")
-                .is_some_and(|e| e.as_str() == Some(expected.as_str()))
-            {
-                return Err(Exc::value("unexpected EPUB filename"));
-            }
+        let checked = planned(&a).and_then(|(rid, expected)| {
             let src = child(&root, &["epub", &expected])?;
             Ok((rid, src))
-        })();
+        });
         let (rid, src) = match checked {
             Ok(pair) => pair,
             Err(error @ (Exc::Key(_) | Exc::Value { .. })) => {
@@ -1180,7 +1269,8 @@ pub fn run(scratch: &str, retrieved: Option<&str>, run: &mut Run) -> Result<(), 
         let mut entry = a.clone();
         set_field(&mut entry, "id", Json::str(&rid));
 
-        let parsed = parse_title(&mut entry, &rid, &src, retrieved.as_deref(), run);
+        let data = read_ahead.take(i, &src);
+        let parsed = parse_title(&mut entry, &rid, &src, data, retrieved.as_deref(), run);
         let Parsed { entry, fetched, md } = match parsed {
             Ok(parsed) => parsed,
             Err(error) => {
@@ -1235,7 +1325,7 @@ pub fn run(scratch: &str, retrieved: Option<&str>, run: &mut Run) -> Result<(), 
         };
         write_sections(&d, &entry, &rid, &fetched, &emitted, granularity)?;
 
-        let words = py::split_whitespace(&body).len();
+        let words = py::word_count(&body);
         let mut record = entry.clone();
         set_field(
             &mut record,
@@ -1318,6 +1408,39 @@ pub fn main(argv: &[String], run: &mut Run) -> Result<i32, Exit> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn read_ahead_gives_only_the_title_and_path_it_read() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().to_string_lossy().into_owned();
+        std::fs::create_dir(dir.path().join("epub")).unwrap();
+        for name in ["A.epub", "B.epub", "D.epub"] {
+            std::fs::write(dir.path().join("epub").join(name), name).unwrap();
+        }
+        // Lanes: 1 and 5 share one, 2 and 6 another. C.epub is missing.
+        let titles = [(1, "A"), (2, "B"), (3, "C"), (4, "D"), (5, "A"), (6, "B")]
+            .map(|(i, n)| (i, format!("{n}.epub")))
+            .to_vec();
+        let mut ahead = ReadAhead::spawn(&root, titles);
+        let path = |n: &str| child(&root, &["epub", n]).unwrap();
+        assert_eq!(
+            ahead.take(1, &path("A.epub")).as_deref(),
+            Some(&b"A.epub"[..])
+        );
+        // A read that failed leaves the stage to read the file itself.
+        assert_eq!(ahead.take(3, &path("C.epub")), None);
+        assert_eq!(
+            ahead.take(4, &path("D.epub")).as_deref(),
+            Some(&b"D.epub"[..])
+        );
+        // Another path for the title is not given the bytes read for it.
+        assert_eq!(ahead.take(5, &path("B.epub")), None);
+        // The stage skipped title 2; title 6 still gets its own bytes.
+        assert_eq!(
+            ahead.take(6, &path("B.epub")).as_deref(),
+            Some(&b"B.epub"[..])
+        );
+    }
 
     #[test]
     fn lowercase_uses_cpythons_unicode_version() {
@@ -1542,7 +1665,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("volumes.epub");
         std::fs::write(&path, stored_zip(&members)).unwrap();
-        let blocks = epub_blocks(&path.to_string_lossy())?;
+        let blocks = super::super::extract_doc::epub_blocks(&path.to_string_lossy())?;
         to_markdown(&blocks, &meta(VOLUME_META), false)
     }
 

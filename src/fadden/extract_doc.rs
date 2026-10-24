@@ -464,15 +464,16 @@ impl<'a> Doc<'a> {
 
     /// `d.feed(text); d.close(); d._flush()`.
     fn run(&mut self, text: &str) -> Result<(), Exc> {
-        for positioned in htmlparser::parse(text, true) {
-            match positioned.event {
-                Event::StartTag(tag, attrs) => self.start(&tag, &attrs)?,
-                Event::StartEndTag(tag, attrs) => self.startend(&tag, &attrs)?,
-                Event::EndTag(tag) => self.end(&tag)?,
-                Event::Data(data) => self.f.buf.push(data),
-                _ => {}
+        htmlparser::parse_each(text, true, |positioned| match positioned.event {
+            Event::StartTag(tag, attrs) => self.start(&tag, &attrs),
+            Event::StartEndTag(tag, attrs) => self.startend(&tag, &attrs),
+            Event::EndTag(tag) => self.end(&tag),
+            Event::Data(data) => {
+                self.f.buf.push(data);
+                Ok(())
             }
-        }
+            _ => Ok(()),
+        })?;
         if !self.tables.is_empty() {
             return Err(value_error("table is unbalanced at end of document"));
         }
@@ -520,7 +521,11 @@ fn is_document(name: &str) -> bool {
 
 /// `epub_blocks(path)`.
 pub fn epub_blocks(path: &str) -> Result<Vec<Block>, Exc> {
-    let archive = epub::open(path)?;
+    epub_blocks_in(&epub::open(path)?)
+}
+
+/// `epub_blocks` over an archive already opened.
+pub fn epub_blocks_in(archive: &epub::Epub) -> Result<Vec<Block>, Exc> {
     let mut keyed = Vec::new();
     for name in archive.namelist().filter(|n| is_document(n)) {
         let number = match re(r"document_(\d+)", 0).search(name) {

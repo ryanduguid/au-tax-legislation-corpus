@@ -139,6 +139,11 @@ pub fn split_whitespace(s: &str) -> Vec<&str> {
     s.split(is_space).filter(|part| !part.is_empty()).collect()
 }
 
+/// `len(str.split())`, without building the list.
+pub fn word_count(s: &str) -> usize {
+    s.split(is_space).filter(|part| !part.is_empty()).count()
+}
+
 /// `str.splitlines()`.
 pub fn splitlines(s: &str) -> Vec<&str> {
     let mut out = Vec::new();
@@ -800,6 +805,20 @@ impl Date {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn word_count_is_the_length_of_split() {
+        for s in [
+            "",
+            "  ",
+            "a",
+            " a  b\tc\n",
+            "a\u{a0}b\u{2028}c\u{1c}d",
+            "\u{200b}x",
+        ] {
+            assert_eq!(word_count(s), split_whitespace(s).len(), "{s:?}");
+        }
+    }
 
     #[test]
     fn repr_matches_python() {
