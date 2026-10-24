@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import argparse
-import datetime
 import importlib
 import os
 import shutil
@@ -16,7 +15,7 @@ from fadden import STAGES
 
 # Stages ported to the Rust `fadden` binary (Cargo.toml). They keep their
 # command lines; this dispatcher runs the binary for them.
-RUST_STAGES = frozenset({"as_at", "compare_builds", "discover", "dist", "dist_verify", "export_monitor_contract", "export_publication_bundles", "pii_scan", "pii_scan2", "probe13", "rates", "rulings", "search", "versions"})
+RUST_STAGES = frozenset({"as_at", "compare_builds", "discover", "dist", "dist_verify", "export_monitor_contract", "export_publication_bundles", "extract", "finalize", "pii_scan", "pii_scan2", "probe13", "rates", "rulings", "search", "versions"})
 
 
 def rust_binary() -> str | None:
@@ -68,15 +67,8 @@ def main(argv: Sequence[str] | None = None) -> int:
     saved = sys.argv
     sys.argv = [args.stage, *forwarded]
     try:
-        if args.stage == "finalize":
-            result = func(datetime.date.today().isoformat())
-        elif args.stage in {"capture_register", "export_live_evidence_bundles"}:
+        if args.stage in {"capture_register", "export_live_evidence_bundles"}:
             result = func(forwarded)
-        elif args.stage == "extract" and forwarded:
-            # extract.main takes the retrieval date as a parameter and only
-            # reads sys.argv under its own __main__ guard, which never runs
-            # here; without this branch a forwarded date was silently dropped.
-            result = func(forwarded[0])
         else:
             result = func()
     finally:
