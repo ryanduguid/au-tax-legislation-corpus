@@ -316,18 +316,65 @@ pub fn dumps_until(
     sort_keys: bool,
     limit: usize,
 ) -> Vec<u32> {
-    let options = (indent, ensure_ascii, sort_keys, limit);
-    /// False once the walk has stopped at `limit`.
+    walk_until(value, (indent, ensure_ascii, sort_keys, limit), false).0
+}
+
+/// Why `json.dump` stopped before the end of a value.
+#[derive(Debug, PartialEq)]
+pub enum Stop {
+    /// Its recursion check refused a container nested `limit` deep.
+    Depth,
+    /// A strict UTF-8 text file could not encode this chunk: a string
+    /// holding a lone surrogate, with the separator before it in a list.
+    Unencodable(Vec<u32>),
+}
+
+/// `json.dump(value, f, indent=indent, ensure_ascii=False)` into a strict
+/// UTF-8 text file: the text written before it stops, and why it stopped,
+/// at the first container nested `limit` deep or the first chunk the file
+/// cannot encode, whichever the encoder reaches first.
+pub fn dump_until_stop(
+    value: &Json,
+    indent: Option<usize>,
+    sort_keys: bool,
+    limit: usize,
+) -> (Vec<u32>, Option<Stop>) {
+    walk_until(value, (indent, false, sort_keys, limit), true)
+}
+
+/// The encoder's walk. With `stop_lone`, a string holding a lone surrogate
+/// ends it at the start of the chunk the encoder yields for that string.
+fn walk_until(
+    value: &Json,
+    options: (Option<usize>, bool, bool, usize),
+    stop_lone: bool,
+) -> (Vec<u32>, Option<Stop>) {
+    /// Where the walk stopped: at `limit`, or at a string chunk starting at
+    /// `.0` of the output and ending with the encoded string `.1`.
+    enum At {
+        Depth,
+        Lone(usize, Vec<u32>),
+    }
     fn walk(
         value: &Json,
         options: (Option<usize>, bool, bool, usize),
+        stop_lone: bool,
         level: usize,
+        chunk: usize,
         out: &mut Vec<u32>,
-    ) -> bool {
+    ) -> Result<(), At> {
         let (indent, ensure_ascii, sort_keys, limit) = options;
         if matches!(value, Json::Array(_) | Json::Object(_)) && level >= limit {
-            return false;
+            return Err(At::Depth);
         }
+        let lone = |s: &PyStr, chunk: usize| {
+            if stop_lone && matches!(s, PyStr::Lone(_)) {
+                let mut text = Vec::new();
+                dump_str(&s.code_points(), ensure_ascii, &mut text);
+                return Err(At::Lone(chunk, text));
+            }
+            Ok(())
+        };
         let newline = |out: &mut Vec<u32>, level: usize| {
             if let Some(width) = indent {
                 out.push(u32::from('\n'));
@@ -336,16 +383,19 @@ pub fn dumps_until(
         };
         let separator = if indent.is_some() { "," } else { ", " };
         match value {
+            Json::Str(s) if stop_lone && matches!(s, PyStr::Lone(_)) => lone(s, chunk)?,
             Json::Array(items) if !items.is_empty() => {
+                // A list yields its opening, or the separator, with the item
+                // after it when that item is a string or number.
+                let mut start = out.len();
                 out.push(u32::from('['));
                 for (i, item) in items.iter().enumerate() {
                     if i > 0 {
+                        start = out.len();
                         push(out, separator);
                     }
                     newline(out, level + 1);
-                    if !walk(item, options, level + 1, out) {
-                        return false;
-                    }
+                    walk(item, options, stop_lone, level + 1, start, out)?;
                 }
                 newline(out, level);
                 out.push(u32::from(']'));
@@ -361,22 +411,30 @@ pub fn dumps_until(
                         push(out, separator);
                     }
                     newline(out, level + 1);
+                    // A dict yields each key and each value as its own chunk.
+                    lone(k, out.len())?;
                     dump_str(&k.code_points(), ensure_ascii, out);
                     push(out, ": ");
-                    if !walk(v, options, level + 1, out) {
-                        return false;
-                    }
+                    let start = out.len();
+                    walk(v, options, stop_lone, level + 1, start, out)?;
                 }
                 newline(out, level);
                 out.push(u32::from('}'));
             }
             other => dump(other, ensure_ascii, out),
         }
-        true
+        Ok(())
     }
     let mut out = Vec::new();
-    walk(value, options, 0, &mut out);
-    out
+    match walk(value, options, stop_lone, 0, 0, &mut out) {
+        Ok(()) => (out, None),
+        Err(At::Depth) => (out, Some(Stop::Depth)),
+        Err(At::Lone(chunk, text)) => {
+            let mut rest = out.split_off(chunk);
+            rest.extend(text);
+            (out, Some(Stop::Unencodable(rest)))
+        }
+    }
 }
 
 /// The bytes `print(text)` writes to a UTF-8 `surrogateescape` stream, or the

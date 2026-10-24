@@ -25,7 +25,7 @@ use crate::pyio::Lines;
 use crate::pyjson::{self, Json, PyStr};
 use crate::pyos::{self, OsError, Style};
 use crate::pypath;
-use crate::pyvalue::{self, Key, dumps_line, dumps_with, str_points, type_name};
+use crate::pyvalue::{self, Key, Stop, dumps_line, str_points, type_name};
 
 type P = Vec<u32>;
 
@@ -838,57 +838,47 @@ fn int(n: usize) -> Json {
 const SOURCES_DEPTH: usize = 991;
 
 /// `json.dump(value, f, indent=1, ensure_ascii=False)` through a text-mode
-/// file, which it opens first: the encoder writes each string as its own
-/// chunk, so a lone surrogate fails with a position inside that quoted string,
-/// and nesting past `SOURCES_DEPTH` stops it, whichever it reaches first. The
-/// depth stop carries a note per enclosing item and leaves the text written
-/// before it; the encoding error, raised by the file's write, carries none.
+/// file, which it opens first. It stops at the first string the file cannot
+/// encode (a lone surrogate) or the first container past `SOURCES_DEPTH`,
+/// whichever the encoder reaches first, leaving the text written before it.
+/// The depth stop carries a note per enclosing item. The encoding error,
+/// raised by the file's write, carries none; its position is inside the chunk
+/// the encoder yielded, after the file's newline translation.
 fn dump_json(path: &str, value: &Json) -> Result<(), Exc> {
-    fn noted(error: Exc, note: impl FnOnce() -> String) -> Exc {
-        if error.class() == "RecursionError" {
-            error.noted(note())
-        } else {
-            error
-        }
-    }
-    fn first_stop(value: &Json, level: usize) -> Option<Exc> {
-        let check = |s: &PyStr| match s {
-            PyStr::Lone(_) => Some(Exc::UnicodeEncode(
-                pyvalue::utf8_strict_error(&dumps_line(&Json::Str(s.clone()), false))
-                    .unwrap_or_default(),
-            )),
-            PyStr::Text(_) => None,
-        };
+    fn depth_error(value: &Json, level: usize) -> Option<Exc> {
         match value {
-            Json::Str(s) => check(s),
             Json::Array(_) | Json::Object(_) if level >= SOURCES_DEPTH => Some(super::too_deep()),
             Json::Array(items) => items.iter().enumerate().find_map(|(i, v)| {
-                first_stop(v, level + 1)
-                    .map(|e| noted(e, || format!("when serializing list item {i}")))
+                depth_error(v, level + 1)
+                    .map(|e| e.noted(format!("when serializing list item {i}")))
             }),
             Json::Object(pairs) => pairs.iter().find_map(|(k, v)| {
-                check(k).or_else(|| {
-                    first_stop(v, level + 1).map(|e| {
-                        noted(e, || {
-                            let key = pyvalue::repr_points(&k.code_points());
-                            format!("when serializing dict item {key}")
-                        })
-                    })
+                depth_error(v, level + 1).map(|e| {
+                    let key = pyvalue::repr_points(&k.code_points());
+                    e.noted(format!("when serializing dict item {key}"))
                 })
             }),
             _ => None,
         }
     }
-    if let Some(error) = first_stop(value, 0) {
-        let written = if error.class() == "RecursionError" {
-            pyvalue::dumps_until(value, Some(1), false, false, SOURCES_DEPTH)
-        } else {
-            Vec::new()
-        };
-        write_text(path, &written)?;
-        return Err(error);
+    let (written, stop) = pyvalue::dump_until_stop(value, Some(1), false, SOURCES_DEPTH);
+    write_text(path, &written)?;
+    match stop {
+        None => Ok(()),
+        Some(Stop::Depth) => Err(depth_error(value, 0).unwrap_or_else(super::too_deep)),
+        Some(Stop::Unencodable(chunk)) => {
+            let mut translated = Vec::with_capacity(chunk.len());
+            for cp in chunk {
+                if cp == 0x0a && cfg!(windows) {
+                    translated.push(0x0d);
+                }
+                translated.push(cp);
+            }
+            Err(Exc::UnicodeEncode(
+                pyvalue::utf8_strict_error(&translated).unwrap_or_default(),
+            ))
+        }
     }
-    write_text(path, &dumps_with(value, Some(1), false, false))
 }
 
 /// One item of the list `shutil.copytree` collects, as its `repr`: usually a
@@ -1860,4 +1850,57 @@ pub fn main(_argv: &[String], run: &mut Run) -> Result<i32, Exit> {
         Ok(()) => 0,
         Err(error) => run.uncaught(&error),
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// What `json.dump` leaves in the file and raises for a lone surrogate:
+    /// the text before the failing chunk, and a position inside that chunk
+    /// counting the `\r` the file's newline translation adds on Windows.
+    #[test]
+    fn dump_json_stops_at_the_unencodable_chunk() {
+        let crlf = usize::from(cfg!(windows));
+        let cases = [
+            (
+                r#"{"good": 1, "bad": "\ud800"}"#,
+                "{\n \"good\": 1,\n \"bad\": ",
+                1,
+            ),
+            (r#"{"good": 1, "\ud800": 2}"#, "{\n \"good\": 1,\n ", 1),
+            (
+                r#"{"a": [1, "x", "\ud800"]}"#,
+                "{\n \"a\": [\n  1,\n  \"x\"",
+                5 + crlf,
+            ),
+            (r#"["\ud800"]"#, "", 4 + crlf),
+            (
+                r#"{"outer": {"bad": "pre\ud800post"}}"#,
+                "{\n \"outer\": {\n  \"bad\": ",
+                4,
+            ),
+            (r#""\ud800""#, "", 1),
+        ];
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("sources.json");
+        let path = path.to_str().unwrap();
+        for (source, prefix, position) in cases {
+            let value = pyjson::loads(source).unwrap();
+            let error = dump_json(path, &value).unwrap_err();
+            let message = format!(
+                r"'utf-8' codec can't encode character '\ud800' in position {position}: surrogates not allowed"
+            );
+            assert_eq!(
+                (error.class(), error.to_string()),
+                ("UnicodeEncodeError", message),
+                "{source}"
+            );
+            assert_eq!(
+                std::fs::read_to_string(path).unwrap(),
+                prefix.replace('\n', if cfg!(windows) { "\r\n" } else { "\n" }),
+                "{source}"
+            );
+        }
+    }
 }
