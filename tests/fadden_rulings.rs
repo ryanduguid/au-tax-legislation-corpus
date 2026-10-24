@@ -6,7 +6,7 @@ use std::process::Command;
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
 use tax_radar_au::fadden::Run;
-use tax_radar_au::fadden::http::{Failure, Http, RETRY_DELAY, Response};
+use tax_radar_au::fadden::http::{Failure, Http, RETRY_DELAY, Redirects, Response};
 use tax_radar_au::fadden::rulings::{
     self, BASE_URL, MAX_BYTES, MAX_TARGETS, NOTICE, Parsed, RulingsError, TargetsError,
 };
@@ -112,7 +112,12 @@ impl Script {
 }
 
 impl Http for Script {
-    fn get(&mut self, url: &str, limit: Option<usize>) -> Result<Response, Failure> {
+    fn get(
+        &mut self,
+        url: &str,
+        limit: Option<usize>,
+        _redirects: &mut Redirects,
+    ) -> Result<Response, Failure> {
         self.events.push(format!("GET {url}"));
         let mut next = if self.responses.is_empty() {
             Err(Failure::Transport("URLError".into()))
@@ -136,7 +141,12 @@ impl Http for Script {
 struct Pages(Vec<(String, Result<Response, Failure>)>, Vec<String>);
 
 impl Http for Pages {
-    fn get(&mut self, url: &str, _limit: Option<usize>) -> Result<Response, Failure> {
+    fn get(
+        &mut self,
+        url: &str,
+        _limit: Option<usize>,
+        _redirects: &mut Redirects,
+    ) -> Result<Response, Failure> {
         let docid = url.strip_prefix(BASE_URL).unwrap();
         self.0
             .iter()

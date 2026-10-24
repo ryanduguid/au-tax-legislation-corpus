@@ -2,17 +2,21 @@
 //! headers={"User-Agent": UA}), timeout=90)` as `fadden/http_fetch.py` and the
 //! rulings stage call it, the shared attempt budget, and the local date.
 //!
-//! A GET follows up to 10 redirects, uses any proxy the environment names and
+//! A GET sends urllib's headers (`Accept-Encoding: identity`, `User-Agent`,
+//! `Connection: close`, no `Accept`), follows redirects by
+//! `HTTPRedirectHandler`'s rules, uses any proxy the environment names and
 //! verifies TLS against the operating system's certificate store, as urllib
 //! does. A status outside 200-299 is urllib's `HTTPError`; any other failure
 //! carries the name of the exception urllib would most likely raise there.
-//! The 90-second limit applies to each phase of the request (connecting, the
-//! response head, the body) rather than to each socket read.
+//! The 90-second limit applies to each socket read and write, as urllib's
+//! socket timeout does; connecting (TCP and TLS) has one 90-second budget,
+//! where urllib allows 90 seconds per address and per handshake operation.
 //!
 //! With the `fake-http` feature and `FADDEN_FAKE_HTTP` naming a script, the
 //! responses, the waits and the date come from that script instead, and each
 //! request and wait is logged to `FADDEN_FAKE_HTTP_LOG`. The differential
 //! harness drives the base-revision Python stages through the same script.
+use std::collections::HashMap;
 use std::io::Read;
 use std::time::Duration;
 
@@ -50,9 +54,40 @@ pub struct Exchange {
     pub body: Option<Vec<u8>>,
 }
 
+/// The redirects one `urllib.request.Request` has followed, its
+/// `redirect_dict`. The callers reuse one request for every attempt, so the
+/// counts carry from one attempt to the next.
+#[derive(Debug, Default)]
+pub struct Redirects(Option<HashMap<String, u32>>);
+
+impl Redirects {
+    /// `http_error_302`'s loop check before following a redirect to `url`:
+    /// false once `url` has been visited 4 times or 10 URLs have been. The
+    /// request's first redirect is never refused.
+    pub fn follow(&mut self, url: &str) -> bool {
+        let visited = match &mut self.0 {
+            None => self.0.insert(HashMap::new()),
+            Some(visited) => {
+                if visited.get(url).copied().unwrap_or(0) >= 4 || visited.len() >= 10 {
+                    return false;
+                }
+                visited
+            }
+        };
+        *visited.entry(url.to_owned()).or_insert(0) += 1;
+        true
+    }
+}
+
 pub trait Http {
-    /// One GET, reading at most `limit` bytes of the body when given.
-    fn get(&mut self, url: &str, limit: Option<usize>) -> Result<Response, Failure>;
+    /// One GET, reading at most `limit` bytes of the body when given;
+    /// `redirects` is the request's redirect record.
+    fn get(
+        &mut self,
+        url: &str,
+        limit: Option<usize>,
+        redirects: &mut Redirects,
+    ) -> Result<Response, Failure>;
     /// One GET that follows no redirect and reports every status, reading at
     /// most `limit` bytes of a 200 body; an `Err` is always `Transport`. A
     /// fake that scripts only `get` fails every exchange.
@@ -97,9 +132,10 @@ pub fn attempt(http: &mut dyn Http, number: u32) {
 /// the int digit limit's `ValueError`, which urllib's callers do not catch,
 /// stops the stage.
 pub fn fetch_json(http: &mut dyn Http, url: &str) -> Result<Option<Json>, Exc> {
+    let mut redirects = Redirects::default();
     for number in 1..=TRIES {
         attempt(http, number);
-        let Ok(response) = http.get(url, None) else {
+        let Ok(response) = http.get(url, None, &mut redirects) else {
             continue;
         };
         match pyjson::loads_bytes(&response.body) {
@@ -119,36 +155,127 @@ pub fn fetch_json(http: &mut dyn Http, url: &str) -> Result<Option<Json>, Exc> {
 }
 
 struct Net {
+    /// Follows no redirect itself: `get` follows them as urllib does.
     agent: ureq::Agent,
-    /// The capture recorder's agent: no redirect is followed.
-    direct: ureq::Agent,
     started: std::time::Instant,
 }
 
 impl Net {
     fn new() -> Net {
-        let agent = |redirects: u32| {
-            let tls = ureq::tls::TlsConfig::builder()
-                .root_certs(ureq::tls::RootCerts::PlatformVerifier)
-                .build();
-            ureq::Agent::config_builder()
-                .tls_config(tls)
-                .user_agent(UA)
-                .http_status_as_error(false)
-                .max_redirects(redirects)
-                .max_redirects_will_error(false)
-                .timeout_connect(Some(TIMEOUT))
-                .timeout_recv_response(Some(TIMEOUT))
-                .timeout_recv_body(Some(TIMEOUT))
-                .build()
-                .new_agent()
-        };
+        let tls = ureq::tls::TlsConfig::builder()
+            .root_certs(ureq::tls::RootCerts::PlatformVerifier)
+            .build();
+        let agent = ureq::Agent::config_builder()
+            .tls_config(tls)
+            .user_agent(UA)
+            .accept(ureq::config::AutoHeaderValue::None)
+            .accept_encoding("identity")
+            .http_status_as_error(false)
+            .max_redirects(0)
+            .max_redirects_will_error(false)
+            .timeout_connect(Some(TIMEOUT))
+            .timeout_per_read(Some(TIMEOUT))
+            .timeout_per_write(Some(TIMEOUT))
+            .build()
+            .new_agent();
         Net {
-            agent: agent(10),
-            direct: agent(0),
+            agent,
             started: std::time::Instant::now(),
         }
     }
+
+    /// `opener.open(Request(url))` up to the response head. A failure while
+    /// connecting or sending is urllib's `URLError`; one reading the response
+    /// head is the exception `http.client` raises there. A Content-Length
+    /// that is not a number fails here as `BadStatusLine`, where `http.client`
+    /// reads the body to the close.
+    fn call(&self, url: &str) -> Result<ureq::http::Response<ureq::Body>, Failure> {
+        // Request sends the URL without its fragment, which follows the last `#`.
+        let sent = url.rsplit_once('#').map_or(url, |(sent, _)| sent);
+        self.agent
+            .get(sent)
+            .header("Connection", "close")
+            .call()
+            .map_err(|error| match error {
+                ureq::Error::Timeout(ureq::Timeout::RecvResponse | ureq::Timeout::PerRead) => {
+                    transport("TimeoutError")
+                }
+                ureq::Error::Io(e) if e.kind() == std::io::ErrorKind::UnexpectedEof => {
+                    transport("RemoteDisconnected")
+                }
+                ureq::Error::Protocol(_) => transport("BadStatusLine"),
+                ureq::Error::LargeResponseHeader(..) => transport("LineTooLong"),
+                _ => transport("URLError"),
+            })
+    }
+}
+
+/// Up to `limit` bytes of a response body; a failed read is the exception
+/// `http.client` raises.
+fn read_body(
+    response: &mut ureq::http::Response<ureq::Body>,
+    limit: u64,
+) -> Result<Vec<u8>, Failure> {
+    let mut body = Vec::new();
+    response
+        .body_mut()
+        .with_config()
+        .limit(u64::MAX)
+        .reader()
+        .take(limit)
+        .read_to_end(&mut body)
+        .map_err(|error| match error.kind() {
+            std::io::ErrorKind::TimedOut => transport("TimeoutError"),
+            std::io::ErrorKind::ConnectionReset => transport("ConnectionResetError"),
+            _ => transport("IncompleteRead"),
+        })?;
+    Ok(body)
+}
+
+/// `HTTPRedirectHandler.http_error_302`'s target for a `Location` (or `URI`)
+/// header on a response to `url`: None for a scheme it refuses to follow.
+fn redirect_target(url: &str, location: &str) -> Result<Option<String>, Failure> {
+    // shortcut: urllib's ValueError for a malformed URL is uncaught and stops
+    // the stage; here it fails the attempt like a transport error.
+    let malformed = |_| transport("ValueError");
+    let mut parts = crate::pyurl::urlsplit(location).map_err(malformed)?;
+    if !matches!(parts.scheme.as_str(), "http" | "https" | "ftp" | "") {
+        return Ok(None);
+    }
+    // urlparse splits `;params` off the path; urlunparse drops an empty one.
+    let (path, params) = if parts.path.contains(';') {
+        let at = match parts.path.rfind('/') {
+            Some(slash) => parts.path[slash..].find(';').map(|i| slash + i),
+            None => parts.path.find(';'),
+        };
+        at.map_or((parts.path.as_str(), ""), |i| {
+            (&parts.path[..i], &parts.path[i + 1..])
+        })
+    } else {
+        (parts.path.as_str(), "")
+    };
+    let path = if path.is_empty() && !parts.netloc.is_empty() {
+        "/"
+    } else {
+        path
+    };
+    parts.path = if params.is_empty() {
+        path.to_owned()
+    } else {
+        format!("{path};{params}")
+    };
+    // quote(newurl, encoding="iso-8859-1", safe=string.punctuation)
+    let mut quoted = String::new();
+    for c in crate::pyurl::urlunsplit(&parts).chars() {
+        if c.is_ascii_graphic() {
+            quoted.push(c);
+        } else {
+            quoted.push_str(&format!("%{:02X}", u32::from(c)));
+        }
+    }
+    crate::pyurl::urljoin(url, &quoted)
+        .map(Some)
+        .map_err(malformed)
 }
 
 /// A header value as `http.client` decodes it: ISO-8859-1.
@@ -176,46 +303,50 @@ fn transport(name: &str) -> Failure {
 }
 
 impl Http for Net {
-    fn get(&mut self, url: &str, limit: Option<usize>) -> Result<Response, Failure> {
-        use ureq::ResponseExt;
-        let mut response = self.agent.get(url).call().map_err(|error| match error {
-            ureq::Error::Timeout(ureq::Timeout::RecvResponse) => transport("TimeoutError"),
-            _ => transport("URLError"),
-        })?;
-        let status = response.status().as_u16();
-        if !(200..300).contains(&status) {
-            return Err(Failure::Status(status));
+    fn get(
+        &mut self,
+        url: &str,
+        limit: Option<usize>,
+        redirects: &mut Redirects,
+    ) -> Result<Response, Failure> {
+        let mut url = url.to_owned();
+        loop {
+            let mut response = self.call(&url)?;
+            let status = response.status().as_u16();
+            if (200..300).contains(&status) {
+                let content_type = response
+                    .headers()
+                    .get("content-type")
+                    .map(|v| latin1(v.as_bytes()))
+                    .unwrap_or_default();
+                let body = read_body(&mut response, limit.map_or(u64::MAX, |n| n as u64))?;
+                // geturl(): the last request's URL, fragment included.
+                return Ok(Response {
+                    url,
+                    content_type,
+                    body,
+                });
+            }
+            if !matches!(status, 301 | 302 | 303 | 307 | 308) {
+                return Err(Failure::Status(status));
+            }
+            let header = |name| response.headers().get(name).map(|v| latin1(v.as_bytes()));
+            let Some(location) = header("location").or_else(|| header("uri")) else {
+                return Err(Failure::Status(status));
+            };
+            match redirect_target(&url, &location)? {
+                Some(next) if redirects.follow(&next) => {
+                    // The redirect's body is read before the next request.
+                    read_body(&mut response, u64::MAX)?;
+                    url = next;
+                }
+                _ => return Err(Failure::Status(status)),
+            }
         }
-        let final_url = response.get_uri().to_string();
-        // http.client decodes header values as ISO-8859-1.
-        let content_type = response
-            .headers()
-            .get("content-type")
-            .map(|v| v.as_bytes().iter().map(|&b| char::from(b)).collect())
-            .unwrap_or_default();
-        let mut body = Vec::new();
-        let reader = response.body_mut().with_config().limit(u64::MAX).reader();
-        let read = match limit {
-            Some(n) => reader.take(n as u64).read_to_end(&mut body),
-            None => reader.take(u64::MAX).read_to_end(&mut body),
-        };
-        read.map_err(|error| match error.kind() {
-            std::io::ErrorKind::TimedOut => transport("TimeoutError"),
-            _ => transport("IncompleteRead"),
-        })?;
-        Ok(Response {
-            url: final_url,
-            content_type,
-            body,
-        })
     }
 
     fn exchange(&mut self, url: &str, limit: usize) -> Result<Exchange, Failure> {
-        let mut response = self
-            .direct
-            .get(url)
-            .call()
-            .map_err(|_| transport("URLError"))?;
+        let mut response = self.call(url)?;
         let status = response.status().as_u16();
         let headers = response
             .headers()
@@ -223,16 +354,7 @@ impl Http for Net {
             .map(|(name, value)| (name.as_str().to_string(), latin1(value.as_bytes())))
             .collect();
         let body = if status == 200 {
-            let mut body = Vec::new();
-            response
-                .body_mut()
-                .with_config()
-                .limit(u64::MAX)
-                .reader()
-                .take(limit as u64)
-                .read_to_end(&mut body)
-                .map_err(|_| transport("IncompleteRead"))?;
-            Some(body)
+            Some(read_body(&mut response, limit as u64)?)
         } else {
             None
         };
@@ -304,7 +426,7 @@ pub fn local_today() -> String {
 mod fake {
     use std::io::Write;
 
-    use super::{Exchange, Failure, Http, Response};
+    use super::{Exchange, Failure, Http, Redirects, Response};
     use crate::pyjson::{self, Json};
 
     /// A scripted run: `{"today": "...", "now": "...", "responses": [...]}`,
@@ -368,7 +490,12 @@ mod fake {
     }
 
     impl Http for Script {
-        fn get(&mut self, url: &str, limit: Option<usize>) -> Result<Response, Failure> {
+        fn get(
+            &mut self,
+            url: &str,
+            limit: Option<usize>,
+            _redirects: &mut Redirects,
+        ) -> Result<Response, Failure> {
             self.log(&format!("GET {url}"));
             let Some(next) = self.responses.next() else {
                 return Err(Failure::Transport("URLError".into()));

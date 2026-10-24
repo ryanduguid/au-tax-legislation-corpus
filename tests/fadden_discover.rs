@@ -6,7 +6,7 @@ use std::path::{Path, PathBuf};
 use serde_json::{Value, json};
 use tax_radar_au::fadden::Run;
 use tax_radar_au::fadden::discover::{self, Stop};
-use tax_radar_au::fadden::http::{Failure, Http, Response};
+use tax_radar_au::fadden::http::{Failure, Http, Redirects, Response};
 
 /// Answers each request with the next body; requests and waits are recorded in order.
 #[derive(Default)]
@@ -16,7 +16,12 @@ struct Script {
 }
 
 impl Http for Script {
-    fn get(&mut self, url: &str, _limit: Option<usize>) -> Result<Response, Failure> {
+    fn get(
+        &mut self,
+        url: &str,
+        _limit: Option<usize>,
+        _redirects: &mut Redirects,
+    ) -> Result<Response, Failure> {
         self.events.push(format!("GET {url}"));
         let next = if self.bodies.is_empty() {
             Err(Failure::Transport("URLError".into()))

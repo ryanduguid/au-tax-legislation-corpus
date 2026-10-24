@@ -12,7 +12,7 @@ use tax_radar_au::fadden::capture_register::{
     self as capture, Body, HttpsSession, RegisterExchange, RegisterSession, Step,
     capture_register_run, validate_capture_graph,
 };
-use tax_radar_au::fadden::http::{Exchange, Failure, Http, Response};
+use tax_radar_au::fadden::http::{Exchange, Failure, Http, Redirects, Response};
 use tax_radar_au::fadden::{Exc, Run};
 use tax_radar_au::pyjson::{self, Json};
 use tax_radar_au::pyos::OsError;
@@ -1768,7 +1768,12 @@ struct Net {
 }
 
 impl Http for Net {
-    fn get(&mut self, _url: &str, _limit: Option<usize>) -> Result<Response, Failure> {
+    fn get(
+        &mut self,
+        _url: &str,
+        _limit: Option<usize>,
+        _redirects: &mut Redirects,
+    ) -> Result<Response, Failure> {
         unreachable!("the capture never follows redirects")
     }
 

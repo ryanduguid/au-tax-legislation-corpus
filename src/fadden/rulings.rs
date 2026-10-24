@@ -527,9 +527,10 @@ pub fn fetch(http: &mut dyn Http, docid: &str) -> Result<(Vec<u8>, String), Ruli
     let url = format!("{BASE_URL}{docid}");
     let mut failure = "no attempt made".to_string();
     let mut response = None;
+    let mut redirects = http::Redirects::default();
     for number in 1..=http::TRIES {
         http::attempt(http, number);
-        match http.get(&url, Some(MAX_BYTES + 1)) {
+        match http.get(&url, Some(MAX_BYTES + 1), &mut redirects) {
             Ok(r) => {
                 response = Some(r);
                 break;
