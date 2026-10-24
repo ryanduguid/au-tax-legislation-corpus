@@ -456,7 +456,9 @@ impl RegisterSession for HttpsSession {
                         false,
                     ));
                 }
-                Err(Failure::Uncaught(message)) => return Err(Exc::value(message)),
+                Err(Failure::Uncaught { class, message }) => {
+                    return Err(http::uncaught(class, message));
+                }
                 Err(Failure::Transport(_) | Failure::Status(_)) => {
                     if attempt < MAX_ATTEMPTS {
                         continue;

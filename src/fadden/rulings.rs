@@ -546,7 +546,9 @@ pub fn fetch(
                 }
             }
             Err(Failure::Transport(name)) => failure = name,
-            Err(Failure::Uncaught(message)) => return Err(Exc::value(message)),
+            Err(Failure::Uncaught { class, message }) => {
+                return Err(http::uncaught(class, message));
+            }
         }
     }
     let Some(response) = response else {

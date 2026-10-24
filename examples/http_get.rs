@@ -37,7 +37,7 @@ fn main() {
                 ]),
                 Err(Failure::Status(code)) => json!(["status", code]),
                 Err(Failure::Transport(name)) => json!(["error", name]),
-                Err(Failure::Uncaught(_)) => json!(["raise", "ValueError"]),
+                Err(Failure::Uncaught { class, .. }) => json!(["raise", class]),
             };
             let done = outcome[0] != "status" && outcome[0] != "error";
             outcomes.push(outcome);

@@ -16,11 +16,15 @@
 //! handshake 90 seconds in all, as Python's socket timeout allows; Python's
 //! `sendall` gives the whole request one 90-second budget.
 //!
+//! The request is checked and encoded as `http.client` does before sending:
+//! an ASCII request line, Latin-1 header values without a bare line break,
+//! and a tunnel host without control characters.
+//!
 //! Not ported: urllib's FTP, file and data handlers (a redirect or proxy to one
-//! of those schemes fails as `URLError`), the Windows per-user proxy setting
-//! Python reads from the registry when no proxy variable is set, IDNA encoding
-//! of non-ASCII host names, and the checks for control characters in header
-//! values and tunnel hosts.
+//! of those schemes fails as `URLError`), the proxy settings Python reads from
+//! the Windows registry or macOS System Configuration when no proxy variable
+//! is set (set `HTTPS_PROXY` instead), and IDNA encoding of non-ASCII host
+//! names.
 //!
 //! With the `fake-http` feature and `FADDEN_FAKE_HTTP` naming a script, the
 //! responses, the waits and the date come from that script instead, and each
@@ -58,12 +62,24 @@ pub struct Response {
 }
 
 /// Why `urlopen` raised: an HTTP status, the class name of another failure
-/// the callers catch, or the message of a `ValueError` they do not.
+/// the callers catch, or a `ValueError` (or subclass) they do not.
 #[derive(Debug, Clone, PartialEq)]
 pub enum Failure {
     Status(u16),
     Transport(String),
-    Uncaught(String),
+    Uncaught {
+        class: &'static str,
+        message: String,
+    },
+}
+
+/// The exception an uncaught failure raises in the stage.
+pub fn uncaught(class: &'static str, message: String) -> Exc {
+    if class == "UnicodeEncodeError" {
+        Exc::UnicodeEncode(message)
+    } else {
+        Exc::Value { class, message }
+    }
 }
 
 /// One response as the capture recorder keeps it: any status, every header
@@ -171,7 +187,7 @@ pub fn fetch_json(http: &mut dyn Http, url: &str) -> Result<Option<Json>, Exc> {
         attempt(http, number);
         let response = match http.get(url, None, &mut request) {
             Ok(response) => response,
-            Err(Failure::Uncaught(message)) => return Err(Exc::value(message)),
+            Err(Failure::Uncaught { class, message }) => return Err(uncaught(class, message)),
             Err(_) => continue,
         };
         match pyjson::loads_bytes(&response.body) {
@@ -262,7 +278,7 @@ impl Req {
             unredirected: Vec::new(),
         };
         let Some((kind, rest)) = split_type(url) else {
-            return Err(Failure::Uncaught(format!(
+            return Err(value_error(format!(
                 "unknown url type: {}",
                 py::repr_str(&req.full_url())
             )));
@@ -543,14 +559,17 @@ impl Net {
         if has_control(path) {
             return Err(transport("InvalidURL"));
         }
-        let mut message = format!("GET {path} HTTP/1.1\r\nAccept-Encoding: identity\r\n");
+        // h.request() builds the request before connect() opens the socket.
+        let mut message = encode(&format!("GET {path} HTTP/1.1"), "ascii", 128)?;
+        message.extend_from_slice(b"\r\n");
+        put_header(&mut message, "Accept-Encoding", "identity")?;
         for (name, value) in &headers {
-            message.push_str(&format!("{name}: {value}\r\n"));
+            put_header(&mut message, name, value)?;
         }
-        message.push_str("\r\n");
+        message.extend_from_slice(b"\r\n");
         let mut stream = self.connect(tls, &host, port, tunnel.as_ref())?;
         stream
-            .write_all(message.as_bytes())
+            .write_all(&message)
             .and_then(|()| stream.flush())
             .map_err(|_| url_error())?;
         let mut wire = BufReader::with_capacity(1 << 16, stream);
@@ -597,14 +616,25 @@ impl Net {
             .map_err(|_| url_error())?
             .to_owned();
         let mut session = rustls::ClientConnection::new(config, name).map_err(|_| url_error())?;
-        // wrap_socket's handshake has one 90-second deadline.
+        // wrap_socket's handshake has one 90-second deadline: each blocking
+        // read or write may take only what is left of it.
         let deadline = Instant::now() + TIMEOUT;
-        while session.is_handshaking() {
+        while session.is_handshaking() || session.wants_write() {
             let left = deadline.saturating_duration_since(Instant::now());
             if left.is_zero() || set_timeouts(&socket, left).is_err() {
                 return Err(url_error());
             }
-            session.complete_io(&mut socket).map_err(|_| url_error())?;
+            if session.wants_write() {
+                session.write_tls(&mut socket).map_err(|_| url_error())?;
+            } else if !session.wants_read()
+                || session.read_tls(&mut socket).map_err(|_| url_error())? == 0
+            {
+                return Err(url_error());
+            } else if session.process_new_packets().is_err() {
+                // Send the alert rustls queued, as the handshake's failure does.
+                let _ = session.write_tls(&mut socket);
+                return Err(url_error());
+            }
         }
         set_timeouts(&socket, TIMEOUT).map_err(|_| url_error())?;
         Ok(Stream::Tls(Box::new(rustls::StreamOwned::new(
@@ -688,7 +718,7 @@ fn parse_proxy(proxy: &str) -> Result<ProxyParts<'_>, Failure> {
         (None, proxy)
     } else {
         if !r_scheme.starts_with("//") {
-            return Err(Failure::Uncaught(format!(
+            return Err(value_error(format!(
                 "proxy URL with no authority: {}",
                 py::repr_str(proxy)
             )));
@@ -712,20 +742,26 @@ fn parse_proxy(proxy: &str) -> Result<ProxyParts<'_>, Failure> {
 /// `HTTPConnection._tunnel()`: CONNECT, then the proxy's status line and
 /// headers. Bytes after them in the read buffer are dropped with it, as
 /// Python's closed reply drops them.
+/// Python encodes the host as IDNA; this sends it as UTF-8, which is the same
+/// for the ASCII hosts the stages request.
 fn open_tunnel(socket: &mut TcpStream, tunnel: &Tunnel) -> Result<(), Failure> {
+    if has_control(&tunnel.host) {
+        return Err(value_error(format!(
+            "Tunnel host can't contain control characters {}",
+            py::repr_str(&tunnel.host)
+        )));
+    }
     let host = if tunnel.host.contains(':') && !tunnel.host.starts_with('[') {
         format!("[{}]", tunnel.host)
     } else {
         tunnel.host.clone()
     };
-    let mut message = format!("CONNECT {host}:{} HTTP/1.1\r\n", tunnel.port);
+    let mut message = format!("CONNECT {host}:{} HTTP/1.1\r\n", tunnel.port).into_bytes();
     for (name, value) in &tunnel.headers {
-        message.push_str(&format!("{name}: {value}\r\n"));
+        put_header(&mut message, name, value)?;
     }
-    message.push_str("\r\n");
-    socket
-        .write_all(message.as_bytes())
-        .map_err(|e| os_error(&e))?;
+    message.extend_from_slice(b"\r\n");
+    socket.write_all(&message).map_err(|e| os_error(&e))?;
     let mut reply = BufReader::new(&mut *socket);
     let (_, code) = read_status(&mut reply)?;
     read_headers(&mut reply)?;
@@ -1300,7 +1336,7 @@ fn set_header(headers: &mut Vec<(String, String)>, name: &str, value: &str) {
 /// header on a response to `url`: None for a scheme it refuses to follow. A
 /// malformed URL is the `ValueError` urllib raises and nothing catches.
 fn redirect_target(url: &str, location: &str) -> Result<Option<String>, Failure> {
-    let mut parts = crate::pyurl::urlsplit(location).map_err(Failure::Uncaught)?;
+    let mut parts = crate::pyurl::urlsplit(location).map_err(value_error)?;
     if !matches!(parts.scheme.as_str(), "http" | "https" | "ftp" | "") {
         return Ok(None);
     }
@@ -1337,7 +1373,7 @@ fn redirect_target(url: &str, location: &str) -> Result<Option<String>, Failure>
     }
     crate::pyurl::urljoin(url, &quoted)
         .map(Some)
-        .map_err(Failure::Uncaught)
+        .map_err(value_error)
 }
 
 /// A header value as `http.client` decodes it: ISO-8859-1.
@@ -1366,6 +1402,73 @@ fn transport(name: &str) -> Failure {
 
 fn url_error() -> Failure {
     transport("URLError")
+}
+
+fn value_error(message: String) -> Failure {
+    Failure::Uncaught {
+        class: "ValueError",
+        message,
+    }
+}
+
+/// `text.encode(codec)` for `ascii` (`limit` 128) or `latin-1` (256): the
+/// bytes, or the `UnicodeEncodeError` the strict codec raises for the first
+/// run of characters at or above `limit`.
+fn encode(text: &str, codec: &str, limit: u32) -> Result<Vec<u8>, Failure> {
+    let chars: Vec<char> = text.chars().collect();
+    let Some(start) = chars.iter().position(|&c| u32::from(c) >= limit) else {
+        return Ok(chars.iter().map(|&c| c as u8).collect());
+    };
+    let end = chars[start..]
+        .iter()
+        .position(|&c| u32::from(c) < limit)
+        .map_or(chars.len(), |n| start + n);
+    let reason = format!("ordinal not in range({limit})");
+    let message = if end - start == 1 {
+        let c = u32::from(chars[start]);
+        let escape = match c {
+            0..=0xff => format!("\\x{c:02x}"),
+            0x100..=0xffff => format!("\\u{c:04x}"),
+            _ => format!("\\U{c:08x}"),
+        };
+        format!("'{codec}' codec can't encode character '{escape}' in position {start}: {reason}")
+    } else {
+        format!(
+            "'{codec}' codec can't encode characters in position {start}-{}: {reason}",
+            end - 1
+        )
+    };
+    Err(Failure::Uncaught {
+        class: "UnicodeEncodeError",
+        message,
+    })
+}
+
+/// `http.client._is_illegal_header_value`: a line break not followed by
+/// folding whitespace.
+fn illegal_header_value(value: &[u8]) -> bool {
+    value.iter().enumerate().any(|(i, &b)| {
+        let next = value.get(i + 1).copied();
+        (b == b'\n' && !matches!(next, Some(b' ' | b'\t')))
+            || (b == b'\r' && !matches!(next, Some(b' ' | b'\t' | b'\n')))
+    })
+}
+
+/// `HTTPConnection.putheader(name, value)`, appended to `out`: the value as
+/// Latin-1, refused where it could end the header early.
+fn put_header(out: &mut Vec<u8>, name: &str, value: &str) -> Result<(), Failure> {
+    let value = encode(value, "latin-1", 256)?;
+    if illegal_header_value(&value) {
+        return Err(value_error(format!(
+            "Invalid header value {}",
+            py::repr_bytes(&value)
+        )));
+    }
+    out.extend_from_slice(name.as_bytes());
+    out.extend_from_slice(b": ");
+    out.extend_from_slice(&value);
+    out.extend_from_slice(b"\r\n");
+    Ok(())
 }
 
 impl Http for Net {
@@ -1523,7 +1626,7 @@ mod tests {
         assert_eq!(req.full_url(), "HTTP://u%40h:8%30/p#f");
         assert!(matches!(
             Req::new("nothing", Vec::new()),
-            Err(Failure::Uncaught(_))
+            Err(Failure::Uncaught { .. })
         ));
         assert_eq!(
             parse_proxy("http://us:pw@p:3128/x").unwrap(),
@@ -1538,6 +1641,55 @@ mod tests {
         assert_eq!(split_ws("  a b  c d ", 2), ["a", "b", "c d "]);
         assert_eq!(unquote("a%20%e9%C3%A9é%zz"), "a \u{fffd}éé%zz");
         assert_eq!(title("proxy-authorization"), "Proxy-Authorization");
+    }
+
+    fn refusal(result: Result<impl std::fmt::Debug, Failure>) -> (&'static str, String) {
+        match result {
+            Err(Failure::Uncaught { class, message }) => (class, message),
+            other => panic!("not refused: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn requests_encode_and_refuse_as_http_client_does() {
+        // The messages are CPython 3.15's.
+        assert_eq!(encode("café", "latin-1", 256).unwrap(), b"caf\xe9");
+        let unicode = |text, codec, limit| refusal(encode(text, codec, limit)).1;
+        assert_eq!(
+            unicode("a€b", "latin-1", 256),
+            r"'latin-1' codec can't encode character '\u20ac' in position 1: ordinal not in range(256)"
+        );
+        assert_eq!(
+            unicode("a€€b", "latin-1", 256),
+            "'latin-1' codec can't encode characters in position 1-2: ordinal not in range(256)"
+        );
+        assert_eq!(
+            unicode("x\u{1f600}", "latin-1", 256),
+            r"'latin-1' codec can't encode character '\U0001f600' in position 1: ordinal not in range(256)"
+        );
+        assert_eq!(
+            unicode("GET /café HTTP/1.1", "ascii", 128),
+            r"'ascii' codec can't encode character '\xe9' in position 8: ordinal not in range(128)"
+        );
+        let mut out = Vec::new();
+        for value in ["a\r\n b", "a\n\tb", "é"] {
+            put_header(&mut out, "X", value).unwrap();
+        }
+        assert_eq!(out, b"X: a\r\n b\r\nX: a\n\tb\r\nX: \xe9\r\n");
+        for (value, repr) in [
+            ("a\nb", r"b'a\nb'"),
+            ("a\rb", r"b'a\rb'"),
+            ("a\r", r"b'a\r'"),
+        ] {
+            assert_eq!(
+                refusal(put_header(&mut out, "X", value)),
+                ("ValueError", format!("Invalid header value {repr}"))
+            );
+        }
+        assert_eq!(
+            refusal(put_header(&mut out, "X", "€")).0,
+            "UnicodeEncodeError"
+        );
     }
 }
 
