@@ -350,8 +350,10 @@ impl Epub {
         let mut inflater = (method == DEFLATED).then(Decompress::default);
         let mut remaining = info.compress_size;
         let (mut total, mut crc) = (0u64, 0u32);
-        // `position` has held the declared size to the member budget.
-        let mut content = Vec::with_capacity(info.file_size as usize);
+        // `position` has held the declared size to the member budget; deflate
+        // expands at most 1032 times, so a corrupt member reserves no more.
+        let reserve = info.file_size.min(info.compress_size.saturating_mul(1032));
+        let mut content = Vec::with_capacity(reserve as usize);
         let invalid = || download("EPUB member has invalid deflate data");
         while remaining > 0 {
             let mut block = slice(&self.data, position, remaining.min(65_536)).to_vec();
