@@ -653,6 +653,41 @@ pub fn entry_name(entry: &std::fs::DirEntry) -> Result<String, NotUnicode> {
         .map_err(|_| NotUnicode(entry.path().to_string_lossy().into_owned()))
 }
 
+/// The code points of the str Python gives an OS name: on POSIX, UTF-8 with
+/// `surrogateescape` (each byte outside a valid sequence becomes U+DC80..U+DCFF);
+/// on Windows, UTF-16 with an unpaired surrogate kept as itself.
+pub fn os_name_points(name: &std::ffi::OsStr) -> Vec<u32> {
+    #[cfg(unix)]
+    {
+        use std::os::unix::ffi::OsStrExt;
+        let mut bytes = name.as_bytes();
+        let mut points = Vec::with_capacity(bytes.len());
+        loop {
+            match std::str::from_utf8(bytes) {
+                Ok(text) => {
+                    points.extend(text.chars().map(u32::from));
+                    return points;
+                }
+                Err(error) => {
+                    let (valid, rest) = bytes.split_at(error.valid_up_to());
+                    let valid = std::str::from_utf8(valid).expect("checked prefix");
+                    points.extend(valid.chars().map(u32::from));
+                    let bad = error.error_len().unwrap_or(rest.len());
+                    points.extend(rest[..bad].iter().map(|&b| 0xDC00 + u32::from(b)));
+                    bytes = &rest[bad..];
+                }
+            }
+        }
+    }
+    #[cfg(windows)]
+    {
+        use std::os::windows::ffi::OsStrExt;
+        char::decode_utf16(name.encode_wide())
+            .map(|unit| unit.map_or_else(|e| u32::from(e.unpaired_surrogate()), u32::from))
+            .collect()
+    }
+}
+
 /// One `os.walk(top, followlinks=False)` step: a directory, its subdirectory
 /// names and its other names, in the order the directory lists them.
 pub struct WalkStep {

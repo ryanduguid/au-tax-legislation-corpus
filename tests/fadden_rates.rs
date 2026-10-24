@@ -203,6 +203,24 @@ fn a_title_directory_sources_json_does_not_list_stops_the_export() {
     assert!(error.contains("C2020A00099"));
 }
 
+/// Python lists a name that is not UTF-8 as a surrogate-escaped str: sorted by
+/// code point (U+DCFF between U+0061 and U+E000) and printed as `\udcff`.
+#[cfg(unix)]
+#[test]
+fn a_title_entry_name_that_is_not_utf8_is_refused_as_python_names_it() {
+    use std::os::unix::ffi::OsStrExt;
+    let c = checkout();
+    write_corpus(&c, &[row()], &["a", "\u{e000}"], "");
+    let markdown = c.root.join("markdown");
+    std::fs::create_dir(markdown.join(std::ffi::OsStr::from_bytes(b"\xff"))).unwrap();
+    let (code, _, err) = run(&c.project.join("fadden"));
+    assert_eq!(code, 1);
+    assert!(
+        err.contains("searchable as in force: a, \\udcff, \u{e000}. Move them"),
+        "{err}"
+    );
+}
+
 #[test]
 fn rate_rows_carry_the_source_status_and_attribution() {
     let (stale, stale_md) = export(&[with(&row(), json!({"version_is_current": false}))]);

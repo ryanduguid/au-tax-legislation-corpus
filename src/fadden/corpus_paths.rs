@@ -55,25 +55,38 @@ pub fn refuse_unlisted_titles(root: &str, listed: &BTreeSet<String>) -> Result<(
     }
     let entries =
         std::fs::read_dir(&base).map_err(|e| OsError::new(&e, Some(&base), Style::Native))?;
-    let mut stale = Vec::new();
+    // Names as Python's code points, so a name that is not valid Unicode sorts
+    // and prints (stderr's backslashreplace) as Python's surrogate-escaped str.
+    let mut stale: Vec<Vec<u32>> = Vec::new();
     for entry in entries {
         let entry = entry.map_err(|e| OsError::new(&e, Some(&base), Style::Native))?;
-        if entry.file_name().to_string_lossy().starts_with('.') {
+        let points = crate::pyos::os_name_points(&entry.file_name());
+        if points.first() == Some(&u32::from('.')) {
             continue;
         }
-        let name = crate::pyos::entry_name(&entry)?;
-        if !listed.contains(&name) {
-            stale.push(name);
+        // Listed ids are register ids, so a name holding a lone surrogate is never listed.
+        let text: Option<String> = points.iter().map(|&cp| char::from_u32(cp)).collect();
+        if !text.is_some_and(|name| listed.contains(&name)) {
+            stale.push(points);
         }
     }
     stale.sort();
     if stale.is_empty() {
         return Ok(());
     }
+    let names: Vec<String> = stale
+        .iter()
+        .map(|points| {
+            points
+                .iter()
+                .map(|&cp| char::from_u32(cp).map_or_else(|| format!("\\u{cp:04x}"), String::from))
+                .collect()
+        })
+        .collect();
     Err(Exc::Runtime(format!(
         "markdown/ holds entries this build does not list, which would stay searchable as in force: {}. \
          Move them out of the corpus and re-run; nothing was written or deleted.",
-        stale.join(", ")
+        names.join(", ")
     )))
 }
 
