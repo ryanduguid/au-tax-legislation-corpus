@@ -153,11 +153,13 @@ pub fn run(http: &mut dyn Http, scratch: &str, run: &mut Run) -> Result<(), Stop
         &pypath::join(scratch, "titles_all.json"),
         &Json::Array(all_rows),
         Some(1),
+        super::ENCODE_DEPTH,
     )?;
     write_json_atomic(
         &pypath::join(scratch, "titles_principal.json"),
         &principal_json,
         Some(1),
+        super::ENCODE_DEPTH,
     )?;
 
     run.print("\nsample principal titles:");

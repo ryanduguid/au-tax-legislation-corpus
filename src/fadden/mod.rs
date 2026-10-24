@@ -188,6 +188,31 @@ pub fn refuse_deep(value: &Json) -> Result<(), Exc> {
     Ok(())
 }
 
+/// `json.dump`'s recursion stop as CPython 3.15 raises it: the pure-Python
+/// encoder takes a frame per container, so a container `limit` levels down
+/// raises `RecursionError`, and each enclosing list or dict adds a note naming
+/// the item, innermost first. Items are visited in encoding order, so the
+/// first too-deep container is the one Python meets.
+pub fn refuse_deeper_than(value: &Json, limit: usize) -> Result<(), Exc> {
+    fn walk(value: &Json, level: usize, limit: usize) -> Result<(), Exc> {
+        match value {
+            Json::Array(_) | Json::Object(_) if level >= limit => Err(too_deep()),
+            Json::Array(items) => items.iter().enumerate().try_for_each(|(i, item)| {
+                walk(item, level + 1, limit)
+                    .map_err(|e| e.noted(format!("when serializing list item {i}")))
+            }),
+            Json::Object(pairs) => pairs.iter().try_for_each(|(key, item)| {
+                walk(item, level + 1, limit).map_err(|e| {
+                    let key = crate::pyvalue::repr_points(&key.code_points());
+                    e.noted(format!("when serializing dict item {key}"))
+                })
+            }),
+            _ => Ok(()),
+        }
+    }
+    walk(value, 0, limit)
+}
+
 /// A JSON text `json.loads` refused, as its exception.
 pub fn json_error(error: crate::pyjson::DecodeError) -> Exc {
     match error {

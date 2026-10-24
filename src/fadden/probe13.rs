@@ -112,6 +112,7 @@ pub fn run(http: &mut dyn Http, scratch: &str, run: &mut Run) -> Result<(), Exc>
         &pypath::join(scratch, "probe13.json"),
         &Json::Array(output),
         Some(1),
+        super::ENCODE_DEPTH,
     )
 }
 

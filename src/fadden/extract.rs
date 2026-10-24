@@ -23,6 +23,13 @@ use crate::pyre::{I, re};
 use crate::pyvalue::{self, py_eq, str_points};
 
 const LICENCE: &str = "CC BY 4.0";
+/// The container level at which `json.dump` stops writing manifest_md.json
+/// under `python -m fadden extract` (CPython 3.15, base revision): a title's
+/// `version_is_current` nested 987 deep is written, 988 is refused
+/// (`tools/extract_depth_probe.py`). The pure-Python encoder takes a frame per
+/// container, so the limit follows the call stack; the differential's runner
+/// sits 3 frames shallower and accepts 990.
+const MANIFEST_DEPTH: usize = 989;
 const LICENCE_URL: &str = "https://creativecommons.org/licenses/by/4.0/";
 
 const SKIP_CLASS: &str = r"^(TOC\d|TofSects|Contents|Header|Footer)";
@@ -1120,13 +1127,9 @@ fn write_sections(
             line
         })
         .collect();
-    let path = child(d, &["sections.jsonl"])?;
-    // `json.dumps` of the first row meets a too-deep value after the open.
-    if let Some(Err(error)) = entry.get("version_is_current").map(super::refuse_deep) {
-        write_chunks(&path, &[])?;
-        return Err(error);
-    }
-    write_chunks(&path, &rows)
+    // `json.dumps` without an indent is CPython's C encoder, which goes deeper
+    // than any manifest pyjson reads, so these rows never meet a depth limit.
+    write_chunks(&child(d, &["sections.jsonl"])?, &rows)
 }
 
 /// `main(retrieved)` with the module in `scratch`.
@@ -1281,6 +1284,7 @@ pub fn run(scratch: &str, retrieved: Option<&str>, run: &mut Run) -> Result<(), 
         &pypath::join(scratch, "manifest_md.json"),
         &Json::Array(out_manifest.clone()),
         Some(1),
+        MANIFEST_DEPTH,
     )?;
     run.print(&format!("\nEXTRACT DONE: {} acts", out_manifest.len()));
     Ok(())
@@ -1314,6 +1318,49 @@ pub fn main(argv: &[String], run: &mut Run) -> Result<i32, Exit> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn lowercase_uses_cpythons_unicode_version() {
+        // Bare-mode contents titles match by to_lowercase standing in for
+        // str.lower, which is exact only on the same Unicode tables: CPython
+        // 3.15 has 17.0.0. Recheck this when the pinned toolchain changes.
+        assert_eq!(char::UNICODE_VERSION, (17, 0, 0));
+        // Unicode 17's Beria Erfe pair, which CPython 3.15 lowercases.
+        assert_eq!("\u{16EA0}".to_lowercase(), "\u{16EBB}");
+    }
+
+    #[test]
+    fn manifest_depth_stops_with_pythons_notes() {
+        let nested = |depth: usize| {
+            (0..depth).fold(Json::Array(Vec::new()), |inner, _| Json::Array(vec![inner]))
+        };
+        let title = |value: Json| {
+            Json::Array(vec![
+                Json::Object(vec![(PyStr::Text("id".into()), Json::str("x"))]),
+                Json::Object(vec![(PyStr::Text("version_is_current".into()), value)]),
+            ])
+        };
+        // 987 lists below the title list and dict: written, as Python writes them.
+        assert!(super::super::refuse_deeper_than(&title(nested(986)), MANIFEST_DEPTH).is_ok());
+        // 988: the innermost stops the encoder, and each container around it
+        // adds its note, innermost first.
+        let error = super::super::refuse_deeper_than(&title(nested(987)), MANIFEST_DEPTH)
+            .unwrap_err()
+            .to_string();
+        let lines: Vec<&str> = error.lines().collect();
+        assert!(lines[0].contains("maximum recursion depth exceeded"));
+        assert_eq!(lines.len(), 1 + 987 + 2);
+        assert!(
+            lines[1..=987]
+                .iter()
+                .all(|l| *l == "when serializing list item 0")
+        );
+        assert_eq!(
+            lines[988],
+            "when serializing dict item 'version_is_current'"
+        );
+        assert_eq!(lines[989], "when serializing list item 1");
+    }
 
     #[test]
     fn ascii_escapes_as_python_does() {

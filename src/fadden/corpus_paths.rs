@@ -384,10 +384,16 @@ pub fn compilation_id(row: &Json) -> Result<Option<String>, Exc> {
 }
 
 /// `write_json_atomic(path, value, indent=indent)`: `json.dump` with its
-/// defaults through the atomic writer.
-pub fn write_json_atomic(path: &str, value: &Json, indent: Option<usize>) -> Result<(), Exc> {
+/// defaults through the atomic writer, stopping at a container `depth` levels
+/// down (see `refuse_deeper_than`).
+pub fn write_json_atomic(
+    path: &str,
+    value: &Json,
+    indent: Option<usize>,
+    depth: usize,
+) -> Result<(), Exc> {
     // A failed dump leaves no file: the writer removes its temporary.
-    super::refuse_deep(value)?;
+    super::refuse_deeper_than(value, depth)?;
     write_text_atomic(
         path,
         &[crate::pyvalue::dumps_with(value, indent, true, false)],
