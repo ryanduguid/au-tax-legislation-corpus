@@ -12,7 +12,7 @@ use tax_radar_au::fadden::capture_register::{
     self as capture, Body, HttpsSession, RegisterExchange, RegisterSession, Step,
     capture_register_run, validate_capture_graph,
 };
-use tax_radar_au::fadden::http::{Exchange, Failure, Http, Redirects, Response};
+use tax_radar_au::fadden::http::{Exchange, Failure, Http, Request, Response};
 use tax_radar_au::fadden::{Exc, Run};
 use tax_radar_au::pyjson::{self, Json};
 use tax_radar_au::pyos::OsError;
@@ -1772,12 +1772,17 @@ impl Http for Net {
         &mut self,
         _url: &str,
         _limit: Option<usize>,
-        _redirects: &mut Redirects,
+        _request: &mut Request,
     ) -> Result<Response, Failure> {
         unreachable!("the capture never follows redirects")
     }
 
-    fn exchange(&mut self, url: &str, limit: usize) -> Result<Exchange, Failure> {
+    fn exchange(
+        &mut self,
+        url: &str,
+        limit: usize,
+        _request: &mut Request,
+    ) -> Result<Exchange, Failure> {
         self.calls.borrow_mut().push((url.to_string(), limit));
         let effect = self
             .effects

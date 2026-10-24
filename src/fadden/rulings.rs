@@ -521,16 +521,20 @@ pub fn scanned_texts(parsed: &Parsed) -> Vec<&str> {
 }
 
 /// `fetch(docid)`: the page bytes and final URL, refusing oversize or
-/// off-site responses. A rate limit or server fault is retried.
-pub fn fetch(http: &mut dyn Http, docid: &str) -> Result<(Vec<u8>, String), RulingsError> {
+/// off-site responses. A rate limit or server fault is retried; a
+/// `ValueError` urllib raises stops the stage.
+pub fn fetch(
+    http: &mut dyn Http,
+    docid: &str,
+) -> Result<Result<(Vec<u8>, String), RulingsError>, Exc> {
     // Validated docids hold only characters `quote(docid, safe="/")` keeps.
     let url = format!("{BASE_URL}{docid}");
     let mut failure = "no attempt made".to_string();
     let mut response = None;
-    let mut redirects = http::Redirects::default();
+    let mut request = http::Request::default();
     for number in 1..=http::TRIES {
         http::attempt(http, number);
-        match http.get(&url, Some(MAX_BYTES + 1), &mut redirects) {
+        match http.get(&url, Some(MAX_BYTES + 1), &mut request) {
             Ok(r) => {
                 response = Some(r);
                 break;
@@ -538,15 +542,21 @@ pub fn fetch(http: &mut dyn Http, docid: &str) -> Result<(Vec<u8>, String), Ruli
             Err(Failure::Status(code)) => {
                 failure = format!("HTTP {code}");
                 if code != 429 && code < 500 {
-                    return Err(refused(format!("{docid}: fetch failed ({failure})")));
+                    return Ok(Err(refused(format!("{docid}: fetch failed ({failure})"))));
                 }
             }
             Err(Failure::Transport(name)) => failure = name,
+            Err(Failure::Uncaught(message)) => return Err(Exc::value(message)),
         }
     }
     let Some(response) = response else {
-        return Err(refused(format!("{docid}: fetch failed ({failure})")));
+        return Ok(Err(refused(format!("{docid}: fetch failed ({failure})"))));
     };
+    Ok(verify(docid, response))
+}
+
+/// The fetched page for `docid`, or why it is refused.
+fn verify(docid: &str, response: http::Response) -> Result<(Vec<u8>, String), RulingsError> {
     let parts = pyurl::urlsplit(&response.url)
         .map_err(|_| refused(format!("{docid}: malformed final URL")))?;
     let port =
@@ -700,7 +710,7 @@ pub fn run(
         if index > 0 && REQUEST_SPACING != 0.0 {
             http.sleep(REQUEST_SPACING);
         }
-        let fetched = fetch(http, docid)
+        let fetched = fetch(http, docid)?
             .and_then(|(raw, final_url)| parse_document(&raw, docid).map(|p| (raw, final_url, p)));
         let (raw, final_url, parsed) = match fetched {
             Ok(found) => found,

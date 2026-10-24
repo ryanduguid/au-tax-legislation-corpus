@@ -435,10 +435,14 @@ impl RegisterSession for HttpsSession {
 
     fn get(&mut self, url: &str) -> Result<RegisterExchange, Exc> {
         check_request_url(url)?;
+        let mut request = http::Request::default();
         for attempt in 1..=MAX_ATTEMPTS {
             http::attempt(self.http.as_mut(), attempt);
             self.pace();
-            match self.http.exchange(url, MAX_RESPONSE_BYTES + 1) {
+            match self
+                .http
+                .exchange(url, MAX_RESPONSE_BYTES + 1, &mut request)
+            {
                 Ok(response) => {
                     if retryable(response.status) && attempt < MAX_ATTEMPTS {
                         continue;
@@ -452,6 +456,7 @@ impl RegisterSession for HttpsSession {
                         false,
                     ));
                 }
+                Err(Failure::Uncaught(message)) => return Err(Exc::value(message)),
                 Err(Failure::Transport(_) | Failure::Status(_)) => {
                     if attempt < MAX_ATTEMPTS {
                         continue;

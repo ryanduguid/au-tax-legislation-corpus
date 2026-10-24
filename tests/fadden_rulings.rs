@@ -6,7 +6,7 @@ use std::process::Command;
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
 use tax_radar_au::fadden::Run;
-use tax_radar_au::fadden::http::{Failure, Http, RETRY_DELAY, Redirects, Response};
+use tax_radar_au::fadden::http::{Failure, Http, RETRY_DELAY, Request, Response};
 use tax_radar_au::fadden::rulings::{
     self, BASE_URL, MAX_BYTES, MAX_TARGETS, NOTICE, Parsed, RulingsError, TargetsError,
 };
@@ -116,7 +116,7 @@ impl Http for Script {
         &mut self,
         url: &str,
         limit: Option<usize>,
-        _redirects: &mut Redirects,
+        _request: &mut Request,
     ) -> Result<Response, Failure> {
         self.events.push(format!("GET {url}"));
         let mut next = if self.responses.is_empty() {
@@ -145,7 +145,7 @@ impl Http for Pages {
         &mut self,
         url: &str,
         _limit: Option<usize>,
-        _redirects: &mut Redirects,
+        _request: &mut Request,
     ) -> Result<Response, Failure> {
         let docid = url.strip_prefix(BASE_URL).unwrap();
         self.0
@@ -824,7 +824,7 @@ fn off_site_redirects_non_html_and_oversize_are_refused() {
             responses: vec![response],
             ..Script::default()
         };
-        let error = rulings::fetch(&mut http, DOCID).unwrap_err().0;
+        let error = rulings::fetch(&mut http, DOCID).unwrap().unwrap_err().0;
         assert!(error.contains(message), "{error:?} lacks {message:?}");
     }
 }
@@ -837,6 +837,7 @@ fn client_errors_stop_and_server_errors_retry() {
     };
     assert!(
         rulings::fetch(&mut http, DOCID)
+            .unwrap()
             .unwrap_err()
             .0
             .contains("HTTP 404")
@@ -851,7 +852,7 @@ fn client_errors_stop_and_server_errors_retry() {
         ],
         ..Script::default()
     };
-    let (raw, final_url) = rulings::fetch(&mut http, DOCID).unwrap();
+    let (raw, final_url) = rulings::fetch(&mut http, DOCID).unwrap().unwrap();
     assert_eq!((raw, final_url), (page().into_bytes(), url.clone()));
     assert_eq!(
         http.events,
@@ -868,13 +869,14 @@ fn client_errors_stop_and_server_errors_retry() {
     };
     assert!(
         rulings::fetch(&mut http, DOCID)
+            .unwrap()
             .unwrap_err()
             .0
             .contains("HTTP 404")
     );
 
     let mut http = Script::default();
-    let error = rulings::fetch(&mut http, DOCID).unwrap_err().0;
+    let error = rulings::fetch(&mut http, DOCID).unwrap().unwrap_err().0;
     assert!(error.ends_with("fetch failed (URLError)"), "{error}");
     assert_eq!(
         http.events.iter().filter(|e| e.starts_with("GET")).count(),

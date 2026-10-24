@@ -4,7 +4,7 @@
 use std::path::{Path, PathBuf};
 
 use serde_json::{Value, json};
-use tax_radar_au::fadden::http::{Failure, Http, Redirects, Response};
+use tax_radar_au::fadden::http::{Failure, Http, Request, Response};
 use tax_radar_au::fadden::{Run, probe13};
 
 const RID: &str = "C2099A00001";
@@ -21,7 +21,7 @@ impl Http for Script {
         &mut self,
         url: &str,
         _limit: Option<usize>,
-        _redirects: &mut Redirects,
+        _request: &mut Request,
     ) -> Result<Response, Failure> {
         self.events.push(format!("GET {url}"));
         let next = if self.bodies.is_empty() {

@@ -1369,10 +1369,11 @@ fn the_radar_has_no_network_client() {
                 let radar = path.starts_with(root.join("src").join("radar"))
                     || path == root.join("src").join("main.rs");
                 // std::net's address types parse bracketed URL hosts, as
-                // Python's ipaddress did for urllib.parse; sockets are refused.
-                let mut forbidden = vec!["TcpStream", "UdpSocket", "TcpListener", "ToSocketAddrs"];
+                // Python's ipaddress did for urllib.parse; sockets are refused
+                // but for the client's TCP connections.
+                let mut forbidden = vec!["UdpSocket", "TcpListener"];
                 if path != http {
-                    forbidden.extend(["ureq", "rustls"]);
+                    forbidden.extend(["TcpStream", "ToSocketAddrs", "rustls"]);
                 }
                 if radar {
                     forbidden.extend(["fadden", "http::"]);

@@ -3,7 +3,7 @@
 use std::path::{Path, PathBuf};
 
 use serde_json::{Value, json};
-use tax_radar_au::fadden::http::{Failure, Http, Redirects, Response};
+use tax_radar_au::fadden::http::{Failure, Http, Request, Response};
 use tax_radar_au::fadden::{Exc, Run, versions};
 
 /// Answers each request from `answer`; requests and waits are recorded in order.
@@ -17,7 +17,7 @@ impl<F: FnMut(&str) -> Result<String, Failure>> Http for Script<F> {
         &mut self,
         url: &str,
         _limit: Option<usize>,
-        _redirects: &mut Redirects,
+        _request: &mut Request,
     ) -> Result<Response, Failure> {
         self.events.push(format!("GET {url}"));
         (self.answer)(url).map(|body| Response {
