@@ -1305,6 +1305,9 @@ fn new_directories_are_private_as_python_makes_them() {
     w.export_to(&parent.join("bundles")).unwrap();
     for path in [parent.clone(), parent.join("bundles")] {
         let done = std::process::Command::new("powershell")
+            // PowerShell 7's module path (inherited from a pwsh parent, as on CI)
+            // stops Windows PowerShell loading its own modules.
+            .env_remove("PSModulePath")
             .args([
                 "-NoProfile",
                 "-Command",

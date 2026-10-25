@@ -443,6 +443,9 @@ fn check_build_record(path: &Path, module: &Path, binary: &Path) -> Result<(), S
 fn os_today() -> String {
     let out = if cfg!(windows) {
         Command::new("powershell")
+            // PowerShell 7's module path (inherited from a pwsh parent, as on CI)
+            // stops Windows PowerShell loading its own modules.
+            .env_remove("PSModulePath")
             .args(["-NoProfile", "-Command", "Get-Date -Format yyyy-MM-dd"])
             .output()
     } else {

@@ -967,6 +967,9 @@ fn absent_output_promotes_one_private_directory() {
     assert!(owned_staging(output.parent().unwrap(), &output).is_empty());
     for path in [output.parent().unwrap().to_path_buf(), output.clone()] {
         let done = std::process::Command::new("powershell")
+            // PowerShell 7's module path (inherited from a pwsh parent, as on CI)
+            // stops Windows PowerShell loading its own modules.
+            .env_remove("PSModulePath")
             .args([
                 "-NoProfile",
                 "-Command",
