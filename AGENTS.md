@@ -72,7 +72,7 @@ cargo clippy --locked --all-targets --all-features -- -D warnings
 cargo test --locked
 cargo test --locked --features fake-http --test fadden_golden
 cargo build --locked --release
-cargo install cargo-audit --locked --version 0.22.2 && cargo audit
+cargo install cargo-audit --locked --version 0.22.2 && cargo audit && cargo audit --file fuzz/Cargo.lock
 uv run --locked --extra dev ruff check .
 uv run --locked --extra dev mypy
 uv audit --locked --no-config --python-version 3.14
