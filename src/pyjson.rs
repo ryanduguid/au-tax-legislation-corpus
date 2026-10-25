@@ -612,15 +612,98 @@ pub fn loads_bytes(data: &[u8]) -> Result<Json, Option<DecodeError>> {
         )
     })()
     .ok_or(None)?;
-    // A raw lone surrogate becomes an escape, which the scanner turns back into one.
-    let mut text = String::with_capacity(points.len());
-    for cp in points {
-        match char::from_u32(cp) {
-            Some(c) => text.push(c),
-            None => text.push_str(&format!("\\u{cp:04x}")),
-        }
+    // A raw lone surrogate is scanned as an unused code point standing in for
+    // it, one character as it is, so it neither pairs with an escape beside
+    // it nor moves an error's position, and is given back in every string.
+    // An escaped pair decodes to a supplementary character the input need
+    // not hold literally, so the stand-ins avoid those characters too.
+    let mut seen = points.clone();
+    seen.extend(escaped_pairs(&points));
+    let pairs = surrogate_stand_ins(&seen).ok_or(None)?;
+    let hide: std::collections::HashMap<u32, u32> = pairs.iter().copied().collect();
+    let text: String = points
+        .iter()
+        .filter_map(|cp| char::from_u32(*hide.get(cp).unwrap_or(cp)))
+        .collect();
+    let value = loads_standard(&text).map_err(Some)?;
+    if pairs.is_empty() {
+        return Ok(value);
     }
-    loads_standard(&text).map_err(Some)
+    let show: std::collections::HashMap<u32, u32> = pairs.iter().map(|&(s, f)| (f, s)).collect();
+    Ok(restore(value, &show))
+}
+
+/// The value with each stand-in in its strings put back as its surrogate.
+fn restore(value: Json, show: &std::collections::HashMap<u32, u32>) -> Json {
+    let text = |s: PyStr| {
+        PyStr::from_code_points(s.points().map(|cp| *show.get(&cp).unwrap_or(&cp)).collect())
+    };
+    match value {
+        Json::Str(s) => Json::Str(text(s)),
+        Json::Array(items) => Json::Array(items.into_iter().map(|v| restore(v, show)).collect()),
+        Json::Object(pairs) => {
+            // Keys that meet once restored are one dict key: the first
+            // position and the last value.
+            let mut merged: Vec<(PyStr, Json)> = Vec::with_capacity(pairs.len());
+            let mut at: std::collections::HashMap<Vec<u32>, usize> =
+                std::collections::HashMap::new();
+            for (k, v) in pairs {
+                let (k, v) = (text(k), restore(v, show));
+                match at.entry(k.points().collect::<Vec<u32>>()) {
+                    std::collections::hash_map::Entry::Occupied(seen) => merged[*seen.get()].1 = v,
+                    std::collections::hash_map::Entry::Vacant(slot) => {
+                        slot.insert(merged.len());
+                        merged.push((k, v));
+                    }
+                }
+            }
+            Json::Object(merged)
+        }
+        other => other,
+    }
+}
+
+/// The character each `\uD8xx\uDCxx` escape pair in `points` decodes to,
+/// whatever backslashes precede it: a superset of the pairs the scanner reads.
+fn escaped_pairs(points: &[u32]) -> Vec<u32> {
+    let unit = |w: &[u32]| -> Option<u32> {
+        if w[..2] != [u32::from('\\'), u32::from('u')] {
+            return None;
+        }
+        w[2..6]
+            .iter()
+            .try_fold(0, |n, &d| Some(n * 16 + char::from_u32(d)?.to_digit(16)?))
+    };
+    points
+        .windows(12)
+        .filter_map(|w| {
+            let (high, low) = (unit(&w[..6])?, unit(&w[6..])?);
+            ((0xD800..0xDC00).contains(&high) && (0xDC00..0xE000).contains(&low))
+                .then(|| 0x1_0000 + ((high - 0xD800) << 10) + (low - 0xDC00))
+        })
+        .collect()
+}
+
+/// Pairs each distinct lone surrogate in `points` with an unused code point
+/// from U+40000 to U+DFFFF or U+F0000 to U+10FFFF, or None when too few are free.
+fn surrogate_stand_ins(points: &[u32]) -> Option<Vec<(u32, u32)>> {
+    let mut lone: Vec<u32> = points
+        .iter()
+        .copied()
+        .filter(|cp| (0xD800..=0xDFFF).contains(cp))
+        .collect();
+    if lone.is_empty() {
+        return Some(Vec::new());
+    }
+    lone.sort_unstable();
+    lone.dedup();
+    let used: std::collections::HashSet<u32> = points.iter().copied().collect();
+    let mut free = (0x4_0000..0xE_0000)
+        .chain(0xF_0000..=0x10_FFFF)
+        .filter(|cp| !used.contains(cp));
+    lone.into_iter()
+        .map(|surrogate| free.next().map(|stand_in| (surrogate, stand_in)))
+        .collect()
 }
 
 fn utf8_surrogatepass(data: &[u8]) -> Option<Vec<u32>> {
@@ -836,6 +919,82 @@ mod tests {
             err("[{\"a\":1, }, {\"a\":1,\"a\":2}]"),
             DecodeError::Invalid(_)
         ));
+    }
+
+    /// CPython 3.15's `json.loads(bytes)` on raw (surrogatepass) and escaped
+    /// surrogates: only 2 escapes pair.
+    #[test]
+    fn raw_surrogates_in_bytes_stay_apart_from_escapes() {
+        let lone = |points: &[u32]| Json::Str(PyStr::Lone(points.to_vec()));
+        let x = |value: Json| Ok(Json::Object(vec![(PyStr::Text("x".into()), value)]));
+        assert_eq!(
+            loads_bytes(b"{\"x\":\"\xed\xa0\x80\\udc00\"}"),
+            x(lone(&[0xD800, 0xDC00]))
+        );
+        assert_eq!(
+            loads_bytes(b"{\"x\":\"\\ud800\xed\xb0\x80\"}"),
+            x(lone(&[0xD800, 0xDC00]))
+        );
+        assert_eq!(
+            loads_bytes(b"{\"x\":\"\\ud800\\udc00\"}"),
+            x(Json::str("\u{10000}"))
+        );
+        let invalid = |m: &str| Err(Some(DecodeError::Invalid(m.to_string())));
+        assert_eq!(
+            loads_bytes(b"{\"x\":\"\xed\xa0\x80\",}"),
+            invalid("Illegal trailing comma before end of object: line 1 column 9 (char 8)")
+        );
+        assert_eq!(
+            loads_bytes(b"[\"\xed\xa0\x80\", \xed\xa0\x80]"),
+            invalid("Expecting value: line 1 column 7 (char 6)")
+        );
+        assert_eq!(
+            loads_bytes(b"{\"\xed\xa0\x80\": 1, \"k\": \"\xed\xb0\x80\xed\xa0\x80\"}"),
+            Ok(Json::Object(vec![
+                (PyStr::Lone(vec![0xD800]), Json::Int(1.into())),
+                (PyStr::Text("k".into()), lone(&[0xDC00, 0xD800])),
+            ]))
+        );
+    }
+
+    /// CPython 3.15: an escaped pair is never taken for a raw surrogate's
+    /// stand-in, and raw and escaped spellings of a key are one key.
+    #[test]
+    fn stand_ins_avoid_escaped_pairs_and_restored_keys_merge() {
+        let lone = |cp: u32| PyStr::Lone(vec![cp]);
+        let key = |k: &str| PyStr::Text(k.into());
+        assert_eq!(
+            loads_bytes(b"{\"raw\":\"\xed\xa0\x80\",\"escaped\":\"\\ud8c0\\udc00\"}"),
+            Ok(Json::Object(vec![
+                (key("raw"), Json::Str(lone(0xD800))),
+                (key("escaped"), Json::str("\u{40000}")),
+            ]))
+        );
+        let one = Ok(Json::Object(vec![(lone(0xD800), Json::Int(2.into()))]));
+        assert_eq!(loads_bytes(b"{\"\xed\xa0\x80\":1,\"\\ud800\":2}"), one);
+        assert_eq!(loads_bytes(b"{\"\\ud800\":1,\"\xed\xa0\x80\":2}"), one);
+        assert_eq!(
+            loads_bytes(b"{\"a\":{\"\xed\xa0\x80\":1,\"b\":0,\"\\ud800\":2},\"\\ud800\":[3]}"),
+            Ok(Json::Object(vec![
+                (
+                    key("a"),
+                    Json::Object(vec![
+                        (lone(0xD800), Json::Int(2.into())),
+                        (key("b"), Json::Int(0.into())),
+                    ])
+                ),
+                (lone(0xD800), Json::Array(vec![Json::Int(3.into())])),
+            ]))
+        );
+        assert_eq!(
+            loads_bytes(b"[\"\\\\ud8c0\\udc00\", \"\xed\xa0\x80\"]"),
+            Ok(Json::Array(vec![
+                Json::Str(PyStr::Lone(
+                    "\\ud8c0".chars().map(u32::from).chain([0xDC00]).collect()
+                )),
+                Json::Str(lone(0xD800)),
+            ]))
+        );
     }
 
     #[test]
