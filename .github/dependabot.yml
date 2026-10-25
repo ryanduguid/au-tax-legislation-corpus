@@ -9,7 +9,10 @@ updates:
     open-pull-requests-limit: 5
 
   - package-ecosystem: cargo
-    directory: /
+    # fuzz/ is its own workspace with its own lock file.
+    directories:
+      - /
+      - /fuzz
     schedule:
       interval: weekly
     cooldown:

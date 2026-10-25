@@ -4,7 +4,7 @@
 ## Package overview
 - **Repository**: https://github.com/ryanduguid/au-tax-legislation-corpus
 - **Version**: 0.3.0, released as the tag `v0.3.0`. Releases carry deterministic source archives built from Git with an SPDX 2.3 SBOM, `SHA256SUMS` and provenance attestations. They never carry a corpus or a builder wheel.
-- **Licence**: Apache-2.0 for the code (`LICENSE`). Generated corpus output is derived from the Federal Register's CC BY 4.0 material and carries its own source and licence records. The EPUBs embed the Commonwealth Coat of Arms, which the CC BY grant excludes, so `dist.py` exists to separate what may be redistributed from what may not.
+- **Licence**: Apache-2.0 for the code (`LICENSE`). Generated corpus output is derived from the Federal Register's CC BY 4.0 material and carries its own source and licence records. The EPUBs embed the Commonwealth Coat of Arms, which the CC BY grant excludes, so the `dist` stage of the Rust `fadden` binary separates what may be redistributed from what may not.
 - **Packaging**: the review queue is the standalone Rust binary `tax-radar-au` (crate `tax-radar-au` 1.0.0, built with `cargo build --locked --release`); its Python import package `tax_radar_au` was removed. The Python distribution keeps the name `tax-radar-au` and carries the builder, which is not published to PyPI and has no console script; it runs as `python -m fadden <stage>`.
 - **Python**: the development checkout requires 3.14 or later. Tests run on Python 3.14 and 3.15 on Ubuntu, plus Windows 3.14 coverage for the supported live-evidence export boundary. The radar's Rust tests, Clippy and formatting run on Ubuntu and Windows.
 

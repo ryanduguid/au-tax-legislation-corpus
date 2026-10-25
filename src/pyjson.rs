@@ -686,6 +686,9 @@ fn escaped_pairs(points: &[u32]) -> Vec<u32> {
 
 /// Pairs each distinct lone surrogate in `points` with an unused code point
 /// from U+40000 to U+DFFFF or U+F0000 to U+10FFFF, or None when too few are free.
+/// shortcut: None makes `loads_bytes` refuse the document as undecodable, a
+/// departure from CPython reachable only by a document holding nearly all
+/// 786,432 candidates; a stand-in-free decoder would remove it.
 fn surrogate_stand_ins(points: &[u32]) -> Option<Vec<(u32, u32)>> {
     let mut lone: Vec<u32> = points
         .iter()
@@ -919,6 +922,20 @@ mod tests {
             err("[{\"a\":1, }, {\"a\":1,\"a\":2}]"),
             DecodeError::Invalid(_)
         ));
+    }
+
+    /// A document already holding every stand-in candidate (786,432 code
+    /// points) beside a raw lone surrogate is refused as undecodable, where
+    /// CPython would decode it; no such input has met the radar.
+    #[test]
+    fn a_raw_surrogate_without_a_free_stand_in_is_refused() {
+        let mut data = b"[\"".to_vec();
+        for cp in (0x4_0000..0xE_0000).chain(0xF_0000..=0x10_FFFF) {
+            let mut buf = [0; 4];
+            data.extend_from_slice(char::from_u32(cp).unwrap().encode_utf8(&mut buf).as_bytes());
+        }
+        data.extend_from_slice(b"\xed\xa0\x80\"]");
+        assert_eq!(loads_bytes(&data), Err(None));
     }
 
     /// CPython 3.15's `json.loads(bytes)` on raw (surrogatepass) and escaped
