@@ -88,10 +88,19 @@ fn copy_module(to: &Path) {
 }
 
 /// `str(path)` as stage output may spell it: native, with forward slashes,
-/// and with escaped backslashes, longest first.
+/// and with escaped backslashes, longest first. The long form counts too: a
+/// Windows runner's TEMP can be an 8.3 short name (`RUNNER~1`), whilst the
+/// working directory a stage reads back is the long one.
 fn forms(path: &Path) -> Vec<String> {
-    let text = path.to_string_lossy().into_owned();
-    let mut forms = vec![text.replace('\\', "/"), text.replace('\\', "\\\\"), text];
+    let mut texts = vec![path.to_string_lossy().into_owned()];
+    if let Ok(long) = std::fs::canonicalize(path) {
+        let long = long.to_string_lossy().into_owned();
+        texts.push(long.strip_prefix(r"\\?\").unwrap_or(&long).to_string());
+    }
+    let mut forms: Vec<String> = texts
+        .into_iter()
+        .flat_map(|text| [text.replace('\\', "/"), text.replace('\\', "\\\\"), text])
+        .collect();
     forms.sort();
     forms.dedup();
     forms.sort_by_key(|f| std::cmp::Reverse(f.len()));
