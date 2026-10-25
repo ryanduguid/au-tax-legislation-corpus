@@ -26,7 +26,8 @@ pub fn splitroot(p: &str) -> (&str, &str, &str) {
     let n = normp.as_bytes();
     if n.first() == Some(&b'\\') {
         if n.get(1) == Some(&b'\\') {
-            let start = if n.len() >= 8 && normp[..8].eq_ignore_ascii_case("\\\\?\\UNC\\") {
+            // Bytes, not `normp[..8]`: byte 8 can fall inside a character.
+            let start = if n.len() >= 8 && n[..8].eq_ignore_ascii_case(b"\\\\?\\UNC\\") {
                 8
             } else {
                 2
@@ -615,5 +616,46 @@ mod tests {
         assert_eq!(normpath("\\\\server\\share\\.."), "\\\\server\\share\\");
         assert!(PyPath::new("A\\B").same(&PyPath::new("a/b")));
         assert_eq!(realpath("nul").unwrap(), "\\\\.\\NUL");
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn unc_roots_with_a_character_across_byte_8() {
+        // CPython 3.14.8's ntpath.splitroot on each.
+        for (path, drive, root, tail) in [
+            (
+                "\\\\abcd\u{e9}\\share\\file",
+                "\\\\abcd\u{e9}\\share",
+                "\\",
+                "file",
+            ),
+            (
+                "\\\\abcde\u{e9}\\share\\file",
+                "\\\\abcde\u{e9}\\share",
+                "\\",
+                "file",
+            ),
+            (
+                "\\\\abcdef\u{e9}\\share\\file",
+                "\\\\abcdef\u{e9}\\share",
+                "\\",
+                "file",
+            ),
+            (
+                "\\\\?\\UNC\\srv\\share\\x",
+                "\\\\?\\UNC\\srv\\share",
+                "\\",
+                "x",
+            ),
+            (
+                "\\\\?\\unc\\\u{e9}srv\\share",
+                "\\\\?\\unc\\\u{e9}srv\\share",
+                "",
+                "",
+            ),
+            ("//?/UNC/srv/share/x", "//?/UNC/srv/share", "/", "x"),
+        ] {
+            assert_eq!(splitroot(path), (drive, root, tail), "{path}");
+        }
     }
 }
