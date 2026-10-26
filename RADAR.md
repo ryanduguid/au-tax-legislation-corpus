@@ -1,6 +1,6 @@
 # Tax Radar AU
 
-[![tests](https://img.shields.io/github/actions/workflow/status/ryanduguid/au-tax-legislation-corpus/ci.yml?label=tests&style=flat&labelColor=000000)](https://github.com/ryanduguid/au-tax-legislation-corpus/actions/workflows/ci.yml) [![License: Apache-2.0](https://img.shields.io/badge/License-Apache--2.0-66023C.svg?labelColor=000000&style=flat&color=66023C)](LICENSE) [![Python 3.14+](https://img.shields.io/badge/python-3.14%2B-66023C.svg?logo=python&logoColor=E5E4E2&labelColor=000000&style=flat&color=66023C)](https://www.python.org/downloads/)
+[![tests](https://img.shields.io/github/actions/workflow/status/ryanduguid/au-tax-legislation-corpus/ci.yml?label=tests&style=flat&labelColor=000000)](https://github.com/ryanduguid/au-tax-legislation-corpus/actions/workflows/ci.yml) [![License: FSL-1.1-ALv2](https://img.shields.io/badge/License-FSL--1.1--ALv2-66023C.svg?labelColor=000000&style=flat&color=66023C)](LICENSE) [![Python 3.14+](https://img.shields.io/badge/python-3.14%2B-66023C.svg?logo=python&logoColor=E5E4E2&labelColor=000000&style=flat&color=66023C)](https://www.python.org/downloads/)
 
 This is a provenance-first change-review queue. It does not answer tax questions and it does not update skills automatically.
 
@@ -143,4 +143,4 @@ python -m build
 ```
 
 
-Apache-2.0 licensed. If you redistribute this work or build on it, keep the attribution in [NOTICE](NOTICE).
+Licensed under the Functional Source License, Version 1.1, ALv2 Future License (FSL-1.1-ALv2). You may use, modify and redistribute it for any purpose except a Competing Use as defined in LICENSE (making it available to others in a competing commercial product or service), and each version becomes available under Apache-2.0 two years after it is made available. See [LICENSE](LICENSE) and [NOTICE](NOTICE). If you redistribute this work or build on it, keep the copyright notices in [NOTICE](NOTICE).
