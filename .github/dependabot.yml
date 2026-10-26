@@ -8,6 +8,17 @@ updates:
       default-days: 7
     open-pull-requests-limit: 5
 
+  - package-ecosystem: cargo
+    # fuzz/ is its own workspace with its own lock file.
+    directories:
+      - /
+      - /fuzz
+    schedule:
+      interval: weekly
+    cooldown:
+      default-days: 7
+    open-pull-requests-limit: 5
+
   - package-ecosystem: github-actions
     directory: /
     schedule:

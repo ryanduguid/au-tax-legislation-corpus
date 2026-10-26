@@ -26,20 +26,16 @@ Issues = "https://github.com/ryanduguid/au-tax-legislation-corpus/issues"
 dev = [
     "ruff>=0.11", "mypy>=1.14", "build>=1.2", "pytest>=8", "coverage==7.16.2"]
 
-[project.scripts]
-tax-radar-au = "tax_radar_au.cli:main"
-
 [tool.setuptools]
 # The distribution name stays tax-radar-au: nothing consumes it on PyPI, and
-# the wheel, CLI and existing release assets keep their identity. fadden joins
-# it so `python -m fadden` resolves after `pip install -e .` instead of only
-# from inside the clone. Its stage data (manifest_md.json, the title lists)
-# stays out: the builder reads and writes beside its own modules in a checkout.
-packages = ["tax_radar_au", "fadden"]
+# the wheel and existing release assets keep their identity. The review queue
+# and its tax-radar-au command are the Rust binary built by Cargo.toml; the
+# wheel carries the corpus builder, so `python -m fadden` resolves after
+# `pip install -e .` instead of only from inside the clone. Its stage data
+# (manifest_md.json, the title lists) stays out: the builder reads and writes
+# beside its own modules in a checkout.
+packages = ["fadden"]
 include-package-data = false
-
-[tool.setuptools.package-data]
-tax_radar_au = ["samples/*/*.json", "py.typed"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
@@ -52,7 +48,7 @@ faulthandler_timeout = 300
 [tool.ruff]
 target-version = "py314"
 line-length = 100
-src = ["tax_radar_au", "fadden", "tools", "tests"]
+src = ["fadden", "tools", "tests"]
 
 [tool.ruff.lint]
 # Whole-repository set: import layout (E4, I), statement-level mistakes (E7),
@@ -67,13 +63,17 @@ core = "ctrace"
 
 [tool.coverage.report]
 # The ubuntu coverage leg cannot run the Windows-only live-evidence publication
-# transaction (ctypes.WinDLL, msvcrt), so the floor sits below 100.
-fail_under = 96
+# transaction (ctypes.WinDLL, msvcrt), so the floor sits below 100. Those 182
+# lines (181 before the UTF-16 name-length fix) predate the Rust port; moving
+# stages to the Rust fadden binary removed about 2,500 covered Python
+# statements, which lowered the total from 97% to 94%. Removing discover,
+# versions, extract and finalize took out 926 more, leaving 92.07%.
+fail_under = 92
 exclude_also = ['if __name__ == "__main__":']
 
 [tool.mypy]
 python_version = "3.14"
-packages = ["tax_radar_au", "fadden"]
+packages = ["fadden"]
 ignore_missing_imports = true
 pretty = true
 

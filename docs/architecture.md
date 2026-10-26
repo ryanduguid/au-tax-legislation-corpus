@@ -26,10 +26,11 @@ real defect. The short version:
 - **Never filter images by byte size.** Doing so deleted a GST decision
   flowchart and a maintenance-income formula.
 - **The same-named helpers in the evidence stages are not duplicates.**
-  `capture_register.py`, `export_live_evidence_bundles.py`,
-  `export_publication_bundles.py` and `export_monitor_contract.py` share
-  14 private helper names, and every one of them has drifted. None of the
-  pairs is byte-identical, so none belongs in `corpus_paths.py`. Some carry a
+  `capture_register.py`, `export_live_evidence_bundles.py` and the
+  publication and monitor exporters (now `src/fadden/publication_bundles.rs`
+  and `src/fadden/monitor_contract.rs`) shared 14 private helper names when
+  all 4 were Python, and every one of them had drifted. None of the pairs was
+  byte-identical, so none belongs in a shared helper module. Some carry a
   different rule, not just a different error class: the live-evidence
   `_json_bytes` sets `allow_nan=False`, its `_write_new` creates at mode 0o600
   through `os.open` rather than `open(path, "xb")`, and its

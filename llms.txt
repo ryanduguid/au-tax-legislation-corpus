@@ -1,12 +1,12 @@
 # au-tax-legislation-corpus
-> Two halves in one repository: `fadden`, a builder that retrieves in-force Commonwealth tax legislation from the Federal Register and turns it into retrieval material, and `tax_radar_au`, a synthetic provenance-first review queue that consumes a reviewed observation contract.
+> Two halves in one repository: `fadden`, a builder that retrieves in-force Commonwealth tax legislation from the Federal Register and turns it into retrieval material, and `tax-radar-au`, a Rust binary running a synthetic provenance-first review queue that consumes a reviewed observation contract.
 
 ## Package overview
 - **Repository**: https://github.com/ryanduguid/au-tax-legislation-corpus
 - **Version**: 0.3.0, released as the tag `v0.3.0`. Releases carry deterministic source archives built from Git with an SPDX 2.3 SBOM, `SHA256SUMS` and provenance attestations. They never carry a corpus or a builder wheel.
-- **Licence**: release 0.3.0 is Apache-2.0 for the code. `main` and later releases are FSL-1.1-ALv2 for the code (`LICENSE`, `NOTICE`); each FSL version also becomes available under Apache-2.0 two years after it is made available. Generated corpus output is derived from the Federal Register's CC BY 4.0 material and carries its own source and licence records. The EPUBs embed the Commonwealth Coat of Arms, which the CC BY grant excludes, so `dist.py` exists to separate what may be redistributed from what may not.
-- **Packaging**: the distribution, import package and CLI command for the review queue remain `tax-radar-au` / `tax_radar_au`. The builder is not published to PyPI and has no console script; it runs as `python -m fadden <stage>`.
-- **Python**: the development checkout requires 3.14 or later. Tests run on Python 3.14 and 3.15 on Ubuntu, plus Windows 3.14 coverage for the radar and supported live-evidence export boundary.
+- **Licence**: release 0.3.0 is Apache-2.0 for the code. `main` and later releases are FSL-1.1-ALv2 for the code (`LICENSE`, `NOTICE`); each FSL version also becomes available under Apache-2.0 two years after it is made available. Generated corpus output is derived from the Federal Register's CC BY 4.0 material and carries its own source and licence records. The EPUBs embed the Commonwealth Coat of Arms, which the CC BY grant excludes, so the `dist` stage of the Rust `fadden` binary separates what may be redistributed from what may not.
+- **Packaging**: the review queue is the standalone Rust binary `tax-radar-au` (crate `tax-radar-au` 1.0.0, built with `cargo build --locked --release`); its Python import package `tax_radar_au` was removed. The Python distribution keeps the name `tax-radar-au` and carries the builder, which is not published to PyPI and has no console script; it runs as `python -m fadden <stage>`.
+- **Python**: the development checkout requires 3.14 or later. Tests run on Python 3.14 and 3.15 on Ubuntu, plus Windows 3.14 coverage for the supported live-evidence export boundary. The radar's Rust tests, Clippy and formatting run on Ubuntu and Windows.
 
 ## Corpus builder (`fadden`)
 - **Stages**: `discover`, `versions`, `download`, `probe13`, `retry13`, `extract`, `pii_scan`, `pii_scan2`, `finalize`, `rates`, `check_current`, `dist`, `dist_verify`, `export_monitor_contract`, `export_publication_bundles`, `capture_register`, `export_live_evidence_bundles`, plus the separate `rulings`, `as_at`, `compare_builds` and `search` stages. `BUILD.md` documents the order and the operating boundaries.
@@ -18,7 +18,7 @@
 - **Local search (`search`)**: indexes a finished corpus into one SQLite file (standard-library FTS5) after checking every row's provenance against `sources.json`, then answers full-text queries, defined-term lookups from definitions rows and section, Division and Subdivision cross-references. Every hit carries its `row_id`, compilation and Register page; none of it is authorised text.
 - **Evidence contracts**: live Register capture, synthetic observations and publication candidates are distinct. A successful capture or export authorises nothing for publication.
 
-## Review queue (`tax_radar_au`)
+## Review queue (`tax-radar-au`)
 - **Domain**: a synthetic, provenance-first review-queue demonstration over supplied Commonwealth tax-source metadata. It does not read or store source text.
 - **Supplied metadata comparison**: compares a fabricated source index, a fabricated Register-observation contract and an exact source-to-workflow map. The queue itself makes no network request and never scrapes the Register.
 - **Review evidence binding**: SHA-256 source digests, run identifiers and a complete queue digest bind a human decision to the exact queue reviewed.

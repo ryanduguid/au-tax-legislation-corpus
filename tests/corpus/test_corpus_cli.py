@@ -4,9 +4,10 @@ from __future__ import annotations
 
 import argparse
 import contextlib
-import importlib
+import importlib.util
 import io
 import unittest
+from pathlib import Path
 from unittest import mock
 
 from fadden import STAGES
@@ -30,44 +31,67 @@ class FaddenCliTests(unittest.TestCase):
         # The dispatcher imports fadden.<stage> for real; the mocked
         # forwarding test below cannot catch a stage whose bare imports only
         # resolve in the flat deployed layout. This one imports every stage
-        # the way `python -m fadden` does.
+        # the way `python -m fadden` does. Rust stages have no module.
         for stage in STAGES:
+            if importlib.util.find_spec(f"fadden.{stage}") is None:
+                continue
             with self.subTest(stage=stage):
                 importlib.import_module(f"fadden.{stage}")
 
-    def test_extract_dispatch_passes_the_forwarded_date(self) -> None:
-        # extract.main takes the retrieval date as a parameter and reads
-        # sys.argv only under its own __main__ guard, which never runs under
-        # the dispatcher; the date must be forwarded as an argument.
-        with mock.patch("importlib.import_module") as importer:
-            module = mock.Mock()
-            module.main.return_value = 0
-            importer.return_value = module
-            self.assertEqual(main(["extract", "--", "2026-08-22"]), 0)
-            module.main.assert_called_once_with("2026-08-22")
-
     def test_stage_dispatch_forwards_remaining_arguments(self) -> None:
-        for stage in (
-            "export_monitor_contract",
-            "export_publication_bundles",
-            "capture_register",
-            "export_live_evidence_bundles",
-            "as_at",
-            "compare_builds",
-            "search",
-        ):
+        for stage in ("capture_register", "export_live_evidence_bundles"):
             with self.subTest(stage=stage), mock.patch("importlib.import_module") as importer:
                 module = mock.Mock()
                 module.main.return_value = 0
                 importer.return_value = module
-                forwarded = (
-                    ["a.json", "--out", "out"]
-                    if stage in {"capture_register", "export_live_evidence_bundles", "as_at"}
-                    else ["a.json", "b.json", "--out", "out"]
-                )
+                forwarded = ["a.json", "--out", "out"]
                 self.assertEqual(main([stage, "--", *forwarded]), 0)
                 importer.assert_called_once_with(f"fadden.{stage}")
                 module.main.assert_called_once_with(forwarded)
+
+    def test_rust_stages_run_the_fadden_binary_with_their_arguments(self) -> None:
+        import fadden.__main__ as dispatcher
+
+        for stage in sorted(dispatcher.RUST_STAGES):
+            with self.subTest(stage=stage), \
+                    mock.patch.object(dispatcher, "rust_binary", return_value="fadden-bin"), \
+                    mock.patch.object(dispatcher.subprocess, "run") as run:
+                run.return_value.returncode = 3
+                self.assertEqual(main([stage, "--", "a", "--json"]), 3)
+                command = run.call_args.args[0]
+                self.assertEqual(command, ["fadden-bin", stage, "a", "--json"])
+                module_dir = run.call_args.kwargs["env"]["FADDEN_MODULE_DIR"]
+                self.assertEqual(Path(module_dir), Path(dispatcher.__file__).resolve().parent)
+
+    def test_a_rust_stage_without_a_built_binary_says_how_to_build_it(self) -> None:
+        import fadden.__main__ as dispatcher
+
+        with mock.patch.object(dispatcher, "rust_binary", return_value=None), \
+                mock.patch("sys.stderr", new_callable=io.StringIO) as stderr:
+            self.assertEqual(main(["as_at", "2026-08-01"]), 1)
+        self.assertIn("cargo build --locked --release", stderr.getvalue())
+
+    def test_the_binary_is_fadden_bin_then_a_cargo_build_then_path(self) -> None:
+        import fadden.__main__ as dispatcher
+
+        with mock.patch.dict(dispatcher.os.environ, {"FADDEN_BIN": "/opt/fadden"}):
+            self.assertEqual(dispatcher.rust_binary(), "/opt/fadden")
+        with mock.patch.dict(dispatcher.os.environ, {"FADDEN_BIN": ""}):
+            with mock.patch.object(
+                dispatcher.Path,
+                "is_file",
+                autospec=True,
+                side_effect=lambda candidate: candidate.parent.name == "debug",
+            ):
+                found = Path(dispatcher.rust_binary() or "")
+            self.assertEqual(found.parent.name, "debug")
+            self.assertEqual(found.parent.parent.name, "target")
+            with (
+                mock.patch.object(dispatcher.Path, "is_file", return_value=False),
+                mock.patch.object(dispatcher.shutil, "which", return_value="/usr/bin/fadden") as which,
+            ):
+                self.assertEqual(dispatcher.rust_binary(), "/usr/bin/fadden")
+            which.assert_called_once_with("fadden")
 
     def _dispatch(self, *argv: str) -> mock.Mock:
         with mock.patch("importlib.import_module") as importer:
@@ -77,22 +101,16 @@ class FaddenCliTests(unittest.TestCase):
             self.assertEqual(main(list(argv)), 0)
         return module.main
 
-    def test_finalize_dispatch_passes_today(self) -> None:
-        with mock.patch("fadden.__main__.datetime") as clock:
-            clock.date.today.return_value.isoformat.return_value = "2026-10-13"
-            stage_main = self._dispatch("finalize")
-        stage_main.assert_called_once_with("2026-10-13")
-
     def test_a_stage_without_parameters_is_called_bare(self) -> None:
-        self._dispatch("discover").assert_called_once_with()
+        self._dispatch("download").assert_called_once_with()
 
     def test_a_separator_left_by_argparse_is_stripped(self) -> None:
         # Whether argparse keeps "--" in a REMAINDER list depends on the
         # interpreter version, so the parsed result is fixed here.
-        parsed = argparse.Namespace(stage="extract", stage_args=["--", "2026-08-22"])
+        parsed = argparse.Namespace(stage="capture_register", stage_args=["--", "2026-08-22"])
         with mock.patch.object(argparse.ArgumentParser, "parse_args", return_value=parsed):
-            stage_main = self._dispatch("extract")
-        stage_main.assert_called_once_with("2026-08-22")
+            stage_main = self._dispatch("capture_register")
+        stage_main.assert_called_once_with(["2026-08-22"])
 
     def test_stage_roster_is_the_documented_pipeline(self) -> None:
         self.assertEqual(

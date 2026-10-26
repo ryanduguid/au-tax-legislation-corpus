@@ -423,9 +423,12 @@ def _open_pinned_child(
     desired_access: int = _GENERIC_READ | _SYNCHRONIZE,
 ) -> int:
     name_buffer = ctypes.create_unicode_buffer(name)
+    # Lengths count UTF-16 code units: a character outside the Basic
+    # Multilingual Plane takes 2.
+    units = len(name.encode("utf-16-le", "surrogatepass")) // 2
     unicode_name = _UnicodeString(
-        len(name) * 2,
-        (len(name) + 1) * 2,
+        units * 2,
+        (units + 1) * 2,
         ctypes.cast(name_buffer, wintypes.LPWSTR),
     )
     attributes = _ObjectAttributes(
@@ -1248,7 +1251,7 @@ def _promote_no_replace(staging: Path, destination: Path, owned: _OwnedStaging) 
         raise LiveEvidenceBundleError("live evidence promotion boundary is invalid.")
     if os.name != "nt":
         raise LiveEvidenceBundleError("live evidence output parent changed before staging cleanup.")
-    encoded_name = destination.name.encode("utf-16le")
+    encoded_name = destination.name.encode("utf-16le", "surrogatepass")
     name_offset = _FileRenameInfo.file_name_length.offset + ctypes.sizeof(wintypes.DWORD)
     size = ctypes.sizeof(_FileRenameInfo) + len(encoded_name)
     buffer = ctypes.create_string_buffer(size)

@@ -3,4 +3,3 @@ include NOTICE
 include README.md
 include SECURITY.md
 include VERSION
-recursive-include tax_radar_au/samples *.json

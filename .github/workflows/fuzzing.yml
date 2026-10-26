@@ -2,8 +2,8 @@ name: Fuzzing
 
 # A 60-second random exploration is not a repeatable merge gate, so it runs
 # after merge, weekly and on demand rather than on pull requests, and no gate
-# requires it. tests/corpus/test_fuzz_harness.py replays the seed corpus in
-# the unit tests.
+# requires it. tests/fadden_pii.rs replays the seed corpus in the unit tests.
+# cargo-fuzz needs nightly Rust; only this job uses it.
 on:
   push:
     branches: [main]
@@ -17,7 +17,7 @@ permissions:
 jobs:
   fuzzing:
     name: fuzz the privacy patterns
-    timeout-minutes: 5
+    timeout-minutes: 15
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -26,15 +26,21 @@ jobs:
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - name: Set up Python
-        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
-        with:
-          python-version: "3.14"
-      - name: Install the pinned fuzzer
+      - name: Install nightly Rust and the pinned cargo-fuzz
         run: >-
-          python -m pip install --require-hashes --only-binary :all:
-          --requirement fuzz/requirements-fuzz.txt
+          rustup toolchain install nightly --profile minimal &&
+          cargo install cargo-fuzz --locked --version 0.13.2
       - name: Fuzz the patterns
         run: >-
-          python -m fuzz.privacy_patterns fuzz/corpus
+          cargo +nightly fuzz run privacy_patterns fuzz/corpus --
           -max_total_time=60 -max_len=4096 -timeout=2 -rss_limit_mb=1024
+      # The other targets grow a scratch copy of their seeds, never the checkout.
+      - name: Fuzz the pattern engines, JSON decoder and sort
+        shell: bash
+        run: |
+          for target in pattern_engines json_decode python_sort; do
+            corpus="$RUNNER_TEMP/$target"
+            mkdir -p "$corpus"
+            cp fuzz/seeds/"$target"/* "$corpus"/
+            cargo +nightly fuzz run "$target" "$corpus" -- -max_total_time=60 -max_len=4096 -timeout=2 -rss_limit_mb=1024
+          done

@@ -784,6 +784,20 @@ class LiveEvidenceGraphTests(unittest.TestCase):
                 self.assertEqual(list((root / "output").iterdir()), [])
 
     @WINDOWS_ONLY_EXPORT
+    def test_a_capture_path_outside_the_basic_multilingual_plane_is_pinned(self) -> None:
+        """Native name lengths count UTF-16 units, so such a path names itself.
+
+        A lone surrogate, which a Windows name can hold, is one unit.
+        """
+        for component in ("x\U0001f600y", "x\ud800y"):
+            with self.subTest(component=ascii(component)), tempfile.TemporaryDirectory() as temporary:
+                root = Path(temporary) / component
+                root.mkdir()
+                capture, _ = self._write_capture(root)
+                result = export_live_evidence_bundles(capture, Path(temporary) / "output")
+                self.assertEqual(len(result.candidates), 1)
+
+    @WINDOWS_ONLY_EXPORT
     def test_registered_at_is_independent_from_compilation_start(self) -> None:
         """Registration remains a separate source fact, not a substituted compilation date."""
         with tempfile.TemporaryDirectory() as temporary:

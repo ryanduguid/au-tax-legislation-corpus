@@ -1,13 +1,13 @@
 # Tax Radar AU
 
-[![tests](https://img.shields.io/github/actions/workflow/status/ryanduguid/au-tax-legislation-corpus/ci.yml?label=tests&style=flat&labelColor=000000)](https://github.com/ryanduguid/au-tax-legislation-corpus/actions/workflows/ci.yml) [![License: FSL-1.1-ALv2](https://img.shields.io/badge/License-FSL--1.1--ALv2-66023C.svg?labelColor=000000&style=flat&color=66023C)](LICENSE) [![Python 3.14+](https://img.shields.io/badge/python-3.14%2B-66023C.svg?logo=python&logoColor=E5E4E2&labelColor=000000&style=flat&color=66023C)](https://www.python.org/downloads/)
+[![tests](https://img.shields.io/github/actions/workflow/status/ryanduguid/au-tax-legislation-corpus/ci.yml?label=tests&style=flat&labelColor=000000)](https://github.com/ryanduguid/au-tax-legislation-corpus/actions/workflows/ci.yml) [![License: FSL-1.1-ALv2](https://img.shields.io/badge/License-FSL--1.1--ALv2-66023C.svg?labelColor=000000&style=flat&color=66023C)](LICENSE) [![Rust 1.99](https://img.shields.io/badge/rust-1.99-66023C.svg?logo=rust&logoColor=E5E4E2&labelColor=000000&style=flat&color=66023C)](https://www.rust-lang.org/)
 
 This is a provenance-first change-review queue. It does not answer tax questions and it does not update skills automatically.
 
 The [workpaper mapping example](docs/workpaper-impact.md) links fabricated
 source changes to BAS classification and forecast payment-timing review questions.
 
-> Compatibility: the distribution, import package and CLI command are `tax-radar-au` / `tax_radar_au`. Releases v0.1.0 and v0.1.1, cut before this half merged into the corpus repository, shipped wheels named `au_tax_change_impact_monitor-*`; those assets and their attestations live on the archived tax-radar-au repository and are unchanged.
+> Compatibility: the command is `tax-radar-au`. From 1.0.0 it is a standalone Rust binary with the same commands, options, exit statuses, output files and messages as the Python releases; the `tax_radar_au` import package is gone, and [RELEASE_NOTES.md](RELEASE_NOTES.md) lists the documented differences. Releases v0.1.0 and v0.1.1, cut before this half merged into the corpus repository, shipped wheels named `au_tax_change_impact_monitor-*`; those assets and their attestations live on the archived tax-radar-au repository and are unchanged.
 
 The first version compares fabricated source-index metadata with a fabricated Register-observation contract. It keeps important states distinct (`SUPERSEDED`, `CURRENT_NO_PUBLISHED_COMPILATION`, `NO_LONGER_IN_FORCE`, and `LOOKUP_FAILED`), then maps only exact register ID + collection pairs to a potential workflow-review question.
 
@@ -27,16 +27,16 @@ Synthetic source index + synthetic Register observation + exact source-to-skill 
 ## Demo
 
 ```bash
-python -m pip install -e ".[dev]"
+cargo build --locked --release
 
-tax-radar-au compare \
-  --baseline tax_radar_au/samples/baseline/sample-sources.json \
-  --observation tax_radar_au/samples/observations/sample-register-observation.json \
-  --map tax_radar_au/samples/mappings/sample-source-skill-map.json \
+target/release/tax-radar-au compare \
+  --baseline samples/baseline/sample-sources.json \
+  --observation samples/observations/sample-register-observation.json \
+  --map samples/mappings/sample-source-skill-map.json \
   --out build/demo
 ```
 
-The sample fixtures ship inside the package, so an install of this checkout can run the same demo from any directory; `python -c "from tax_radar_au.util import sample_path; print(sample_path())"` prints their installed location. Every input option accepts any readable path, and `--out` is created relative to the current directory.
+The sample fixtures ship in this repository's `samples/` directory; the binary reads any path it is given, so the demo runs from any directory. Every input option accepts any readable path, and `--out` is created relative to the current directory.
 
 The example creates one `SUPERSEDED` source item mapped to a BAS-review question. It deliberately does not infer the legal effect of the change, update a skill, or send a notification.
 
@@ -58,11 +58,11 @@ An item is `OPEN` when it needs human technical review, carrying `change_kind` `
 | `CURRENT_NO_PUBLISHED_COMPILATION` | The title is current but has no published compilation to compare. |
 | `BASELINE_NOT_CURRENT` | The baseline row is itself marked `version_is_current: false`, so it is a stale index entry and cannot support a currency conclusion. |
 
-`compare` exits 0 for `REVIEW_REQUIRED` and `NO_CHANGE_DETECTED`, and 2 when the run status is `BLOCKED`. Rejected input also exits 2, in one of 2 shapes: a malformed command line is rejected by argparse, which prints its own usage block, and everything the monitor itself rejects prints a single `tax-radar-au: blocked: ...` line on stderr.
+`compare` exits 0 for `REVIEW_REQUIRED` and `NO_CHANGE_DETECTED`, and 2 when the run status is `BLOCKED`. Rejected input also exits 2, in one of 2 shapes: a malformed command line is rejected by argparse (the binary reproduces Python's argparse), which prints its own usage block, and everything the monitor itself rejects prints a single `tax-radar-au: blocked: ...` line on stderr.
 
-If stdout cannot encode a character in the `--out` path (a redirected stream on Windows uses the ANSI code page, not UTF-8), that one line is printed backslash-escaped and a `tax-radar-au: note: ...` line on stderr says so. The exit status still reflects the run, and the files on disk carry the real path.
+Output on stdout and stderr is UTF-8, with the platform's line endings.
 
-If stdout cannot be written at all (a reader that closed the pipe, or a redirect to a handle this process cannot write to), the summary is dropped, a `tax-radar-au: note: ...` line on stderr says so, and the exit status is still the one the run decided. A redirected stdout is buffered, so that failure otherwise surfaces only when the interpreter flushes on the way out, where it is reported as `Exception ignored ...` and exits 120 on a run whose queue files are complete. The CLI closes stdout instead, which is what keeps the exit status the run's own.
+If stdout cannot be written at all (a reader that closed the pipe, or a redirect to a handle this process cannot write to), the summary is dropped, a `tax-radar-au: note: ...` line on stderr says so, and the exit status is still the one the run decided.
 
 ```bash
 tax-radar-au validate-review \
@@ -70,11 +70,11 @@ tax-radar-au validate-review \
   --decision path/to/a-human-technical-review.json
 ```
 
-Only `AWAIT_PRIMARY_TEXT`, `NO_WORKFLOW_CHANGE`, `UPDATE_CANDIDATE`, and `ESCALATE_TECHNICAL_REVIEW` are accepted. A v2 technical-review decision must copy both `run_id` and `queue_digest` from the exact queue reviewed; the packaged `sample-technical-review.json` demonstrates the complete decision shape. Validation enforces exact queue, nested evidence and decision schemas before recalculating the digest. It rejects a changed, missing or additional evidence field even when `run_id` is left unchanged. The validation receipt records both identifiers.
+Only `AWAIT_PRIMARY_TEXT`, `NO_WORKFLOW_CHANGE`, `UPDATE_CANDIDATE`, and `ESCALATE_TECHNICAL_REVIEW` are accepted. A v2 technical-review decision must copy both `run_id` and `queue_digest` from the exact queue reviewed; the shipped `samples/decisions/sample-technical-review.json` demonstrates the complete decision shape. Validation enforces exact queue, nested evidence and decision schemas before recalculating the digest. It rejects a changed, missing or additional evidence field even when `run_id` is left unchanged. The validation receipt records both identifiers.
 
 Validation reports `PARTIAL_DECISION_RECORDED` while any open item remains undecided; it checks structure and matching queue only and does not certify the review, edit a skill, or establish a legal conclusion. Observation and review timestamps require an explicit UTC offset (or `Z`) so audit ordering is unambiguous. Decisions written for the v1 queue schema do not carry a complete-evidence digest and are intentionally not accepted as v2 decisions; review the new queue and record a new decision instead of carrying an earlier decision forward.
 
-The accepted timestamp grammar is exactly `YYYY-MM-DDThh:mm:ss[.ffffff][Z|+hh:mm|-hh:mm]`, with `t` or a single space allowed in place of `T`. It is pinned by a pattern rather than handed to `datetime.fromisoformat`, whose grammar differs between Python 3.10 and 3.11+, so the same stored artefact validates the same way on every supported interpreter. The ISO basic form (`20260808T000000Z`), week and ordinal dates, a bare-hour offset (`+00`), a lowercase `z`, a date with no clock, and any other date/time separator are all refused. Dates in the baseline and observation are `YYYY-MM-DD` on the same basis.
+The accepted timestamp grammar is exactly `YYYY-MM-DDThh:mm:ss[.ffffff][Z|+hh:mm|-hh:mm]`, with `t` or a single space allowed in place of `T`. It is pinned by a pattern, so a stored artefact validates the same way on every version and platform. As in the Python releases, a timestamp's year, offset hour, and the second digit of its minute, its second, its day (after 1 or 2) and its hour (after 0 or 1) may be any Unicode decimal digit; every other digit, and every digit of a plain date, is ASCII. The ISO basic form (`20260808T000000Z`), week and ordinal dates, a bare-hour offset (`+00`), a lowercase `z`, a date with no clock, and any other date/time separator are all refused. Dates in the baseline and observation are `YYYY-MM-DD` on the same basis.
 
 ## Client exposure
 
@@ -102,7 +102,7 @@ validation does not rewrite them.
 ```bash
 tax-radar-au exposure \
   --queue build/demo/impact-queue.json \
-  --profiles tax_radar_au/samples/profiles/sample-client-profiles.json \
+  --profiles samples/profiles/sample-client-profiles.json \
   --out build/exposure
 ```
 
@@ -138,8 +138,9 @@ The intended source is a reviewed, deliberately versioned observation output fro
 ## Development
 
 ```bash
-pytest
-python -m build
+cargo fmt --check
+cargo clippy --locked --all-targets -- -D warnings
+cargo test --locked
 ```
 
 

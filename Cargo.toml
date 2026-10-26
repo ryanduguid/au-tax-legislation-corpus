@@ -1,0 +1,60 @@
+[package]
+name = "tax-radar-au"
+version = "1.0.0"
+edition = "2024"
+rust-version = "1.99"
+description = "Provenance-first AU tax change-review queue over the staged legislation corpus"
+license = "FSL-1.1-ALv2"
+repository = "https://github.com/ryanduguid/au-tax-legislation-corpus"
+publish = false
+
+[lib]
+name = "tax_radar_au"
+
+[[bin]]
+name = "tax-radar-au"
+path = "src/main.rs"
+
+[[bin]]
+name = "fadden"
+path = "src/fadden_main.rs"
+
+[dependencies]
+getrandom = "0.3"
+fancy-regex = "0.19.2"
+num-bigint = "0.4.8"
+regex = "1.13.1"
+rusqlite = { version = "0.40.2", features = ["bundled"] }
+sha2 = "0.11.1"
+# Unicode 17, the version CPython 3.15 normalises with.
+unicode-normalization = "=0.1.25"
+# TLS for src/fadden/http.rs, verified against the operating system's
+# certificate store.
+rustls = { version = "0.23.46", default-features = false, features = ["ring", "std", "tls12"] }
+rustls-platform-verifier = "0.7.1"
+
+[target."cfg(unix)".dependencies]
+libc = "0.2"
+
+[target."cfg(windows)".dependencies]
+windows-sys = { version = "0.61", features = ["Wdk_Foundation", "Wdk_Storage_FileSystem", "Win32_Foundation", "Win32_Security", "Win32_Security_Authorization", "Win32_Storage_FileSystem", "Win32_System_IO", "Win32_System_SystemInformation"] }
+
+[features]
+# Scripted HTTP responses and a fixed date for the differential harness; see
+# src/fadden/http.rs. Release builds leave it off.
+fake-http = []
+
+[target."cfg(unix)".dev-dependencies]
+libc = "0.2"
+
+# DeviceIoControl, so tests/fadden_dist.rs can make a third-party reparse point.
+[target."cfg(windows)".dev-dependencies]
+windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_Storage_FileSystem", "Win32_System_IO", "Win32_System_Ioctl"] }
+
+[dev-dependencies]
+serde_json = { version = "1.0.145", features = ["preserve_order"] }
+tempfile = "3.27.0"
+
+[profile.release]
+lto = true
+codegen-units = 1
