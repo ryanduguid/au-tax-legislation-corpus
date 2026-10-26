@@ -457,6 +457,54 @@ class OutputBoundaryTests(unittest.TestCase):
                     self.manifest, self.root / "new-parent" / "capture", session=session)
         self.assertFalse((self.root / "new-parent").exists())
 
+    def test_a_staging_name_collision_is_never_removed(self) -> None:
+        """A staging directory this run did not create is not its to remove."""
+        fixed = mock.Mock(hex="0" * 32)
+        staging = self.root / f".capture.register-capture-{'0' * 32}.tmp"
+        staging.mkdir()
+        (staging / "sentinel").write_bytes(b"keep")
+        session = live.MemorySession({live.CURRENT_URL: [
+            live.successful_exchange(live.CURRENT_BODY, "2026-08-29T14:00:01Z")]})
+        with mock.patch.object(capture_module.uuid, "uuid4", return_value=fixed):
+            with self.assertRaisesRegex(CaptureRegisterError, "capture output could not be written."):
+                capture_module.capture_register_run(
+                    self.manifest, self.root / "capture", session=session)
+        self.assertEqual((staging / "sentinel").read_bytes(), b"keep")
+        self.assertFalse((self.root / "capture").exists())
+
+    def test_promotion_never_replaces_a_destination(self) -> None:
+        """An empty destination that appears before the rename is kept, not replaced."""
+        source, target = self.root / "source", self.root / "target"
+        source.mkdir()
+        (source / "file").write_bytes(b"new")
+        target.mkdir()
+        before = target.stat()
+        with self.assertRaises(OSError):
+            capture_module._rename_no_replace(source, target)
+        after = target.stat()
+        self.assertEqual((before.st_dev, before.st_ino), (after.st_dev, after.st_ino))
+        self.assertEqual(list(target.iterdir()), [])
+        self.assertEqual((source / "file").read_bytes(), b"new")
+
+    def test_promotion_off_linux_is_a_plain_rename(self) -> None:
+        source, target = self.root / "source", self.root / "target"
+        source.mkdir()
+        (source / "file").write_bytes(b"new")
+        with mock.patch.object(capture_module, "sys", mock.Mock(platform="darwin")):
+            capture_module._rename_no_replace(source, target)
+        self.assertFalse(source.exists())
+        self.assertEqual((target / "file").read_bytes(), b"new")
+
+    @unittest.skipUnless(capture_module.sys.platform == "linux", "renameat2 is Linux-only")
+    def test_promotion_fails_closed_without_renameat2(self) -> None:
+        source, target = self.root / "source", self.root / "target"
+        source.mkdir()
+        with mock.patch.object(capture_module.ctypes, "CDLL", return_value=object()):
+            with self.assertRaises(OSError):
+                capture_module._rename_no_replace(source, target)
+        self.assertTrue(source.is_dir())
+        self.assertFalse(target.exists())
+
 
 if __name__ == "__main__":
     unittest.main()

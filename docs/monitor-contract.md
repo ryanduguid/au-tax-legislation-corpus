@@ -1,6 +1,7 @@
 ## Exporting a change-review observation
 
-`export_monitor_contract.py` projects a completed corpus `sources.json` and a
+The `export_monitor_contract` stage (`src/fadden/monitor_contract.rs` in the
+`fadden` binary) projects a completed corpus `sources.json` and a
 separately collected, structured observation-facts JSON file into the exact
 v1 baseline and observation inputs for
 [`tax-radar-au`](../RADAR.md):

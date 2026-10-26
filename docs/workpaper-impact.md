@@ -7,7 +7,7 @@ Each question names the workpaper, affected period, evidence to inspect and
 work that can be preserved. Metadata alone cannot supply replacement treatment.
 
 ```powershell
-uv run --locked tax-radar-au compare --baseline tax_radar_au/samples/baseline/sample-sources.json --observation tax_radar_au/samples/observations/sample-register-observation.json --map tax_radar_au/samples/mappings/sample-workpaper-map.json --out build/workpaper-impact
+cargo run --locked --release --bin tax-radar-au -- compare --baseline samples/baseline/sample-sources.json --observation samples/observations/sample-register-observation.json --map samples/mappings/sample-workpaper-map.json --out build/workpaper-impact
 ```
 
 All identities and periods in this example are fabricated. Skill paths are

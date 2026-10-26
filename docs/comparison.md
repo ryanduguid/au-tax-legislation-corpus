@@ -74,7 +74,7 @@ evaluation cases; no commercial product has passed them in this comparison.
    quotation even if the source title and citation look plausible.
 2. A quotation matches a row, but the question concerns a date outside its
    compilation window. Preserve the quotation result and the date limitation
-   separately. `fadden.as_at.quote_in_text` and `as_at` already provide these
+   separately. `quote_in_text` (in the Rust crate's `fadden::as_at` module) and `as_at` already provide these
    distinct checks; neither establishes historical provision applicability.
 3. The question needs a court decision, state legislation or editorial
    commentary. Declare that material outside this builder's coverage instead

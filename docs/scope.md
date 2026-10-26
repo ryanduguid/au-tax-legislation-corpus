@@ -50,7 +50,7 @@ does not require a new compilation for one. Read the Register's version
 history and endnotes for any question about a past date.
 
 A consumer that quotes a row should accept a quotation only when it appears
-in the row text. `fadden.as_at.quote_in_text` does that check after Unicode
+in the row text. `quote_in_text` in the Rust crate's `fadden::as_at` module does that check after Unicode
 NFKC normalisation of both, reading the Register's non-breaking hyphen as `-`.
 NFKC also folds other compatibility forms, such as ligatures and full-width
 letters, and compatibility punctuation such as a full-width comma, so a match
@@ -62,7 +62,7 @@ faithful to the row, not that the row is the law for the question.
 
 The corpus itself. It is about 150 MB (the EPUBs, derived markdown and rates,
 measured on 27 September 2026), and this code rebuilds it in an afternoon. Three
-parts of it should not be redistributed at all, and `dist.py` exists to separate
+parts of it should not be redistributed at all, and the `dist` stage exists to separate
 them out:
 
 1. **The EPUBs embed the Commonwealth Coat of Arms**, which is excluded from the
@@ -70,7 +70,7 @@ them out:
    has not cleared. Stripping the image would also destroy the only thing that
    makes shipping EPUBs worthwhile, which is that they are byte-identical to
    what the Register served. The markdown and JSONL carry no image data at all, because
-   `extract.py` never emits any, so they need nothing removed.
+   the `extract` stage never emits any, so they need nothing removed.
 2. **Twelve titles name private individuals.** The Tax Practitioners Board
    registers terminations and suspensions of tax and BAS agents as notifiable
    instruments: tables of named people with registration numbers and the
@@ -81,15 +81,15 @@ them out:
    2021-5 and 2023-2 reproduce IFRS Foundation material for personal,
    non-commercial use only, and AASB 1056 and 2023-4 need the AASB's written
    permission for any reproduction (each read at source on 27 September 2026).
-   The CC BY 4.0 grant does not reach them, so `dist.py` drops them whole and
-   `dist_verify.py` fails any tree that carries one.
+   The CC BY 4.0 grant does not reach them, so the `dist` stage drops them whole and
+   `dist_verify` fails any tree that carries one.
 
-`pii_scan.py` finds the second category without being told where to look. It
+The `pii_scan` stage finds the second category without being told where to look. It
 tests every row in all 946 titles for personal names appearing alongside agent
 registration numbers, because a bare name test flags the whole corpus:
 legislation names Ministers, Commissioners and litigants constantly, and the
 registration number is what separates a disciplinary register from a statute.
-`pii_scan2.py` re-runs at a lower threshold and sweeps for emails, phone numbers
+The `pii_scan2` stage re-runs at a lower threshold and sweeps for emails, phone numbers
 and 8- or nine-digit tax file numbers. On the source snapshot retrieved
 2026-08-04, the JSONL scan finds 10 occurrences of 4 unique organisational
 contacts across 3 titles: 2 government email addresses and 2 government
@@ -98,11 +98,11 @@ landlines. They are approved by a title-bound SHA-256 fingerprint in
 themselves. An allowlist entry is reserved for a manually reviewed
 organisational contact published in that primary instrument; personal contacts
 and TFNs are never allowlisted. Pattern false positives are fixed in
-`pii_patterns.py` with a regression test rather than approved as data. Every
+the shared patterns (`src/fadden/pii.rs`) with a regression test rather than approved as data. Every
 exception is bound to the identifier kind, digest and Register id and must carry
 a review reason.
 
-The scan, `dist.py` preflight and `dist_verify.py` all fail on a new or moved
+The scan, the `dist` preflight and `dist_verify` all fail on a new or moved
 contact identifier, and their diagnostics contain only Register ids and
 truncated fingerprints. The publication gates require each title's exact
 declared Markdown/JSONL file inventory and inspect every file in it, covering
@@ -110,12 +110,12 @@ the human-readable Markdown and endnotes as well as `sections.jsonl`. A private
 name beside a registration number in any representation fails, as does an
 unreadable file, binary control data, a nested path or an unexpected file.
 
-For that validated source snapshot, `dist.py` writes `dist/`: 934 titles and
+For that validated source snapshot, the `dist` stage writes `dist/`: 934 titles and
 21,596 rows, the shipped manifest's 946 titles and 21,784 rows less the 12
 titles `pii_flagged.json` names. Those 12 titles hold 188 rows between them, of
-which `pii_flagged.json` records 169 as naming private individuals. `dist.py`
+which `pii_flagged.json` records 169 as naming private individuals. The `dist` stage
 drops a flagged title whole rather than row by row, so all 188 of its rows leave
 the distribution, not only the 169.
 A `REMOVED.md` lists every exclusion and its Register link so the omission is
-visible and reversible. `dist_verify.py` checks the result against its own
+visible and reversible. `dist_verify` checks the result against its own
 claims and exits non-zero if any check fails.

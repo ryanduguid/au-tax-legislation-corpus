@@ -3,16 +3,44 @@ import base64
 import hashlib
 import io
 import json
-import os
 import tempfile
 import unittest
+import zipfile
 from pathlib import Path
 from unittest import mock
 
 from fadden import http_fetch
 
-from tests.corpus import test_regressions as fixtures
 from tests.corpus.test_regressions import STAGE, load_module
+
+# The 2-volume EPUB VolumeGateTests built before extract.py moved to Rust.
+VOLUMES = (
+    '<html><body>'
+    '<p class="ActHead4"><span class="CharSectno">1</span> Short title</p>'
+    '<p class="subsection">This instrument is the Demo Approval 2025.</p>'
+    '</body></html>',
+    '<html><body>'
+    '<p class="MadeunderText">Demo Approval 2025</p>'
+    '<p>Compilation No. 1</p>'
+    '<p>This compilation is in 2 volumes</p>'
+    '<p>Volume 2: Schedule 1</p>'
+    '<p>Endnotes</p>'
+    '<p class="ContentsHead">Contents</p>'
+    '<p class="TOC6">Schedule 1 Valuation factors</p>'
+    '<p class="Scheduletitle">Schedule 1 Valuation factors</p>'
+    '<p class="ScheduleHeading">Table 3B Lump sum valuation factors</p>'
+    '<table><tr><td>Age</td><td>Factor</td></tr>'
+    '<tr><td>55</td><td>12.5</td></tr></table>'
+    '</body></html>',
+)
+
+
+def epub_bytes():
+    payload = io.BytesIO()
+    with zipfile.ZipFile(payload, "w") as archive:
+        for i, document in enumerate(VOLUMES, 1):
+            archive.writestr("document_%d.xhtml" % i, document)
+    return payload.getvalue()
 
 
 class AuditRegressionTests(unittest.TestCase):
@@ -23,50 +51,6 @@ class AuditRegressionTests(unittest.TestCase):
             ) as request, mock.patch.object(http_fetch.time, "sleep"):
                 self.assertIsNone(http_fetch.fetch_json("https://example.invalid"))
                 self.assertEqual(request.call_count, http_fetch.TRIES)
-
-    def test_unplaced_volume_fails_instead_of_disappearing(self):
-        extract = load_module("audit_extract_unplaced", STAGE / "extract.py")
-        blocks = extract.epub_blocks(io.BytesIO(fixtures.VolumeGateTests.epub_bytes(
-            fixtures.VolumeGateTests.VOLUME_1, fixtures.VolumeGateTests.VOLUME_2_BARE
-        )))
-        with self.assertRaisesRegex(ValueError, "body boundary"):
-            extract.to_markdown(blocks, fixtures.VolumeGateTests.META)
-
-    def test_irregular_spans_keep_logical_columns(self):
-        extract = load_module("audit_extract_spans", STAGE / "extract.py")
-        doc = extract.Doc()
-        doc.feed('<table><tr><td>Category</td><td>From</td><td>Rate</td></tr>'
-                 '<tr><td colspan="2">All</td><td>12%</td></tr>'
-                 '<tr><td>Other</td><td>2026</td><td>10%</td></tr></table>')
-        self.assertEqual(doc.blocks[0]["rows"][1], ["All", "", "12%"])
-
-    def test_nested_table_stays_inside_its_parent_cell(self):
-        extract = load_module("audit_extract_nested", STAGE / "extract.py")
-        doc = extract.Doc()
-        doc.feed('<table><tr><td>Category A</td><td>Before'
-                 '<table><tr><td>Nested rate</td><td>12%</td></tr></table>'
-                 'After</td></tr></table>')
-        self.assertEqual(len(doc.blocks), 1)
-        row = doc.blocks[0]["rows"][0]
-        self.assertEqual(row[0], "Category A")
-        self.assertIn("Nested rate", row[1])
-        self.assertIn("12%", row[1])
-        self.assertLess(row[1].index("Before"), row[1].index("Nested rate"))
-        self.assertLess(row[1].index("Nested rate"), row[1].index("After"))
-
-    def test_sidecar_retrieval_date_overrides_copied_file_mtime(self):
-        helper = fixtures.ExtractPipelineTests()
-        with tempfile.TemporaryDirectory() as tmp:
-            root = Path(tmp)
-            build, epub = helper._fixture(root)
-            epub.with_suffix(".epub.meta.json").write_text(json.dumps({
-                "versionStart": "2025-01-01", "fetched_at": "2026-08-04T23:15:00+00:00"
-            }), encoding="utf-8")
-            os.utime(epub, (0, 0))
-            helper._run(build, None)
-            markdown, rows = helper._outputs(root)
-            self.assertIn('retrieved: "2026-08-04"', markdown)
-            self.assertTrue(all("2026-08-04" in row["attribution"] for row in rows))
 
     def test_cached_download_preserves_authorisation_and_retrieval(self):
         download = load_module("audit_download_cache", STAGE / "download.py")
@@ -81,7 +65,7 @@ class AuditRegressionTests(unittest.TestCase):
             }]), encoding="utf-8")
 
             def fetch(url, dst):
-                payload = fixtures.VolumeGateTests.epub_bytes()
+                payload = epub_bytes()
                 Path(dst).write_bytes(payload)
                 return True, "200", "application/epub+zip", len(payload), {
                     "registerId": "F2026C00001", "isAuthorised": True

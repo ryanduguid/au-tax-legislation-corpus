@@ -29,7 +29,7 @@ Synthetic example. This is a finding aid derived from the Register's EPUB readin
 
 **Input:** the fabricated [source index](tests/corpus/fixtures/publication/sample-sources.json) and [reviewed observation facts](tests/corpus/fixtures/publication/sample-observation-facts-v3.json).
 
-From a source clone, install: `python -m pip install -e .`. That puts both `python -m fadden` and the `tax-radar-au` command on the path. The builder still reads and writes beside its own stage modules, so run its stages from the checkout.
+From a source clone, install the builder with `python -m pip install -e .`, which puts `python -m fadden` on the path, and build the `tax-radar-au` review-queue binary with `cargo build --locked --release`. The builder still reads and writes beside its own stage modules, so run its stages from the checkout.
 
 ```bash
 python -m fadden export_monitor_contract -- tests/corpus/fixtures/publication/sample-sources.json tests/corpus/fixtures/publication/sample-observation-facts-v3.json --out ../synthetic-monitor-example

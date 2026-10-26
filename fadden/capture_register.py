@@ -9,7 +9,9 @@ this module.
 from __future__ import annotations
 
 import argparse
+import ctypes
 import datetime as dt
+import errno
 import hashlib
 import http.client
 import json
@@ -17,6 +19,7 @@ import os
 import re
 import shutil
 import stat
+import sys
 import time
 import urllib.error
 import urllib.request
@@ -1333,6 +1336,30 @@ def _remove_owned_staging(staging: Path, *, parent: Path, prefix: str) -> None:
         raise CaptureRegisterError("capture staging could not be removed") from exc
 
 
+def _rename_no_replace(source: Path, target: Path) -> None:
+    """Rename a directory without ever replacing an existing destination.
+
+    Windows' rename already refuses an existing destination. On Linux a plain
+    rename replaces an empty directory, so this uses renameat2 with
+    RENAME_NOREPLACE and fails closed where the C library or the filesystem
+    does not provide it.
+    """
+    if sys.platform != "linux":
+        # Maintainer CLI; the paths are a command-line argument or fixed names under one.
+        os.rename(source, target)  # NOSONAR
+        return
+    libc = ctypes.CDLL(None, use_errno=True)
+    renameat2 = getattr(libc, "renameat2", None)
+    if renameat2 is None:
+        raise OSError(errno.ENOTSUP, "renameat2 is unavailable", str(target))
+    renameat2.argtypes = [ctypes.c_int, ctypes.c_char_p, ctypes.c_int, ctypes.c_char_p, ctypes.c_uint]
+    renameat2.restype = ctypes.c_int
+    at_fdcwd, rename_noreplace = -100, 1
+    if renameat2(at_fdcwd, os.fsencode(source), at_fdcwd, os.fsencode(target), rename_noreplace) != 0:
+        error = ctypes.get_errno()
+        raise OSError(error, os.strerror(error), str(target))
+
+
 def _write_new(path: Path, content: bytes) -> None:
     with open(path, "xb") as target:
         target.write(content)
@@ -1406,9 +1433,11 @@ def capture_register_run(
 
     prefix = f".{output.name}.register-capture-"
     staging = output.parent / f"{prefix}{uuid.uuid4().hex}.tmp"
+    created = False
     try:
         try:
             os.mkdir(staging, 0o700)
+            created = True
             evidence_directory = staging / "evidence"
             os.mkdir(evidence_directory, 0o700)
             _write_new(staging / "monitor-baseline.json", baseline_content)
@@ -1421,19 +1450,16 @@ def capture_register_run(
         _validate_staged_graph(staging)
         _require_ordinary_directory(output.parent, "capture output parent")
         _require_absent_destination(output)
-        # The check and the rename are separate calls. On Windows, where the
-        # publication workflow runs, os.rename refuses an existing destination, so a
-        # completed capture is never overwritten. On POSIX the rename replaces an
-        # existing empty directory and still refuses a non-empty one, so the only
-        # thing a concurrent writer can lose there is an empty reservation. Python
-        # exposes no portable no-replace directory rename to close that window.
+        # The check and the rename are separate calls, so the rename itself must
+        # never replace a destination that appeared between them.
         try:
-            # Maintainer CLI; the path is a command-line argument or a fixed name under one.
-            os.rename(staging, output)  # NOSONAR
+            _rename_no_replace(staging, output)
         except OSError as exc:
             raise CaptureRegisterError("capture output could not be promoted.") from exc
     finally:
-        _remove_owned_staging(staging, parent=output.parent, prefix=prefix)
+        # Only a staging directory this run created is its to remove.
+        if created:
+            _remove_owned_staging(staging, parent=output.parent, prefix=prefix)
 
     return {
         "baseline": output / "monitor-baseline.json",
