@@ -704,7 +704,7 @@ class LiveEvidenceWorkflowPolicyTests(unittest.TestCase):
         install_step = self._step_containing(action_references[2])
         self.assertEqual(
             self._yaml_scalar_lines(install_step, "version", 10),
-            ['          version: "0.12.0"'],
+            ['          version: "0.13.5"'],
         )
         self.assertEqual(
             self._yaml_scalar_lines(install_step, "enable-cache", 10),
