@@ -49,7 +49,7 @@ jobs:
       - name: install the locked toolchain
         uses: astral-sh/setup-uv@1c37ad07a6a961277cf70c0d37d6f313000f5884 # v10.3.0
         with:
-          version: "0.12.0"
+          version: "0.13.5"
           enable-cache: true
       # No -q here: pyproject's addopts already sets it, and a second -q makes
       # it -qq, which drops the pass/fail count from the log. Without the count
@@ -147,7 +147,7 @@ jobs:
       - name: install the locked toolchain
         uses: astral-sh/setup-uv@1c37ad07a6a961277cf70c0d37d6f313000f5884 # v10.3.0
         with:
-          version: "0.12.0"
+          version: "0.13.5"
           enable-cache: true
       - run: uv run --locked --extra dev --python 3.14 python -m build  # NOSONAR: unprivileged job; uv installs the hash-locked set
       # The sample fixtures ship as package data; a wheel that cannot find
@@ -187,7 +187,7 @@ jobs:
       - name: install the locked toolchain
         uses: astral-sh/setup-uv@1c37ad07a6a961277cf70c0d37d6f313000f5884 # v10.3.0
         with:
-          version: "0.12.0"
+          version: "0.13.5"
           enable-cache: true
       # Both cover the whole repository: fadden is 8,402 lines that neither
       # tool used to see. Paths and packages come from pyproject, so there is
