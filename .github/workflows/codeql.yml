@@ -42,8 +42,15 @@ jobs:
           # Include local input sources where the installed query packs support
           # them. Local-input Python regression tests remain part of the full
           # pytest gate regardless of the scanner's coverage.
+          # Tests, fuzz targets and benchmark examples read paths and run this
+          # checkout's builds by design; with local sources they only raise
+          # path- and command-injection alerts that get dismissed by hand.
           config: |
             threat-models: local
+            paths-ignore:
+              - "**/tests/**"
+              - examples
+              - fuzz
 
       - name: Perform CodeQL analysis
         uses: github/codeql-action/analyze@6f2ac81f5cd81fe351a197ba0b00d91d03cd2aee # v4
