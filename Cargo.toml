@@ -4,7 +4,7 @@ version = "1.0.0"
 edition = "2024"
 rust-version = "1.99"
 description = "Provenance-first AU tax change-review queue over the staged legislation corpus"
-license = "Apache-2.0"
+license = "FSL-1.1-ALv2"
 repository = "https://github.com/ryanduguid/au-tax-legislation-corpus"
 publish = false
 
