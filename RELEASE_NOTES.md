@@ -1,3 +1,7 @@
+# Unreleased
+
+- Relicensed from Apache-2.0 to FSL-1.1-ALv2 (Functional Source License, with Apache-2.0 as the future licence). Released versions keep their licence.
+
 # v0.3.0
 
 This candidate contains the corpus builder source. It excludes generated legislation and live evidence.
