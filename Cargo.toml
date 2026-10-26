@@ -20,7 +20,7 @@ name = "fadden"
 path = "src/fadden_main.rs"
 
 [dependencies]
-getrandom = "0.3"
+getrandom = "0.4"
 fancy-regex = "0.19.2"
 num-bigint = "0.4.8"
 regex = "1.13.1"
