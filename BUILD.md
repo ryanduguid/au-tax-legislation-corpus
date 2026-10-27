@@ -285,6 +285,13 @@ and rate metadata are escaped as literal Markdown.
   inherit a file from the one before it.
 - **Unordered `$skip`/`$top` paging drops rows.** `$orderby=id` is mandatory,
   and `discover` raises if paged ids are not unique.
+- **A short title list is refused, not written.** Before replacing either list,
+  `discover` compares ids with the earlier `fadden/titles_all.json`. If any
+  principal title or more than 1 in 20 of the earlier titles are missing, it
+  exits 1, names the missing ids and leaves both files unchanged. A smaller loss
+  is printed and written. `--accept-missing` replaces the lists anyway and
+  prints the ids it accepted, for a repeal the Register really made or an
+  unreadable earlier list. The first run has nothing to compare.
 - **`$top` is capped at 100.** Above that the API returns 400.
 - **Any filter containing `isPrincipal` returns 400.** It is applied in Python.
 - **The download endpoint answers in 2 shapes**: raw EPUB bytes, or a JSON
@@ -497,7 +504,7 @@ statuses. `FADDEN_BIN` names another build of it. An exception those Python
 stages did not catch printed a traceback; the binary prints its last line.
 
 ```bash
-python -m fadden discover      # list every in-force title matching the tax keywords -> fadden/titles_all.json, fadden/titles_principal.json
+python -m fadden discover      # list every in-force title matching the tax keywords -> fadden/titles_all.json, fadden/titles_principal.json (refuses a list missing earlier titles; --accept-missing overrides)
 python -m fadden versions      # dedup titles and resolve each one's current version date -> fadden/acts_resolved.json
 python -m fadden download      # fetch the current EPUB for each resolved title -> ./corpus/epub/*.epub, fadden/manifest_raw.json
 python -m fadden probe13       # only if download reports no_epub: probe version history -> fadden/probe13.json

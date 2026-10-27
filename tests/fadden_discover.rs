@@ -77,8 +77,12 @@ fn script(pages: impl Fn(usize) -> Vec<Vec<Value>>) -> Script {
 }
 
 fn run(script: &mut Script, module: &Path) -> (Result<(), Stop>, Run) {
+    run_with(script, module, false)
+}
+
+fn run_with(script: &mut Script, module: &Path, accept_missing: bool) -> (Result<(), Stop>, Run) {
     let mut out = Run::default();
-    let result = discover::run(script, module.to_str().unwrap(), &mut out);
+    let result = discover::run(script, module.to_str().unwrap(), accept_missing, &mut out);
     (result, out)
 }
 
@@ -264,4 +268,257 @@ fn totals_count_titles_and_keep_the_collection_breakdown() {
     assert!(stdout.ends_with("\nsample principal titles:\n   C2099A00001  Income Tax Act\n"));
     // 15 searches, each followed by a 3-second pause.
     assert_eq!(s.events.iter().filter(|e| *e == "sleep 3").count(), 15);
+}
+
+/// `count` Act titles C2099A00000 onwards; the first `principal` are principal.
+fn titles(count: usize, principal: usize) -> Vec<Value> {
+    (0..count)
+        .map(|n| title(&format!("C2099A{n:05}"), "Tax Act", n < principal, "Act"))
+        .collect()
+}
+
+/// The first search returns `rows` (paged by 100); the other 14 return nothing.
+fn first_search(rows: &[Value]) -> Script {
+    let pages: Vec<Vec<Value>> = if rows.is_empty() {
+        vec![vec![]]
+    } else {
+        let mut pages: Vec<Vec<Value>> = rows.chunks(100).map(<[Value]>::to_vec).collect();
+        if rows.len().is_multiple_of(100) {
+            pages.push(vec![]);
+        }
+        pages
+    };
+    script(|search| {
+        if search == 0 {
+            pages.clone()
+        } else {
+            vec![vec![]]
+        }
+    })
+}
+
+/// Seed both lists as an earlier accepted run left them; return their bytes.
+fn seed(module: &Path, rows: &[Value]) -> (String, String) {
+    let all = serde_json::to_string(rows).unwrap();
+    let principal: Vec<&Value> = rows
+        .iter()
+        .filter(|r| r["isPrincipal"] == json!(true))
+        .collect();
+    let principal = serde_json::to_string(&principal).unwrap();
+    std::fs::write(module.join("titles_all.json"), &all).unwrap();
+    std::fs::write(module.join("titles_principal.json"), &principal).unwrap();
+    (all, principal)
+}
+
+fn unchanged(module: &Path, seeded: &(String, String)) {
+    assert_eq!(
+        std::fs::read_to_string(module.join("titles_all.json")).unwrap(),
+        seeded.0
+    );
+    assert_eq!(
+        std::fs::read_to_string(module.join("titles_principal.json")).unwrap(),
+        seeded.1
+    );
+}
+
+fn refusal(result: Result<(), Stop>) -> String {
+    let Err(Stop::Exit(message)) = result else {
+        panic!("expected SystemExit")
+    };
+    message
+}
+
+#[test]
+fn a_list_that_lost_more_than_one_in_twenty_titles_is_refused_and_both_files_kept() {
+    // The paging defect's shape: 813 titles came back as 671.
+    let co = checkout();
+    let earlier = titles(813, 0);
+    let seeded = seed(&co.module, &earlier);
+    let mut s = first_search(&earlier[..671]);
+    let message = refusal(run(&mut s, &co.module).0);
+    assert!(
+        message.starts_with("refusing to replace the title lists: 142 of 813 earlier titles are missing (0 principal): 'C2099A00671', 'C2099A00672', "),
+        "{message}"
+    );
+    assert!(
+        message.ends_with(
+            "'C2099A00812'; rerun with --accept-missing if the Register really dropped them"
+        ),
+        "{message}"
+    );
+    unchanged(&co.module, &seeded);
+}
+
+#[test]
+fn one_missing_principal_title_is_refused() {
+    let co = checkout();
+    let earlier = titles(100, 1);
+    let seeded = seed(&co.module, &earlier);
+    let mut s = first_search(&earlier[1..]);
+    assert_eq!(
+        refusal(run(&mut s, &co.module).0),
+        "refusing to replace the title lists: 1 of 100 earlier titles are missing (1 principal): 'C2099A00000'; rerun with --accept-missing if the Register really dropped them"
+    );
+    unchanged(&co.module, &seeded);
+}
+
+#[test]
+fn a_small_loss_of_other_titles_is_reported_and_written() {
+    // 2 of 40 is exactly 1 in 20, which is allowed.
+    let co = checkout();
+    let earlier = titles(40, 0);
+    seed(&co.module, &earlier);
+    let mut s = first_search(&earlier[2..]);
+    let (result, out) = run(&mut s, &co.module);
+    assert!(result.is_ok());
+    let stdout = String::from_utf8(out.stdout).unwrap();
+    assert!(
+        stdout.contains(
+            "\n2 of 40 earlier titles are missing (0 principal): 'C2099A00000', 'C2099A00001'\n"
+        ),
+        "{stdout}"
+    );
+    assert_eq!(
+        read(&co.module.join("titles_all.json")),
+        json!(earlier[2..])
+    );
+}
+
+#[test]
+fn accept_missing_records_an_authorised_repeal_and_writes_both_files() {
+    let co = checkout();
+    let earlier = titles(10, 2);
+    seed(&co.module, &earlier);
+    let mut s = first_search(&earlier[1..]);
+    let (result, out) = run_with(&mut s, &co.module, true);
+    assert!(result.is_ok());
+    let stdout = String::from_utf8(out.stdout).unwrap();
+    assert!(
+        stdout.contains(
+            "\n--accept-missing: 1 of 10 earlier titles are missing (1 principal): 'C2099A00000'\n"
+        ),
+        "{stdout}"
+    );
+    assert_eq!(
+        read(&co.module.join("titles_all.json")),
+        json!(earlier[1..])
+    );
+    assert_eq!(
+        read(&co.module.join("titles_principal.json")),
+        json!(earlier[1..2])
+    );
+}
+
+#[test]
+fn growth_and_an_unchanged_list_print_no_loss() {
+    let co = checkout();
+    let earlier = titles(5, 1);
+    seed(&co.module, &earlier);
+    let mut s = first_search(&titles(7, 1));
+    let (result, out) = run(&mut s, &co.module);
+    assert!(result.is_ok());
+    assert!(!String::from_utf8(out.stdout).unwrap().contains("missing"));
+    // The same 7 again, from a copy in another layout: nothing is missing and
+    // the stage's own serialisation comes back, so the file was rewritten.
+    let all = co.module.join("titles_all.json");
+    let written = std::fs::read_to_string(&all).unwrap();
+    std::fs::write(&all, serde_json::to_string(&titles(7, 1)).unwrap()).unwrap();
+    let mut s = first_search(&titles(7, 1));
+    let (result, out) = run(&mut s, &co.module);
+    assert!(result.is_ok());
+    assert!(!String::from_utf8(out.stdout).unwrap().contains("missing"));
+    assert_eq!(std::fs::read_to_string(&all).unwrap(), written);
+}
+
+#[test]
+fn two_of_thirty_nine_missing_is_just_over_one_in_twenty_and_refused() {
+    let co = checkout();
+    let earlier = titles(39, 0);
+    let seeded = seed(&co.module, &earlier);
+    let mut s = first_search(&earlier[2..]);
+    assert!(refusal(run(&mut s, &co.module).0).contains("2 of 39 earlier titles are missing"));
+    unchanged(&co.module, &seeded);
+}
+
+#[test]
+fn an_earlier_id_python_equates_with_a_current_one_is_not_missing() {
+    // 1 and 1.0 hash alike, so a list that now reports 1.0 has lost nothing.
+    let co = checkout();
+    std::fs::write(
+        co.module.join("titles_all.json"),
+        r#"[{"id": 1, "name": "A"}]"#,
+    )
+    .unwrap();
+    let mut s = first_search(&[json!({"id": 1.0, "name": "A"})]);
+    let (result, out) = run(&mut s, &co.module);
+    assert!(result.is_ok());
+    assert!(!String::from_utf8(out.stdout).unwrap().contains("missing"));
+}
+
+#[cfg(unix)]
+#[test]
+fn a_dangling_earlier_list_is_unreadable_not_a_first_run() {
+    let co = checkout();
+    std::os::unix::fs::symlink("absent.json", co.module.join("titles_all.json")).unwrap();
+    std::fs::write(co.module.join("titles_principal.json"), "[]").unwrap();
+    let mut s = first_search(&titles(3, 1));
+    let message = refusal(run(&mut s, &co.module).0);
+    assert!(
+        message.starts_with("cannot compare with the earlier title list ("),
+        "{message}"
+    );
+    assert!(
+        std::fs::symlink_metadata(co.module.join("titles_all.json"))
+            .unwrap()
+            .file_type()
+            .is_symlink()
+    );
+    assert_eq!(
+        std::fs::read_to_string(co.module.join("titles_principal.json")).unwrap(),
+        "[]"
+    );
+}
+
+#[test]
+fn an_unknown_argument_is_a_usage_error_before_any_request() {
+    let mut out = Run::default();
+    let Err(tax_radar_au::argparse::Exit::Error(text)) =
+        discover::main(&["--bogus".to_string()], &mut out)
+    else {
+        panic!("expected a usage error")
+    };
+    assert!(text.contains("unrecognized arguments: --bogus"), "{text}");
+}
+
+#[test]
+fn the_first_run_has_no_earlier_list_to_compare() {
+    let co = checkout();
+    let mut s = first_search(&titles(3, 1));
+    let (result, out) = run(&mut s, &co.module);
+    assert!(result.is_ok());
+    assert!(!String::from_utf8(out.stdout).unwrap().contains("missing"));
+    assert!(co.module.join("titles_principal.json").exists());
+}
+
+#[test]
+fn an_unreadable_earlier_list_is_refused_unless_accepted() {
+    let co = checkout();
+    std::fs::write(co.module.join("titles_all.json"), "{\"value\": []}").unwrap();
+    let rows = titles(3, 1);
+    let mut s = first_search(&rows);
+    assert_eq!(
+        refusal(run(&mut s, &co.module).0),
+        "cannot compare with the earlier title list (it is not a JSON list); refusing to replace it; rerun with --accept-missing to replace it unchecked"
+    );
+    assert_eq!(
+        std::fs::read_to_string(co.module.join("titles_all.json")).unwrap(),
+        "{\"value\": []}"
+    );
+    let mut s = first_search(&rows);
+    let (result, out) = run_with(&mut s, &co.module, true);
+    assert!(result.is_ok());
+    assert!(String::from_utf8(out.stdout).unwrap().contains(
+        "\n--accept-missing: replacing an unreadable earlier title list (it is not a JSON list)\n"
+    ));
+    assert_eq!(read(&co.module.join("titles_all.json")), json!(rows));
 }
