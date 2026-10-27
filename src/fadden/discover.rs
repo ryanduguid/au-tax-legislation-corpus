@@ -208,15 +208,8 @@ fn missing_ids(earlier: &[(Json, bool)], rows: &[Json]) -> Result<(Vec<String>, 
     Ok((missing, principal))
 }
 
-/// Discover every title, with the module in `scratch`; `accept_missing` lets a
-/// run replace a list it would otherwise refuse (see `check_missing`).
-pub fn run(
-    http: &mut dyn Http,
-    scratch: &str,
-    accept_missing: bool,
-    run: &mut Run,
-) -> Result<(), Stop> {
-    require_builder_layout(&script_dir_in(scratch, "discover.py")?)?;
+/// Page every keyword in every collection, keeping each title once in first-seen order.
+fn discover_titles(http: &mut dyn Http, run: &mut Run) -> Result<Vec<Json>, Stop> {
     let mut seen = std::collections::HashSet::new();
     let mut all_rows: Vec<Json> = Vec::new();
     for collection in COLLECTIONS {
@@ -237,6 +230,48 @@ pub fn run(
             http.sleep(3.0);
         }
     }
+    Ok(all_rows)
+}
+
+/// Print the first 15 principal titles by name, as Python printed them.
+fn print_sample(principal: &[Json], run: &mut Run) -> Result<(), Stop> {
+    run.print("\nsample principal titles:");
+    let mut names = Vec::with_capacity(principal.len());
+    for row in principal {
+        names.push(getitem(row, "name")?.clone());
+    }
+    let mut order: Vec<usize> = (0..principal.len()).collect();
+    crate::pysort::sort(&mut order, |&a, &b| {
+        super::rates::py_lt(&names[a], &names[b])
+    })?;
+    for &index in order.iter().take(15) {
+        let row = &principal[index];
+        // `"   %-12s %s" % (id, name[:80])`, printed as Python prints a str.
+        let id = pyvalue::str_points(getitem(row, "id")?);
+        let name = pyvalue::str_points(&head(getitem(row, "name")?, 80)?);
+        let mut line: Vec<u32> = "   ".chars().map(u32::from).collect();
+        line.extend(&id);
+        line.extend(std::iter::repeat_n(
+            u32::from(' '),
+            12usize.saturating_sub(id.len()),
+        ));
+        line.push(u32::from(' '));
+        line.extend(name);
+        run.print_points(&line)?;
+    }
+    Ok(())
+}
+
+/// Discover every title, with the module in `scratch`; `accept_missing` lets a
+/// run replace a list it would otherwise refuse (see `check_missing`).
+pub fn run(
+    http: &mut dyn Http,
+    scratch: &str,
+    accept_missing: bool,
+    run: &mut Run,
+) -> Result<(), Stop> {
+    require_builder_layout(&script_dir_in(scratch, "discover.py")?)?;
+    let all_rows = discover_titles(http, run)?;
 
     let mut principal = Vec::new();
     for row in &all_rows {
@@ -278,31 +313,7 @@ pub fn run(
         TITLES_DEPTH,
     )?;
 
-    run.print("\nsample principal titles:");
-    let mut names = Vec::with_capacity(principal.len());
-    for row in &principal {
-        names.push(getitem(row, "name")?.clone());
-    }
-    let mut order: Vec<usize> = (0..principal.len()).collect();
-    crate::pysort::sort(&mut order, |&a, &b| {
-        super::rates::py_lt(&names[a], &names[b])
-    })?;
-    for &index in order.iter().take(15) {
-        let row = &principal[index];
-        // `"   %-12s %s" % (id, name[:80])`, printed as Python prints a str.
-        let id = pyvalue::str_points(getitem(row, "id")?);
-        let name = pyvalue::str_points(&head(getitem(row, "name")?, 80)?);
-        let mut line: Vec<u32> = "   ".chars().map(u32::from).collect();
-        line.extend(&id);
-        line.extend(std::iter::repeat_n(
-            u32::from(' '),
-            12usize.saturating_sub(id.len()),
-        ));
-        line.push(u32::from(' '));
-        line.extend(name);
-        run.print_points(&line)?;
-    }
-    Ok(())
+    print_sample(&principal, run)
 }
 
 /// `python -m fadden discover [--accept-missing]`.
