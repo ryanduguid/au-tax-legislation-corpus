@@ -167,18 +167,7 @@ fn check_missing(path: &str, rows: &[Json], accept: bool, run: &mut Run) -> Resu
             )));
         }
     };
-    let mut current = std::collections::HashSet::new();
-    for row in rows {
-        current.insert(set_key(getitem(row, "id")?)?);
-    }
-    let mut missing = Vec::new();
-    let mut principal = 0;
-    for (id, was_principal) in &earlier {
-        if !current.contains(&set_key(id)?) {
-            missing.push(crate::pyvalue::repr(id));
-            principal += usize::from(*was_principal);
-        }
-    }
+    let (missing, principal) = missing_ids(&earlier, rows)?;
     if missing.is_empty() {
         return Ok(());
     }
@@ -199,6 +188,24 @@ fn check_missing(path: &str, rows: &[Json], accept: bool, run: &mut Run) -> Resu
     }
     run.print(&format!("\n{summary}"));
     Ok(())
+}
+
+/// The earlier ids `rows` lacks, as `repr` text in earlier order, and how many
+/// of them were principal.
+fn missing_ids(earlier: &[(Json, bool)], rows: &[Json]) -> Result<(Vec<String>, usize), Exc> {
+    let mut current = std::collections::HashSet::new();
+    for row in rows {
+        current.insert(set_key(getitem(row, "id")?)?);
+    }
+    let mut missing = Vec::new();
+    let mut principal = 0;
+    for (id, was_principal) in earlier {
+        if !current.contains(&set_key(id)?) {
+            missing.push(crate::pyvalue::repr(id));
+            principal += usize::from(*was_principal);
+        }
+    }
+    Ok((missing, principal))
 }
 
 /// Discover every title, with the module in `scratch`; `accept_missing` lets a
