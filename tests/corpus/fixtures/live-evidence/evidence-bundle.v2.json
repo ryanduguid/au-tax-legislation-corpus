@@ -2,7 +2,7 @@
   "schema_version": "evidence-bundle.v2",
   "producer": {
     "name": "tax-radar-au",
-    "version": "0.3.0"
+    "version": "0.4.0"
   },
   "run": {
     "observed_at": "2026-08-28T00:00:00Z",
