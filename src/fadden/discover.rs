@@ -2,12 +2,18 @@
 //! keyword, across the Act, legislative instrument and notifiable instrument
 //! collections, and write `titles_all.json` and `titles_principal.json` beside
 //! the module. A failed or unordered page stops the stage rather than leave a
-//! silently incomplete title list.
+//! silently incomplete title list, and so does a list that has lost titles the
+//! earlier `titles_all.json` held, unless `--accept-missing` records the loss.
 use super::corpus_paths::{module_dir, require_builder_layout, script_dir_in, write_json_atomic};
 use super::http::{self, Http};
 use super::{Exc, Run, get, getitem, head};
-use crate::argparse::Exit;
+use crate::argparse::{Action, Exit, Get, Parser};
 use crate::pyjson::Json;
+
+/// The share of earlier titles that may drop out without `--accept-missing`, as
+/// a divisor: more than 1 in 20 (5%) refuses. Instruments sunset in batches, so
+/// some loss is routine; the paging defect lost 142 of 813 (17%).
+const MISSING_SHARE_DIVISOR: usize = 20;
 
 /// The container level at which `json.dump` stops writing the title lists under
 /// `python -m fadden` (CPython 3.15, base revision): a row member nested
@@ -111,8 +117,98 @@ fn page_titles(http: &mut dyn Http, keyword: &str, collection: &str) -> Result<V
     Ok(rows)
 }
 
-/// Discover every title, with the module in `scratch`.
-pub fn run(http: &mut dyn Http, scratch: &str, run: &mut Run) -> Result<(), Stop> {
+/// The ids and principal flags of the earlier `titles_all.json`, in its order:
+/// `None` only when no directory entry exists (the first run); `Err` when an
+/// entry exists but cannot be read as one, a dangling link included.
+fn earlier_titles(path: &str) -> Result<Option<Vec<(Json, bool)>>, String> {
+    match std::fs::symlink_metadata(path) {
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(e) => return Err(e.to_string()),
+        Ok(_) => {}
+    }
+    let text = crate::pyio::read_text(path).map_err(|e| Exc::from(e).to_string())?;
+    let Json::Array(rows) = crate::pyjson::loads_standard(&text).map_err(|e| match e {
+        crate::pyjson::DecodeError::Invalid(message) => message,
+        other => format!("{other:?}"),
+    })?
+    else {
+        return Err("it is not a JSON list".into());
+    };
+    let mut titles = Vec::with_capacity(rows.len());
+    for row in &rows {
+        let id = getitem(row, "id").map_err(|e| e.to_string())?;
+        set_key(id).map_err(|e| e.to_string())?;
+        let principal = get(row, "isPrincipal")
+            .map_err(|e| e.to_string())?
+            .is_some_and(Json::truthy);
+        titles.push((id.clone(), principal));
+    }
+    Ok(Some(titles))
+}
+
+/// Refuse to replace the title lists when titles the earlier list held have
+/// dropped out: any principal title, or more than 1 in `MISSING_SHARE_DIVISOR`
+/// of them. `accept` records the loss on stdout and lets the run continue.
+fn check_missing(path: &str, rows: &[Json], accept: bool, run: &mut Run) -> Result<(), Stop> {
+    const OVERRIDE: &str = "rerun with --accept-missing if the Register really dropped them";
+    let earlier = match earlier_titles(path) {
+        Ok(Some(earlier)) => earlier,
+        Ok(None) => return Ok(()),
+        Err(error) if accept => {
+            run.print(&format!(
+                "\n--accept-missing: replacing an unreadable earlier title list ({error})"
+            ));
+            return Ok(());
+        }
+        Err(error) => {
+            return Err(Stop::Exit(format!(
+                "cannot compare with the earlier title list ({error}); refusing to replace it; \
+                 rerun with --accept-missing to replace it unchecked"
+            )));
+        }
+    };
+    let mut current = std::collections::HashSet::new();
+    for row in rows {
+        current.insert(set_key(getitem(row, "id")?)?);
+    }
+    let mut missing = Vec::new();
+    let mut principal = 0;
+    for (id, was_principal) in &earlier {
+        if !current.contains(&set_key(id)?) {
+            missing.push(crate::pyvalue::repr(id));
+            principal += usize::from(*was_principal);
+        }
+    }
+    if missing.is_empty() {
+        return Ok(());
+    }
+    let summary = format!(
+        "{} of {} earlier titles are missing ({principal} principal): {}",
+        missing.len(),
+        earlier.len(),
+        missing.join(", ")
+    );
+    if accept {
+        run.print(&format!("\n--accept-missing: {summary}"));
+        return Ok(());
+    }
+    if principal > 0 || missing.len() * MISSING_SHARE_DIVISOR > earlier.len() {
+        return Err(Stop::Exit(format!(
+            "refusing to replace the title lists: {summary}; {OVERRIDE}"
+        )));
+    }
+    run.print(&format!("\n{summary}"));
+    Ok(())
+}
+
+/// Discover every title, with the module in `scratch`; `accept_missing` lets a
+/// run replace a list it would otherwise refuse (see `check_missing`).
+pub fn run(
+    http: &mut dyn Http,
+    scratch: &str,
+    accept_missing: bool,
+    run: &mut Run,
+) -> Result<(), Stop> {
     require_builder_layout(&script_dir_in(scratch, "discover.py")?)?;
     let mut seen = std::collections::HashSet::new();
     let mut all_rows: Vec<Json> = Vec::new();
@@ -150,6 +246,14 @@ pub fn run(http: &mut dyn Http, scratch: &str, run: &mut Run) -> Result<(), Stop
         "of which principal (client-side filter): {}",
         principal.len()
     ));
+
+    // Compare before writing either file, so a refusal leaves both unchanged.
+    check_missing(
+        &pypath::join(scratch, "titles_all.json"),
+        &all_rows,
+        accept_missing,
+        run,
+    )?;
 
     // Stage then replace, so a crash part way through never truncates the
     // list versions reads as its authoritative input.
@@ -194,15 +298,28 @@ pub fn run(http: &mut dyn Http, scratch: &str, run: &mut Run) -> Result<(), Stop
     Ok(())
 }
 
-/// `python -m fadden discover`: the stage takes no arguments.
-pub fn main(_argv: &[String], run: &mut Run) -> Result<i32, Exit> {
+/// `python -m fadden discover [--accept-missing]`.
+pub fn main(argv: &[String], run: &mut Run) -> Result<i32, Exit> {
+    let args = Parser::new("python -m fadden discover")
+        .description("List every in-force title whose name holds a tax keyword.")
+        .arg(Action::flag("--accept-missing").help(
+            "replace the title lists even though titles the earlier titles_all.json held are missing",
+        ))
+        .parse(argv)?;
     let mut http = http::connect();
-    Ok(match self::run(http.as_mut(), &module_dir(), run) {
-        Ok(()) => 0,
-        Err(Stop::Raised(error)) => run.uncaught(&error),
-        Err(Stop::Exit(message)) => {
-            run.eprint(&message);
-            1
-        }
-    })
+    Ok(
+        match self::run(
+            http.as_mut(),
+            &module_dir(),
+            args.flag("accept_missing"),
+            run,
+        ) {
+            Ok(()) => 0,
+            Err(Stop::Raised(error)) => run.uncaught(&error),
+            Err(Stop::Exit(message)) => {
+                run.eprint(&message);
+                1
+            }
+        },
+    )
 }
