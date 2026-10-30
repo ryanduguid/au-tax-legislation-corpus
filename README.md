@@ -15,7 +15,7 @@
 [![Snyk](https://github.com/ryanduguid/au-tax-legislation-corpus/actions/workflows/snyk.yml/badge.svg?branch=main)](https://github.com/ryanduguid/au-tax-legislation-corpus/actions/workflows/snyk.yml)
 [![SonarCloud](https://sonarcloud.io/api/project_badges/measure?project=ryanduguid_au-tax-legislation-corpus&metric=alert_status)](https://sonarcloud.io/summary/new_code?id=ryanduguid_au-tax-legislation-corpus)
 [![Codacy code quality](https://app.codacy.com/project/badge/Grade/a474c8d33a4a4bd6bd97993f5c4113bd)](https://app.codacy.com/gh/ryanduguid/au-tax-legislation-corpus/dashboard)<br>
-[![OpenSSF Scorecard](https://img.shields.io/ossf-scorecard/github.com/ryanduguid/au-tax-legislation-corpus?label=Scorecard&labelColor=000000&style=flat)](https://scorecard.dev/viewer/?uri=github.com/ryanduguid/au-tax-legislation-corpus)
+[![OpenSSF Scorecard](https://raw.githubusercontent.com/ryanduguid/.github/badges/ryanduguid/au-tax-legislation-corpus.svg)](https://scorecard.dev/viewer/?uri=github.com/ryanduguid/au-tax-legislation-corpus)
 [![OpenSSF Best Practices](https://www.bestpractices.dev/projects/15425/badge)](https://www.bestpractices.dev/projects/15425)
 [![SLSA 3](.github/assets/badges/slsa.svg)](https://github.com/ryanduguid/au-tax-legislation-corpus/attestations)
 [![VirusTotal](.github/assets/badges/virustotal.svg)](https://github.com/ryanduguid/au-tax-legislation-corpus/releases/latest)<br>
