@@ -13,9 +13,11 @@
 //! accepts either day), and bytes that are not UTF-8 `\xNN`. finalize's
 //! `build/build-record.json` holds a timestamp and the binary's digest, so it
 //! is checked whole by `check_build_record` rather than by a recorded hash.
-//! `rulings`, `probe13`, `discover` and `versions` fetch over HTTP, so their
-//! cases need the scripted responses of the `fake-http` feature:
-//! `cargo test --features fake-http --test fadden_golden`.
+//! `capture_register`, `rulings`, `probe13`, `discover` and `versions` fetch
+//! over HTTP, so their cases need the scripted responses of the `fake-http`
+//! feature: `cargo test --features fake-http --test fadden_golden`. That build
+//! leaves out the other cases, which the default run covers and which never
+//! reach the script. How hard can it be? (Top Gear)
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -605,6 +607,7 @@ fn family(name: &str) {
 
 /// `check_build_record` accepts a whole, true record and refuses each
 /// mutation of it, including fields it could otherwise skip.
+#[cfg(not(feature = "fake-http"))]
 #[test]
 fn the_build_record_check_fails_closed() {
     use serde_json::json;
@@ -710,41 +713,49 @@ fn the_build_record_check_fails_closed() {
     }
 }
 
+#[cfg(not(feature = "fake-http"))]
 #[test]
 fn as_at_matches_python() {
     family("as_at");
 }
 
+#[cfg(not(feature = "fake-http"))]
 #[test]
 fn compare_builds_matches_python() {
     family("compare_builds");
 }
 
+#[cfg(not(feature = "fake-http"))]
 #[test]
 fn search_matches_python() {
     family("search");
 }
 
+#[cfg(not(feature = "fake-http"))]
 #[test]
 fn rates_matches_python() {
     family("rates");
 }
 
+#[cfg(not(feature = "fake-http"))]
 #[test]
 fn dist_verify_matches_python() {
     family("dist_verify");
 }
 
+#[cfg(not(feature = "fake-http"))]
 #[test]
 fn dist_matches_python() {
     family("dist");
 }
 
+#[cfg(not(feature = "fake-http"))]
 #[test]
 fn extract_matches_python() {
     family("extract");
 }
 
+#[cfg(not(feature = "fake-http"))]
 #[test]
 fn finalize_matches_python() {
     family("finalize");
@@ -756,26 +767,31 @@ fn capture_register_matches_python() {
     family("capture_register");
 }
 
+#[cfg(not(feature = "fake-http"))]
 #[test]
 fn export_live_evidence_bundles_matches_python() {
     family("export_live_evidence_bundles");
 }
 
+#[cfg(not(feature = "fake-http"))]
 #[test]
 fn export_monitor_contract_matches_python() {
     family("export_monitor_contract");
 }
 
+#[cfg(not(feature = "fake-http"))]
 #[test]
 fn export_publication_bundles_matches_python() {
     family("export_publication_bundles");
 }
 
+#[cfg(not(feature = "fake-http"))]
 #[test]
 fn pii_scan_matches_python() {
     family("pii_scan");
 }
 
+#[cfg(not(feature = "fake-http"))]
 #[test]
 fn pii_scan2_matches_python() {
     family("pii_scan2");
