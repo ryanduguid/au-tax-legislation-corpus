@@ -184,7 +184,7 @@ jobs:
       - run: cargo test --locked
       # The Python-parity fixtures for the stages that fetch need the scripted
       # responses; the default test run covers the other stages' fixtures.
-      - run: cargo test --locked --features fake-http --test fadden_golden
+      - run: cargo test --locked --features fake-http --test fadden_golden -- fetching::
       - run: cargo build --locked --release
       # The samples ship in the repository beside the binary; run the demo
       # from a directory outside the checkout so nothing resolves relative to it.

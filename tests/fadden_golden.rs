@@ -13,9 +13,9 @@
 //! accepts either day), and bytes that are not UTF-8 `\xNN`. finalize's
 //! `build/build-record.json` holds a timestamp and the binary's digest, so it
 //! is checked whole by `check_build_record` rather than by a recorded hash.
-//! `rulings`, `probe13`, `discover` and `versions` fetch over HTTP, so their
-//! cases need the scripted responses of the `fake-http` feature:
-//! `cargo test --features fake-http --test fadden_golden`.
+//! `capture_register`, `rulings`, `probe13`, `discover` and `versions` fetch
+//! over HTTP, so their cases need the scripted responses of the `fake-http`
+//! feature: `cargo test --features fake-http --test fadden_golden -- fetching::`.
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -750,12 +750,6 @@ fn finalize_matches_python() {
     family("finalize");
 }
 
-#[cfg(feature = "fake-http")]
-#[test]
-fn capture_register_matches_python() {
-    family("capture_register");
-}
-
 #[test]
 fn export_live_evidence_bundles_matches_python() {
     family("export_live_evidence_bundles");
@@ -781,26 +775,33 @@ fn pii_scan2_matches_python() {
     family("pii_scan2");
 }
 
+// CI selects this module by name, so the cases above run once. How hard can it be? (Top Gear)
 #[cfg(feature = "fake-http")]
-#[test]
-fn rulings_matches_python() {
-    family("rulings");
-}
+mod fetching {
+    use super::family;
 
-#[cfg(feature = "fake-http")]
-#[test]
-fn probe13_matches_python() {
-    family("probe13");
-}
+    #[test]
+    fn capture_register_matches_python() {
+        family("capture_register");
+    }
 
-#[cfg(feature = "fake-http")]
-#[test]
-fn discover_matches_python() {
-    family("discover");
-}
+    #[test]
+    fn rulings_matches_python() {
+        family("rulings");
+    }
 
-#[cfg(feature = "fake-http")]
-#[test]
-fn versions_matches_python() {
-    family("versions");
+    #[test]
+    fn probe13_matches_python() {
+        family("probe13");
+    }
+
+    #[test]
+    fn discover_matches_python() {
+        family("discover");
+    }
+
+    #[test]
+    fn versions_matches_python() {
+        family("versions");
+    }
 }
