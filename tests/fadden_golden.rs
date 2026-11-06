@@ -16,6 +16,10 @@
 //! accepts either day), and bytes that are not UTF-8 `\xNN`. finalize's
 //! `build/build-record.json` holds a timestamp and the binary's digest, so it
 //! is checked whole by `check_build_record` rather than by a recorded hash.
+//! Search schema 4 deliberately adds captured-window metadata and a Porter
+//! index. Its valid databases use the independent Python logical oracle in
+//! `search-indexes.json`, including original and new FTS postings; malformed
+//! files keep their frozen hashes. Query usage adds only the new `--stem` flag.
 //! `capture_register`, `rulings`, `probe13`, `discover` and `versions` fetch
 //! over HTTP, so their cases need the scripted responses of the `fake-http`
 //! feature: `cargo test --features fake-http --test fadden_golden`. That build
@@ -30,6 +34,9 @@ use regex::Regex;
 use serde_json::Value;
 use sha2::{Digest, Sha256};
 use tax_radar_au::pyjson;
+
+#[path = "support/search_index.rs"]
+mod search_index;
 
 const PLATFORM: &str = if cfg!(windows) { "windows" } else { "linux" };
 
@@ -542,7 +549,17 @@ fn run_case(family: &str, case: &Value, shared_module: &Path, dates: &[String]) 
         }
         let stderr = unordered(family, &stderr);
         let want_err = match want[2].as_str() {
-            Some(text) => Value::String(unordered(family, text)),
+            Some(text) => {
+                let text = if family == "search" && argv.first().is_some_and(|a| a == "query") {
+                    text.replace(
+                        "                                     [--limit 1-100] [--json]\n",
+                        "                                     [--stem] [--limit 1-100] [--json]\n",
+                    )
+                } else {
+                    text.to_string()
+                };
+                Value::String(unordered(family, &text))
+            }
             None => want[2].clone(),
         };
         if !same_text(&stderr, &want_err) {
@@ -553,6 +570,17 @@ fn run_case(family: &str, case: &Value, shared_module: &Path, dates: &[String]) 
     let want: BTreeMap<String, Option<String>> =
         serde_json::from_value(expected["files"].clone()).unwrap();
     for (key, value) in &want {
+        if family == "search"
+            && let Some(result) =
+                search_index::check(case["index"].as_u64().unwrap(), key, &work.join(key))
+        {
+            match result {
+                Ok(()) => {
+                    left.insert(key.clone(), value.clone());
+                }
+                Err(problem) => problems.push(format!("{key}: {problem}")),
+            }
+        }
         if value.as_deref() == Some("build-record") {
             let binary = Path::new(env!("CARGO_BIN_EXE_fadden"));
             match check_build_record(&work.join(key), &module, binary) {

@@ -1,48 +1,105 @@
-# Query words, Register ID, section, form. Written before any run, by an agent, from the Acts' published
-# section numbers. A hit is any row of that section of that title. `inflected` queries use other word forms.
-general deductions	C2004A05138	8-1	base
-ordinary income assessable	C2004A05138	6-5	base
-statutory income	C2004A05138	6-10	base
-specific deductions	C2004A05138	8-5	base
-CGT event disposal asset	C2004A05138	104-10	base
-main residence exemption	C2004A05138	118-110	base
-discount capital gain	C2004A05138	115-5	base
-small business entity	C2004A05138	328-110	base
-decline in value depreciating asset	C2004A05138	40-25	base
-effective life depreciating asset	C2004A05138	40-95	base
-low cost assets small business	C2004A05138	328-180	base
-personal services income	C2004A05138	84-5	base
-concessional contributions	C2004A05138	291-25	base
-employment termination payment	C2004A05138	82-130	base
-franking credit gross up	C2004A05138	207-20	base
-holder depreciating asset	C2004A05138	40-40	base
-loan private company dividend	C1936A00027	109D	base
-beneficiary presently entitled trust	C1936A00027	97	base
-scheme dominant purpose tax benefit	C1936A00027	177D	base
-taxable supply	C2004A00446	9-5	base
-creditable acquisition	C2004A00446	11-5	base
-food GST free	C2004A00446	38-2	base
-registration turnover threshold	C2004A00446	23-15	base
-margin scheme	C2004A00446	75-5	base
-car fringe benefit	C2004A03280	7	base
-loan fringe benefit	C2004A03280	16	base
-portable electronic device	C2004A03280	58X	base
-promoter penalty	C1953A00001	290-50	base
-general interest charge	C1953A00001	8AAC	base
-withhold payment employee	C1953A00001	12-35	base
-private ruling	C1953A00001	359-5	base
-false misleading statement penalty	C1953A00001	284-75	base
-losses outgoings incurred deductible	C2004A05138	8-1	inflected
-disposing CGT assets	C2004A05138	104-10	inflected
-main residences exempt	C2004A05138	118-110	inflected
-discounted capital gains	C2004A05138	115-5	inflected
-holders leased depreciating assets	C2004A05138	40-40	inflected
-franked distributions gross	C2004A05138	207-20	inflected
-loans private companies dividends	C1936A00027	109D	inflected
-trustees beneficiaries presently entitled	C1936A00027	97	inflected
-taxable supplies	C2004A00446	9-5	inflected
-creditable acquisitions	C2004A00446	11-5	inflected
-cars fringe benefits	C2004A03280	7	inflected
-employees payments withholding	C1953A00001	12-35	inflected
-penalties false statements	C1953A00001	284-75	inflected
-promoters penalties schemes	C1953A00001	290-50	inflected
+# Query, Register ID, section, class, as-at date (- = undated), expected outcome. Tab separated.
+# The first 46 query/target/class fields are preserved from the 5 November baseline.
+# Additions were frozen before measuring, from retained Register headings and capture windows.
+# Agent-written, not human graded. Amendment/version rows test capture windows, not historical law.
+# missing_source rows name the retained 2025 Determination, absent from the pinned 9-title corpus.
+general deductions	C2004A05138	8-1	base	-	hit
+ordinary income assessable	C2004A05138	6-5	base	-	hit
+statutory income	C2004A05138	6-10	base	-	hit
+specific deductions	C2004A05138	8-5	base	-	hit
+CGT event disposal asset	C2004A05138	104-10	base	-	hit
+main residence exemption	C2004A05138	118-110	base	-	hit
+discount capital gain	C2004A05138	115-5	base	-	hit
+small business entity	C2004A05138	328-110	base	-	hit
+decline in value depreciating asset	C2004A05138	40-25	base	-	hit
+effective life depreciating asset	C2004A05138	40-95	base	-	hit
+low cost assets small business	C2004A05138	328-180	base	-	hit
+personal services income	C2004A05138	84-5	base	-	hit
+concessional contributions	C2004A05138	291-25	base	-	hit
+employment termination payment	C2004A05138	82-130	base	-	hit
+franking credit gross up	C2004A05138	207-20	base	-	hit
+holder depreciating asset	C2004A05138	40-40	base	-	hit
+loan private company dividend	C1936A00027	109D	base	-	hit
+beneficiary presently entitled trust	C1936A00027	97	base	-	hit
+scheme dominant purpose tax benefit	C1936A00027	177D	base	-	hit
+taxable supply	C2004A00446	9-5	base	-	hit
+creditable acquisition	C2004A00446	11-5	base	-	hit
+food GST free	C2004A00446	38-2	base	-	hit
+registration turnover threshold	C2004A00446	23-15	base	-	hit
+margin scheme	C2004A00446	75-5	base	-	hit
+car fringe benefit	C2004A03280	7	base	-	hit
+loan fringe benefit	C2004A03280	16	base	-	hit
+portable electronic device	C2004A03280	58X	base	-	hit
+promoter penalty	C1953A00001	290-50	base	-	hit
+general interest charge	C1953A00001	8AAC	base	-	hit
+withhold payment employee	C1953A00001	12-35	base	-	hit
+private ruling	C1953A00001	359-5	base	-	hit
+false misleading statement penalty	C1953A00001	284-75	base	-	hit
+losses outgoings incurred deductible	C2004A05138	8-1	inflected	-	hit
+disposing CGT assets	C2004A05138	104-10	inflected	-	hit
+main residences exempt	C2004A05138	118-110	inflected	-	hit
+discounted capital gains	C2004A05138	115-5	inflected	-	hit
+holders leased depreciating assets	C2004A05138	40-40	inflected	-	hit
+franked distributions gross	C2004A05138	207-20	inflected	-	hit
+loans private companies dividends	C1936A00027	109D	inflected	-	hit
+trustees beneficiaries presently entitled	C1936A00027	97	inflected	-	hit
+taxable supplies	C2004A00446	9-5	inflected	-	hit
+creditable acquisitions	C2004A00446	11-5	inflected	-	hit
+cars fringe benefits	C2004A03280	7	inflected	-	hit
+employees payments withholding	C1953A00001	12-35	inflected	-	hit
+penalties false statements	C1953A00001	284-75	inflected	-	hit
+promoters penalties schemes	C1953A00001	290-50	inflected	-	hit
+income not assessable	C2004A05138	6-15	additional	-	hit
+allowances employment services	C2004A05138	15-2	additional	-	hit
+tax related expenses	C2004A05138	25-5	additional	-	hit
+repairs	C2004A05138	25-10	additional	-	hit
+penalties fines	C2004A05138	26-5	additional	-	hit
+gifts contributions deduct	C2004A05138	30-15	additional	-	hit
+first element cost	C2004A05138	40-180	additional	-	hit
+amount taken paid asset	C2004A05138	40-185	additional	-	hit
+trading stock meaning	C2004A05138	70-10	additional	-	hit
+value trading stock assessable	C2004A05138	70-35	additional	-	hit
+obtaining personal services entity	C2004A05138	86-15	additional	-	hit
+net capital gain assessable	C2004A05138	102-5	additional	-	hit
+net capital loss	C2004A05138	102-10	additional	-	hit
+CGT assets	C2004A05138	108-5	additional	-	hit
+cost base general rules	C2004A05138	110-25	additional	-	hit
+market value substitution	C2004A05138	112-20	additional	-	hit
+dividends shareholder	C1936A00027	44	additional	-	hit
+trust net income	C1936A00027	95	additional	-	hit
+certain trust income special rate	C1936A00027	99A	additional	-	hit
+reimbursement agreement	C1936A00027	100A	additional	-	hit
+private company payments dividends	C1936A00027	109C	additional	-	hit
+minimum yearly repayment	C1936A00027	109E	additional	-	hit
+minimum interest maximum term	C1936A00027	109N	additional	-	hit
+distributable surplus dividends	C1936A00027	109Y	additional	-	hit
+tax benefits	C1936A00027	177C	additional	-	hit
+meaning supply	C2004A00446	9-10	additional	-	hit
+enterprises	C2004A00446	9-20	additional	-	hit
+liability GST taxable supplies	C2004A00446	9-40	additional	-	hit
+creditable purpose	C2004A00446	11-15	additional	-	hit
+input tax credits entitlement	C2004A00446	11-20	additional	-	hit
+required registration	C2004A00446	23-5	additional	-	hit
+attributing GST supplies	C2004A00446	29-5	additional	-	hit
+attributing input tax credits	C2004A00446	29-10	additional	-	hit
+food not GST free	C2004A00446	38-3	additional	-	hit
+meaning food	C2004A00446	38-4	additional	-	hit
+financial supplies	C2004A00446	40-5	additional	-	hit
+statutory formula car	C2004A03280	9	additional	-	hit
+cost basis car	C2004A03280	10	additional	-	hit
+expense payment benefits	C2004A03280	20	additional	-	hit
+property benefits	C2004A03280	40	additional	-	hit
+residual benefits	C2004A03280	45	additional	-	hit
+exempt residual benefits	C2004A03280	47	additional	-	hit
+retaining refund verify information	C1953A00001	8AAZLGA	additional	-	hit
+civil penalty promoter conduct	C1953A00001	290-50	additional	-	hit
+deductions	C2004A05138	8-1	amendment	2026-09-30	before_compilation
+ordinary income	C2004A05138	6-5	amendment	2026-09-30	before_compilation
+supply	C2004A00446	9-10	amendment	2025-12-31	before_compilation
+car	C2004A03280	7	amendment	2026-06-30	before_compilation
+net capital gain	C2004A05138	102-5	version	2026-11-06	after_retrieval
+taxable	C2004A00446	9-5	version	2026-11-06	after_retrieval
+dividends	C1936A00027	44	version	2026-11-06	after_retrieval
+private rulings	C1953A00001	359-5	version	2026-11-06	after_retrieval
+effective life determination definitions	F2025L01097	4	missing_compilation	-	missing_source
+effective life determination asset	F2025L01097	6	missing_compilation	-	missing_source

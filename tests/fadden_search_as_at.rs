@@ -170,6 +170,59 @@ fn each_status_gives_rows_only_when_captured_and_otherwise_names_the_next_step()
 }
 
 #[test]
+fn stemmed_dates_count_word_form_matches_and_filter_before_the_limit() {
+    let dir = tempfile::tempdir().unwrap();
+    let index = build(dir.path(), Some(NEXT_VERSION));
+    let connection = search::open_index(&index).unwrap();
+    let words = ["devices".to_string()];
+    assert!(
+        search::query(&connection, &words, None, 10)
+            .unwrap()
+            .is_empty()
+    );
+    let captured = search::query_stemmed_as_at(&connection, &words, None, 10, START).unwrap();
+    assert_eq!(captured.hits.len(), 2);
+    assert!(captured.refusals.is_empty());
+    assert!(captured.hits.iter().all(|h| value(h)["stemmed"] == true));
+    let mixed = search::query_stemmed_as_at(&connection, &words, None, 1, NEXT_VERSION).unwrap();
+    assert_eq!(mixed.hits.len(), 1);
+    assert_eq!(value(&mixed.hits[0])["register_id"], CURRENT);
+    assert_eq!(value(&mixed.refusals[0])["register_id"], SUPERSEDED);
+    assert_eq!(value(&mixed.refusals[0])["matching_rows"], 1);
+    assert_eq!(value(&mixed.summary)["as_at_summary"]["withheld_rows"], 1);
+    for (date, status) in [
+        ("2099-06-30", "before_compilation"),
+        ("2099-08-02", "after_retrieval"),
+    ] {
+        let report =
+            search::query_stemmed_as_at(&connection, &words, Some(CURRENT), 10, date).unwrap();
+        assert!(report.hits.is_empty());
+        assert_eq!(value(&report.refusals[0])["matching_rows"], 1);
+        assert_eq!(value(&report.refusals[0])["as_at"]["status"], status);
+    }
+    let (code, out, err) = cli(
+        dir.path(),
+        &[
+            "query",
+            &index,
+            "devices",
+            "--stem",
+            "--as-at",
+            NEXT_VERSION,
+            "--limit",
+            "1",
+            "--json",
+        ],
+    );
+    assert_eq!(code, 1, "{out}\n{err}");
+    let lines = json_lines(&out);
+    assert_eq!(lines[0]["stemmed"], true);
+    assert_eq!(lines[0]["register_id"], CURRENT);
+    assert_eq!(lines[1]["as_at"]["status"], "superseded");
+    assert_eq!(lines[1]["matching_rows"], 1);
+}
+
+#[test]
 fn a_date_before_the_compilation_is_reported_even_when_no_word_matches() {
     let dir = tempfile::tempdir().unwrap();
     let index = build(dir.path(), Some(NEXT_VERSION));

@@ -13,6 +13,7 @@
 //!
 //! The index is built with the transaction pattern Python's `sqlite3` used:
 //! the schema script in autocommit mode, then every insert in one transaction.
+use std::borrow::Cow;
 use std::collections::{BTreeMap, BTreeSet};
 
 use rusqlite::types::Value as Sql;
@@ -31,7 +32,35 @@ use crate::pypath::PyPath;
 use crate::pyre::{self, S as DOTALL};
 use crate::pyvalue::{self, dumps_line, py_eq, repr, str_for_stderr, type_name};
 
-const SCHEMA: &str = "3";
+const SCHEMA: &str = "4";
+pub const STEM_NOTICE: &str = "Word-form matches are not quotation matches.";
+
+#[derive(Clone, Copy)]
+enum SearchMode {
+    Exact,
+    Stemmed,
+}
+
+impl SearchMode {
+    /// Both identifiers are fixed here; query words remain bound parameters.
+    fn sql(self, exact: &'static str) -> Cow<'static, str> {
+        match self {
+            Self::Exact => Cow::Borrowed(exact),
+            Self::Stemmed => Cow::Owned(exact.replace("rows_fts", "rows_stem")),
+        }
+    }
+
+    fn mark(self, hit: Json) -> Json {
+        match self {
+            Self::Exact => hit,
+            Self::Stemmed => with_field(
+                with_field(hit, "stemmed", Json::Bool(true)),
+                "stem_boundary",
+                Json::str(STEM_NOTICE),
+            ),
+        }
+    }
+}
 pub const NOTICE: &str = "Finding aid derived from the Register's EPUB reading view, not authorised \
 legislation or tax advice. Read the authorised compilation on the Register before relying on a row.";
 
@@ -564,6 +593,9 @@ CREATE INDEX rows_subdivision ON rows (register_id, subdivision_key);
 CREATE VIRTUAL TABLE rows_fts USING fts5 (
   heading, text, content='rows', content_rowid='id',
   tokenize='unicode61 remove_diacritics 2');
+CREATE VIRTUAL TABLE rows_stem USING fts5 (
+  heading, text, content='rows', content_rowid='id',
+  tokenize='porter unicode61 remove_diacritics 2');
 CREATE TABLE definitions (
   term TEXT NOT NULL, term_key TEXT NOT NULL, row_id TEXT NOT NULL REFERENCES rows (row_id),
   position INTEGER NOT NULL, text TEXT NOT NULL);
@@ -838,12 +870,14 @@ fn insert_row(
         .map_err(|e| sqlite_error(&e))?;
     let id = connection.last_insert_rowid();
     let heading = normalise_value(&or_empty(get(row, "heading")))?;
-    run(
-        connection,
+    let normal_text = normalise(&text);
+    for sql in [
         "INSERT INTO rows_fts (rowid, heading, text) VALUES (?,?,?)",
-        rusqlite::params![id, heading, normalise(&text)],
-    )
-    .map_err(|e| sqlite_error(&e))?;
+        "INSERT INTO rows_stem (rowid, heading, text) VALUES (?,?,?)",
+    ] {
+        run(connection, sql, rusqlite::params![id, heading, normal_text])
+            .map_err(|e| sqlite_error(&e))?;
+    }
     counts.rows += 1;
     let row_id = get(row, "row_id").as_str().unwrap_or_default();
     let heading_text = match or_empty(get(row, "heading")) {
@@ -1027,7 +1061,31 @@ pub fn query(
     title: Option<&str>,
     limit: i64,
 ) -> Result<Vec<Json>, Exc> {
-    ranked(connection, words, title, limit, Sql::Null)
+    ranked(
+        connection,
+        words,
+        title,
+        limit,
+        Sql::Null,
+        SearchMode::Exact,
+    )
+}
+
+/// Match English word forms, retaining original text and marking every hit.
+pub fn query_stemmed(
+    connection: &Connection,
+    words: &[String],
+    title: Option<&str>,
+    limit: i64,
+) -> Result<Vec<Json>, Exc> {
+    ranked(
+        connection,
+        words,
+        title,
+        limit,
+        Sql::Null,
+        SearchMode::Stemmed,
+    )
 }
 
 /// `query`, among only the register ids `only` lists as JSON, if it is not null.
@@ -1037,6 +1095,7 @@ fn ranked(
     title: Option<&str>,
     limit: i64,
     only: Sql,
+    mode: SearchMode,
 ) -> Result<Vec<Json>, Exc> {
     let rid = optional_rid(title)?;
     let mut sections: Vec<String> = words
@@ -1058,9 +1117,9 @@ fn ranked(
         Sql::Text(sections_json),
         Sql::Integer(limit),
     ];
-    Ok(rows_of(connection, QUERY_SQL, &params)?
+    Ok(rows_of(connection, &mode.sql(QUERY_SQL), &params)?
         .into_iter()
-        .map(hit)
+        .map(|row| mode.mark(hit(row)))
         .collect())
 }
 
@@ -1242,6 +1301,28 @@ pub fn query_as_at(
     limit: i64,
     date: &str,
 ) -> Result<DatedReport, Exc> {
+    dated_query(connection, words, title, limit, date, SearchMode::Exact)
+}
+
+/// Word-form search with the same captured-window restriction as exact search.
+pub fn query_stemmed_as_at(
+    connection: &Connection,
+    words: &[String],
+    title: Option<&str>,
+    limit: i64,
+    date: &str,
+) -> Result<DatedReport, Exc> {
+    dated_query(connection, words, title, limit, date, SearchMode::Stemmed)
+}
+
+fn dated_query(
+    connection: &Connection,
+    words: &[String],
+    title: Option<&str>,
+    limit: i64,
+    date: &str,
+    mode: SearchMode,
+) -> Result<DatedReport, Exc> {
     let dated = Dated::read(connection, date)?;
     let named = given_title(connection, title)?;
     let rid = named.clone().map_or(Sql::Null, Sql::Text);
@@ -1250,7 +1331,7 @@ pub fn query_as_at(
                WHERE rows_fts MATCH ? AND (? IS NULL OR r.register_id = ?) GROUP BY r.register_id";
     let params = [Sql::Text(match_expression(words)?), rid.clone(), rid];
     let mut matched = BTreeMap::new();
-    for row in rows_of(connection, sql, &params)? {
+    for row in rows_of(connection, &mode.sql(sql), &params)? {
         let rows = match field(&row, "matched") {
             Json::Int(rows) => usize::try_from(rows).unwrap_or_default(),
             _ => 0,
@@ -1268,7 +1349,7 @@ pub fn query_as_at(
             .collect(),
     );
     let only = Sql::Text(pyvalue::points_lossy(&dumps_line(&ids, true)));
-    let hits = ranked(connection, words, title, limit, only)?;
+    let hits = ranked(connection, words, title, limit, only, mode)?;
     Ok(dated.report(hits, &matched, named.as_deref()))
 }
 
@@ -1913,6 +1994,7 @@ fn query_arguments(parser: Parser) -> Parser {
         .arg(Action::positional("words").one_or_more())
         .arg(Action::option("--title").help("search only this register id"))
         .arg(Action::option("--as-at").metavar("DATE").help(AS_AT_HELP))
+        .arg(Action::flag("--stem").help("match English word forms; not quotation matching"))
         .arg(
             Action::option("--limit")
                 .int()
@@ -2189,25 +2271,44 @@ fn refused_code(dated: Option<&DatedReport>) -> i32 {
     i32::from(dated.is_some_and(|report| !report.refusals.is_empty()))
 }
 
-fn execute_query(
+fn query_results(
     args: &crate::argparse::Namespace,
     connection: &Connection,
-    run: &mut Run,
-) -> Result<i32, Exc> {
+) -> Result<(Vec<Json>, Option<DatedReport>), Exc> {
     let title = args.str("title");
     let limit = match args.get("limit") {
         Some(crate::argparse::Value::Int(n)) => *n,
         _ => 10,
     };
     let words = list(args, "words");
+    let stemmed = args.flag("stem");
     let dated = args
         .str("as_at")
-        .map(|date| query_as_at(connection, &words, title.as_deref(), limit, &date))
+        .map(|date| {
+            let query = if stemmed {
+                query_stemmed_as_at
+            } else {
+                query_as_at
+            };
+            query(connection, &words, title.as_deref(), limit, &date)
+        })
         .transpose()?;
     let hits = match &dated {
         Some(report) => report.hits.clone(),
-        None => query(connection, &words, title.as_deref(), limit)?,
+        None => {
+            let query = if stemmed { query_stemmed } else { query };
+            query(connection, &words, title.as_deref(), limit)?
+        }
     };
+    Ok((hits, dated))
+}
+
+fn execute_query(
+    args: &crate::argparse::Namespace,
+    connection: &Connection,
+    run: &mut Run,
+) -> Result<i32, Exc> {
+    let (hits, dated) = query_results(args, connection)?;
     if args.flag("json") {
         for hit in &hits {
             run.print_points(&dumps_line(hit, false))?;
@@ -2216,6 +2317,9 @@ fn execute_query(
             print_dated(report, true, run)?;
         }
         return Ok(refused_code(dated.as_ref()));
+    }
+    if args.flag("stem") {
+        run.print(&format!("Stemmed search. {STEM_NOTICE}"));
     }
     for (number, hit) in hits.iter().enumerate() {
         let s = |k: &str| pyvalue::py_str(hit.get(k).unwrap_or(&Json::Null));

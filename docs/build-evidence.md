@@ -132,6 +132,71 @@ build` from `sources.json` SHA-256 `43823bbd8b9ab8ab7128e2a4fcfd8b3b628ef4e11985
 | C2004A03280 | *Fringe Benefits Tax Assessment Act 1986* | 97 | 1 July 2026 | `21ee9133acc6dbc48393dfb4ea334324d348c1b6f886d84e347c984dd899f57c` |
 | F2025L01097 | *Income Tax Assessment (Effective Life of Depreciating Assets) Determination 2025* | 0 | 15 September 2025 | `aecb8c2f898f20a1556929c231564ebc18f53ebbc317395c5880fadab2c357ba` |
 
+
+## Word-form search reference set
+
+Measured on 7 November 2026 with schema 4 and the retained 9-title preset corpus:
+9,439 rows, sources.json SHA-256 `74a42916984bec87b7c27a96d7566423a75c493b1fcdd10f992fdd1ffcdf1b1c`.
+This is a different corpus from the 6-title baseline above; in particular the
+ITAA 1936 compilation is 193, dated 1 October 2026. Compare exact and stemmed
+results within this run, rather than attributing differences from that earlier
+run to stemming. Both modes read the same original rows.
+
+The fixture now has 100 distinct query texts: the original 32 base and 14
+inflected questions, 44 additional heading-derived questions, 4 before-compilation
+cases, 4 after-retrieval cases and 2 missing-source cases. The original 46 query,
+target and class fields are unchanged. Additions were fixed before either mode
+was scored. An agent wrote the questions from retained Register headings and
+capture windows; no person has graded them and no result was used to tune them.
+The fixture SHA-256 is `3ffa31e7da518ef24d34916b006a2b3b5529537ead91c0baf6f78a8031c9f6d0`.
+
+| Mode and class | Retrievable queries | Hit at 1 | Hit at 5 | Hit at 10 | MRR at 10 | Retrieval failures | No results |
+|---|---:|---:|---:|---:|---:|---:|---:|
+| Exact, original base | 32 | 8 | 21 | 23 | 0.395 | 9 | 0 |
+| Stemmed, original base | 32 | 6 | 15 | 23 | 0.303 | 9 | 0 |
+| Exact, original inflected | 14 | 1 | 1 | 1 | 0.071 | 13 | 1 |
+| Stemmed, original inflected | 14 | 2 | 7 | 9 | 0.262 | 5 | 0 |
+| Exact, additional | 44 | 18 | 30 | 35 | 0.532 | 9 | 1 |
+| Stemmed, additional | 44 | 18 | 31 | 34 | 0.526 | 10 | 0 |
+
+A retrieval failure means that the expected section is held but absent from the
+first 10 results; zero returned rows are a subset of those failures. All 90
+undated target sections are held. The 2 missing-source cases name sections 4 and
+6 of F2025L01097, whose metadata is retained in the earlier index but which is
+absent from this 9-title corpus. They are reported separately and excluded from
+the retrieval denominators. Neither mode returned text for any of the 8 dated
+refusal cases, and every expected status was reported. A dated false match is
+returned text for one of those unsupported windows, not an ungraded distractor
+in an ordinary ranked result. Amendment and version cases test capture windows;
+they do not establish historical amendment text or provision applicability.
+
+Stemming raises inflected top-five hits from 1 to 7 of 14 here, but lowers the
+original base-form top-five count from 21 to 15 of 32. It stays opt-in. Porter can
+also conflate unrelated words, as the fabricated universe/university regression
+shows. These are ranks on this question set, not general recall, legal
+correctness or evidence that a quotation matches. Definitions and quotation
+checks remain exact.
+
+Reproduce the paired measurement by rebuilding these retained corpus inputs to
+a new index and running the ignored `reference_questions_on_a_real_index` test
+above with `FADDEN_REFERENCE_INDEX` naming it. The test prints each case, its
+source digest and separate retrieval, missing-source and dated false-match
+counts. Read the printed digest before comparing runs. Original-text files
+underlying this measurement are pinned below; the table contains metadata, not
+redistributed legislation.
+
+| Register ID | Compilation | Compilation date | sections.jsonl SHA-256 |
+|---|---:|---|---|
+| C2004A00446 | 96 | 2026-01-01 | `0f1c71f075344d0b8d1418135822b6f7968cb92f500efad4d0c370bdcffdf085` |
+| C2004A03280 | 97 | 2026-07-01 | `cf26fd7e4fd916b8622ce889abf7e2b2d88c2d10300286205cc5766fa028d9c3` |
+| C2004A05128 | 104 | 2026-10-01 | `335abe56087580f7f7fa79ead1a1a60deafbe5fcb25806d723a84de175fb513e` |
+| C1936A00027 | 193 | 2026-10-01 | `6561aaa9d938fe911280f9a0d116698b0e6f20970efeae2da1baad24edbf4cb3` |
+| C2004A05138 | 268 | 2026-10-01 | `acd7506caa921fefac498904b4ccb0a2e4ab3511b587a3795edf46cfc8d27099` |
+| C2004A03348 | 66 | 2026-07-01 | `98de6510d50fb62dfd5499d0e2c2b25b546259b3a92190a55279c20101c940f3` |
+| C2004A04402 | 78 | 2026-07-01 | `d06b03b8d14604365a8f6f89a823b26df9849456ae9ffc5412ad1e605e69b44c` |
+| C2004A04633 | 131 | 2026-08-10 | `fd91d6ab97c0990ee4646a22d99401bcbfc584ba4fda0b34e3a86ac494bc9efa` |
+| C1953A00001 | 227 | 2026-10-01 | `3a69ca9cbc7943a8a6a08add19019326551cb26a6eb431b32d2a99b3deb79e6b` |
+
 ## How often a run of words identifies one row
 
 `cite-check` calls a quotation `distinct` when no other row holds it and it has at least

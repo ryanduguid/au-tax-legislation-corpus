@@ -51,6 +51,12 @@ history and endnotes for any question about a past date.
 
 ### Dates in search
 
+`search query --stem` matches English word forms rather than exact query words.
+Its dated search uses the same capture-window restrictions below, including the
+withheld-row counts and filtering before the result limit. Every stemmed JSON
+hit is marked, and text output warns that word-form matches are not quotation
+matches. It does not extend compilation coverage or change quotation checking.
+
 `search query`, `search define` and `search cite-check` take `--as-at YYYY-MM-DD` and apply the `as_at` status of each title to what they return. `query` and `define` return rows only from `captured` titles and refuse the others by name, with the status, the rows withheld and the next step. `cite-check` keeps every citation and adds its title's status. No row is dropped without a refusal, and a title's status is about its compilation window, not about the law on that date. With no rows to return, `query` and `define` refuse every title in scope that is not `captured`, so 0 rows with exit 0 means each title in scope was `captured`. `cite-check --title` refuses a named title that is not `captured`, whatever the draft cites.
 
 | Status | Rows | What it covers | Next step |

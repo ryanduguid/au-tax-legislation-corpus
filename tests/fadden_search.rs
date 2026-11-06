@@ -425,18 +425,137 @@ fn query_ranks_current_titles_after_exact_sections_and_before_bm25() {
     write_corpus(&c.root, &titles, &[]);
     build(&c);
     let connection = search::open_index(&s(&c.out)).unwrap();
-    let order = |words: &[&str]| -> Vec<(Value, Value)> {
+    let order = |words: &[&str], stemmed: bool| -> Vec<(Value, Value)> {
         let words: Vec<String> = words.iter().map(|w| w.to_string()).collect();
-        values(search::query(&connection, &words, None, 10).unwrap())
+        let query = if stemmed {
+            search::query_stemmed
+        } else {
+            search::query
+        };
+        values(query(&connection, &words, None, 10).unwrap())
             .iter()
             .map(|h| (h["register_id"].clone(), h["version_is_current"].clone()))
             .collect()
     };
     let current_first = [(json!(ACT), json!(true)), (json!(OTHER), json!(false))];
-    assert_eq!(order(&["gizmo"]), current_first);
+    assert_eq!(order(&["gizmo"], false), current_first);
+    assert_eq!(order(&["gizmos"], true), current_first);
+    assert_eq!(order(&["gizmos"], true), order(&["gizmos"], true));
     // A superseded title's exact section still precedes a current title's other match.
     let section_first = [(json!(OTHER), json!(false)), (json!(ACT), json!(true))];
-    assert_eq!(order(&["7", "gizmo"]), section_first);
+    assert_eq!(order(&["7", "gizmo"], false), section_first);
+    assert_eq!(order(&["7", "gizmos"], true), section_first);
+}
+
+#[test]
+fn porter_collisions_are_marked_without_altering_original_text() {
+    let c = case();
+    let mut titles = sample_titles();
+    titles.get_mut(ACT).unwrap().1.push(row(
+        ACT,
+        6,
+        Some("6"),
+        "The universe is large.",
+        "6 Example",
+        None,
+    ));
+    write_corpus(&c.root, &titles, &[]);
+    build(&c);
+    let connection = search::open_index(&s(&c.out)).unwrap();
+    let words = ["university".to_string()];
+    assert!(
+        search::query(&connection, &words, None, 10)
+            .unwrap()
+            .is_empty()
+    );
+    let hits = values(search::query_stemmed(&connection, &words, None, 10).unwrap());
+    assert_eq!(hits.len(), 1);
+    assert_eq!(hits[0]["text"], "The universe is large.");
+    assert_eq!(hits[0]["stemmed"], true);
+    assert_eq!(hits[0]["stem_boundary"], search::STEM_NOTICE);
+}
+
+#[test]
+fn stemmed_search_is_opt_in_and_keeps_original_words_and_provenance() {
+    let c = case();
+    let connection = built(&c);
+    assert!(
+        search::query(&connection, &["researching".into()], None, 10)
+            .unwrap()
+            .is_empty()
+    );
+    let dir = c.out.parent().unwrap();
+    let (code, out, err) = cli(
+        &["query", "index.sqlite", "researching", "--stem", "--json"],
+        dir,
+    );
+    assert_eq!(code, 0, "{out}\n{err}");
+    let hits: Vec<Value> = out
+        .lines()
+        .map(|line| serde_json::from_str(line).unwrap())
+        .collect();
+    assert_eq!(hits.len(), 1, "{out}");
+    let hit = &hits[0];
+    assert_eq!(hit["row_id"], format!("{ACT}:0003:3{NBH}1"));
+    assert_eq!(hit["stemmed"], true);
+    assert!(hit["stem_boundary"].as_str().unwrap().contains("quotation"));
+    assert!(
+        hit["text"]
+            .as_str()
+            .unwrap()
+            .starts_with("Research entities")
+    );
+    assert!(hit["snippet"].as_str().unwrap().contains("[Research]"));
+    assert_eq!(hit["authorised"], false);
+    assert!(
+        hit["sections_sha256"]
+            .as_str()
+            .is_some_and(|s| s.len() == 64)
+    );
+    let exact = values(search::query(&connection, &["research".into()], None, 10).unwrap());
+    assert_eq!(exact[0]["row_id"], hit["row_id"]);
+    assert!(exact[0].get("stemmed").is_none());
+    assert!(exact[0].get("stem_boundary").is_none());
+    let (code, out, err) = cli(&["query", "index.sqlite", "researching", "--stem"], dir);
+    assert_eq!(code, 0, "{err}");
+    assert!(out.contains("Stemmed"), "{out}");
+}
+
+#[test]
+fn stemmed_search_keeps_title_limit_and_literal_query_contracts() {
+    let c = case();
+    let _connection = built(&c);
+    let dir = c.out.parent().unwrap();
+    for (extra, expected) in [
+        (vec!["researching", "--title", OTHER], 0),
+        (vec!["widgets", "--limit", "1"], 1),
+        (vec!["researching", "OR", "widgets"], 0),
+    ] {
+        let mut args = vec!["query", "index.sqlite", "--stem", "--json"];
+        args.extend(extra);
+        let (code, out, err) = cli(&args, dir);
+        assert_eq!(code, 0, "{out}\n{err}");
+        assert_eq!(out.lines().count(), expected, "{out}");
+    }
+}
+
+#[test]
+fn schema_three_indexes_require_an_explicit_rebuild() {
+    let c = case();
+    drop(built(&c));
+    let connection = rusqlite::Connection::open(&c.out).unwrap();
+    connection
+        .execute("UPDATE meta SET value = '3' WHERE key = 'schema'", [])
+        .unwrap();
+    drop(connection);
+    let before = std::fs::read(&c.out).unwrap();
+    assert!(
+        search::open_index(&s(&c.out))
+            .unwrap_err()
+            .to_string()
+            .contains("different schema")
+    );
+    assert_eq!(std::fs::read(&c.out).unwrap(), before);
 }
 
 #[test]
@@ -1819,14 +1938,14 @@ fn cite_check_counts_assumed_and_exits_0_on_it() {
     assert!(!out.contains(": resolved: "), "{out}");
 }
 
-/// The real-law question set: (query words, Register ID, section, form).
-fn reference_questions() -> Vec<[&'static str; 4]> {
+/// Query, Register ID, section, class, date and expected outcome.
+fn reference_questions() -> Vec<[&'static str; 6]> {
     include_str!("fixtures/retrieval_real_law.tsv")
         .lines()
-        .filter(|line| !line.starts_with('#'))
+        .filter(|line| !line.is_empty() && !line.starts_with('#'))
         .map(|line| {
             let fields: Vec<&str> = line.split('\t').collect();
-            <[&str; 4]>::try_from(fields).unwrap_or_else(|_| panic!("4 fields: {line}"))
+            <[&str; 6]>::try_from(fields).unwrap_or_else(|_| panic!("6 fields: {line}"))
         })
         .collect()
 }
@@ -1834,15 +1953,172 @@ fn reference_questions() -> Vec<[&'static str; 4]> {
 #[test]
 fn the_real_law_question_set_is_well_formed() {
     let questions = reference_questions();
-    assert_eq!(questions.len(), 46);
+    assert_eq!(questions.len(), 100);
     let unique: std::collections::BTreeSet<&str> = questions.iter().map(|q| q[0]).collect();
     assert_eq!(unique.len(), questions.len());
     let register_id_form = regex::Regex::new(r"^[CF]\d{4}[AL]\d{5}$").unwrap();
-    for [query, register_id, section, form] in questions {
+    for [query, register_id, section, class, date, expected] in questions {
         assert!(!query.trim().is_empty());
         assert!(register_id_form.is_match(register_id));
         assert!(!section.is_empty());
-        assert!(["base", "inflected"].contains(&form), "{form}");
+        assert!(
+            [
+                "base",
+                "inflected",
+                "additional",
+                "amendment",
+                "version",
+                "missing_compilation"
+            ]
+            .contains(&class),
+            "{class}"
+        );
+        assert!(
+            [
+                "hit",
+                "before_compilation",
+                "after_retrieval",
+                "missing_source"
+            ]
+            .contains(&expected),
+            "{expected}"
+        );
+        assert!(date == "-" || tax_radar_au::fadden::as_at::is_date(date));
+        assert_eq!(date == "-", ["hit", "missing_source"].contains(&expected));
+    }
+}
+
+struct ReferenceResult {
+    rank: Option<usize>,
+    rows: usize,
+    missing_source: bool,
+    refused_correctly: bool,
+}
+
+fn reference_result(
+    connection: &rusqlite::Connection,
+    question: [&str; 6],
+    stemmed: bool,
+) -> ReferenceResult {
+    let [query, rid, section, _, date, expected] = question;
+    let present: bool = connection
+        .query_row(
+            "SELECT EXISTS(SELECT 1 FROM rows WHERE register_id = ? AND section_key = ?)",
+            rusqlite::params![rid, search::section_key(section)],
+            |row| row.get(0),
+        )
+        .unwrap();
+    if !present {
+        return ReferenceResult {
+            rank: None,
+            rows: 0,
+            missing_source: true,
+            refused_correctly: false,
+        };
+    }
+    assert_ne!(
+        expected, "missing_source",
+        "the pinned corpus unexpectedly holds {rid}:{section}"
+    );
+    let words: Vec<String> = query.split_whitespace().map(str::to_string).collect();
+    if date != "-" {
+        let query = if stemmed {
+            search::query_stemmed_as_at
+        } else {
+            search::query_as_at
+        };
+        let report = query(connection, &words, Some(rid), 10, date).unwrap();
+        let refusal = report
+            .refusals
+            .iter()
+            .map(value)
+            .find(|r| r["register_id"] == rid);
+        let refused_correctly = refusal
+            .as_ref()
+            .is_some_and(|r| r["as_at"]["status"] == expected);
+        assert!(
+            refusal
+                .as_ref()
+                .is_some_and(|r| r["matching_rows"].as_u64().unwrap() > 0),
+            "boundary query must match held text: {question:?}"
+        );
+        return ReferenceResult {
+            rank: None,
+            rows: report.hits.len(),
+            missing_source: false,
+            refused_correctly,
+        };
+    }
+    let query = if stemmed {
+        search::query_stemmed
+    } else {
+        search::query
+    };
+    let hits = values(query(connection, &words, None, 10).unwrap());
+    let rank = hits.iter().position(|hit| {
+        hit["register_id"] == rid
+            && hit["section"]
+                .as_str()
+                .is_some_and(|found| search::section_key(found) == section)
+    });
+    ReferenceResult {
+        rank,
+        rows: hits.len(),
+        missing_source: false,
+        refused_correctly: false,
+    }
+}
+
+#[test]
+fn reference_scoring_separates_retrieval_failure_from_missing_source() {
+    let c = case();
+    let mut titles = sample_titles();
+    titles.retain(|rid, _| *rid == ACT);
+    write_corpus(&c.root, &titles, &[]);
+    build(&c);
+    let connection = search::open_index(&s(&c.out)).unwrap();
+    let found = reference_result(
+        &connection,
+        ["research", ACT, "3-1", "base", "-", "hit"],
+        false,
+    );
+    assert_eq!(found.rank, Some(0));
+    assert!(!found.missing_source);
+    let failed = reference_result(
+        &connection,
+        ["absentword", ACT, "3-1", "base", "-", "hit"],
+        false,
+    );
+    assert_eq!(failed.rank, None);
+    assert!(!failed.missing_source);
+    let missing = reference_result(
+        &connection,
+        [
+            "research",
+            ACT,
+            "999",
+            "missing_compilation",
+            "-",
+            "missing_source",
+        ],
+        false,
+    );
+    assert!(missing.missing_source);
+    for stemmed in [false, true] {
+        let refused = reference_result(
+            &connection,
+            [
+                "research",
+                ACT,
+                "3-1",
+                "amendment",
+                "2099-06-30",
+                "before_compilation",
+            ],
+            stemmed,
+        );
+        assert!(refused.refused_correctly);
+        assert_eq!(refused.rows, 0);
     }
 }
 
@@ -1853,41 +2129,57 @@ fn the_real_law_question_set_is_well_formed() {
 fn reference_questions_on_a_real_index() {
     let index = std::env::var("FADDEN_REFERENCE_INDEX").expect("set FADDEN_REFERENCE_INDEX");
     let connection = search::open_index(&index).unwrap();
-    let mut results = BTreeMap::<&str, Vec<(Option<usize>, bool)>>::new();
-    for [query, register_id, section, form] in reference_questions() {
-        let words: Vec<String> = query.split_whitespace().map(str::to_string).collect();
-        let hits = values(search::query(&connection, &words, None, 10).unwrap());
-        let rank = hits.iter().position(|hit| {
-            hit["register_id"] == register_id
-                && hit["section"]
-                    .as_str()
-                    .is_some_and(|found| search::section_key(found) == section)
-        });
-        results
-            .entry(form)
-            .or_default()
-            .push((rank, hits.is_empty()));
-    }
-    for (form, ranks) in results {
-        let hit = |n: usize| {
-            ranks
+    let source_digest: String = connection
+        .query_row(
+            "SELECT value FROM meta WHERE key = 'sources_sha256'",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    println!("REFERENCE_SOURCES {source_digest}");
+    for stemmed in [false, true] {
+        let mut results = BTreeMap::<&str, Vec<([&str; 6], ReferenceResult)>>::new();
+        for question in reference_questions() {
+            let result = reference_result(&connection, question, stemmed);
+            println!(
+                "REFERENCE_CASE {}",
+                json!({"stemmed": stemmed, "query": question[0], "class": question[3], "expected": question[5], "rank": result.rank.map(|r| r + 1), "rows": result.rows, "missing_source": result.missing_source, "refused_correctly": result.refused_correctly})
+            );
+            results
+                .entry(question[3])
+                .or_default()
+                .push((question, result));
+        }
+        for (class, records) in results {
+            let retrieval: Vec<&ReferenceResult> = records
                 .iter()
-                .filter(|(rank, _)| rank.is_some_and(|r| r < n))
-                .count()
-        };
-        let reciprocal: f64 = ranks
-            .iter()
-            .filter_map(|(rank, _)| rank.map(|r| 1.0 / (r + 1) as f64))
-            .sum();
-        println!(
-            "{form}: {} queries, hit at 1 {}, hit at 5 {}, hit at 10 {}, mean reciprocal rank {:.3}, no results {}",
-            ranks.len(),
-            hit(1),
-            hit(5),
-            hit(10),
-            reciprocal / ranks.len() as f64,
-            ranks.iter().filter(|(_, empty)| *empty).count()
-        );
+                .filter(|(q, r)| q[5] == "hit" && !r.missing_source)
+                .map(|(_, r)| r)
+                .collect();
+            let dated: Vec<&ReferenceResult> = records
+                .iter()
+                .filter(|(q, r)| q[4] != "-" && !r.missing_source)
+                .map(|(_, r)| r)
+                .collect();
+            let hit = |n| {
+                retrieval
+                    .iter()
+                    .filter(|r| r.rank.is_some_and(|rank| rank < n))
+                    .count()
+            };
+            let reciprocal: f64 = retrieval
+                .iter()
+                .filter_map(|r| r.rank.map(|rank| 1.0 / (rank + 1) as f64))
+                .sum();
+            let false_matches: usize = dated.iter().map(|r| r.rows).sum();
+            let wrong_refusals = dated.iter().filter(|r| !r.refused_correctly).count();
+            println!(
+                "REFERENCE_SUMMARY {}",
+                json!({"stemmed": stemmed, "class": class, "cases": records.len(), "retrieval_denominator": retrieval.len(), "hit_at_1": hit(1), "hit_at_5": hit(5), "hit_at_10": hit(10), "mrr_at_10": (!retrieval.is_empty()).then(|| reciprocal / retrieval.len() as f64), "retrieval_failures": retrieval.iter().filter(|r| r.rank.is_none()).count(), "no_results": retrieval.iter().filter(|r| r.rows == 0).count(), "missing_sources": records.iter().filter(|(_, r)| r.missing_source).count(), "dated_denominator": dated.len(), "dated_false_matches": false_matches, "wrong_refusals": wrong_refusals})
+            );
+            assert_eq!(false_matches, 0, "{class}: uncaptured text returned");
+            assert_eq!(wrong_refusals, 0, "{class}: expected refusal missing");
+        }
     }
 }
 
@@ -1939,6 +2231,27 @@ fn grade_of(connection: &rusqlite::Connection, draft: &str) -> Value {
     let found = graded(connection, draft, None);
     assert_eq!(found.len(), 1, "{draft}: {found:?}");
     found[0].3.clone()
+}
+
+#[test]
+fn stemmed_retrieval_does_not_make_a_word_form_a_quotation_match() {
+    let (_c, connection) = quoted_case();
+    let hits = search::query_stemmed(&connection, &["claiming".into()], Some(ACT), 10).unwrap();
+    assert_eq!(hits.len(), 1);
+    assert_eq!(
+        grade_of(
+            &connection,
+            &format!("{AT} says \"claiming the sample offset\".")
+        ),
+        "none"
+    );
+    assert_eq!(
+        grade_of(
+            &connection,
+            &format!("{AT} says \"the widget costs less than\".")
+        ),
+        "exact"
+    );
 }
 
 #[test]

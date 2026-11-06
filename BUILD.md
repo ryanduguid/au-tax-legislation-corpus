@@ -461,6 +461,7 @@ makes no request.
 ```bash
 python -m fadden search build corpus --out search.sqlite
 python -m fadden search query search.sqlite general deductions --limit 5
+python -m fadden search query search.sqlite losses outgoings incurred deductible --stem --limit 5
 python -m fadden search query search.sqlite 8-1 --title C2004A05138
 python -m fadden search define search.sqlite assessable income
 python -m fadden search refs search.sqlite C2004A05138:0035:8-1
@@ -483,6 +484,17 @@ python -m fadden search cite-check search.sqlite draft.md --as-at 2026-07-15
   Text is NFKC-normalised for matching, so `8-1` matches the Register's `8<U+2011>1`.
   Each hit prints its `row_id`, compilation, current status, retrieval date and
   Register page; `--json` adds the row text and the file digests.
+- `query --stem` opts into English word-form matching with SQLite's Porter
+  tokenizer in a separate full-text index. It uses the same title filter,
+  section/current-title priority and limit, and works with `--as-at`. JSON hits
+  add `stemmed: true` and `stem_boundary`; text output includes the warning even
+  with no hits. Word-form matches are not quotation matches. Porter can conflate
+  unrelated words and can worsen rankings, so exact search remains the default.
+  Definitions and quotation checks do not stem words. See the paired
+  [reference measurements](docs/build-evidence.md#word-form-search-reference-set).
+  Index schema 4 adds the separate table; rebuild schema 3 or earlier with
+  `search build` into a new file. Opening an old index refuses it without
+  modifying it; no automatic migration runs.
 - `define` reads only rows headed Definitions, Definition, Dictionary or
   Interpretation, and only paragraphs that open with `<term> means`, `has the
   meaning given by`, `has the same meaning as`, `includes`, `does not include`

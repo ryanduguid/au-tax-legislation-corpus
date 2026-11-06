@@ -67,6 +67,10 @@ Index of the corpus retrieved 2099-08-01, sources.json sha256 73d95db611177211. 
 
 The title, dates and rows are fictional. They describe no real legislation and establish no legal effect.
 
+Use `search query --stem` to include English word forms. Results are marked as
+stemmed; word-form matches are not quotation matches. Exact search remains the
+default. See [BUILD.md](BUILD.md) for index rebuilding and the measured ranking limits.
+
 ### Search real law from an empty folder
 
 `python -m fadden quick --out <empty folder>` builds and indexes 9 principal Acts on your machine and prints the `AUS_ACCOUNTING_CORPUS_ROOT` setting for the MCP server, which then answers `search_tax_legislation` from that folder. One run on 6 November 2026 took 116 seconds on a Windows desktop PC, 90 of them the Crawl-delay ([evidence](docs/build-evidence.md#one-command-preset-build)). It fetches each Act from the Register, builds beside that folder, moves the result in only once all 9 Acts are indexed and publishes nothing. The command needs `curl` and network access; [BUILD.md](BUILD.md#one-command-preset-build) lists the Acts.
